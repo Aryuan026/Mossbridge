@@ -2209,7 +2209,8 @@ class CyberbossApp {
     const threadState = this.threadStateStore.getThreadState(event.payload.threadId);
     const rawAssistantTextFinal = normalizeText(event?.payload?.text) || normalizeText(threadState?.lastReplyText);
     const runtimeCapacityNotice = isRuntimeCapacityNotice(rawAssistantTextFinal);
-    const assistantTextFinal = runtimeCapacityNotice ? "" : rawAssistantTextFinal;
+    const runtimeFailureNotice = event.type === "runtime.turn.failed";
+    const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
     const role = snapshot.prepared.provider === "system" ? "system" : "user";
     const incomingTextForCache = snapshot.prepared.originalText
       || snapshot.prepared.runtimeText
@@ -2240,7 +2241,7 @@ class CyberbossApp {
         status: event.type === "runtime.turn.completed" && !runtimeCapacityNotice ? "ok" : "error",
         error: runtimeCapacityNotice
           ? rawAssistantTextFinal
-          : (event.type === "runtime.turn.failed" ? normalizeText(event?.payload?.text) : ""),
+          : (runtimeFailureNotice ? normalizeText(event?.payload?.text) : ""),
         routeId: linked?.bindingKey || snapshot.bindingKey,
         transportId: snapshot.prepared.provider === "system" ? "system" : "weixin",
         runtimeId: this.runtimeAdapter.describe().id,

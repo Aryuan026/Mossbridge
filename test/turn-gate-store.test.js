@@ -632,6 +632,64 @@ test("claudecode failed turns clear the saved workspace thread binding before re
   ]);
 });
 
+test("writebackRuntimeTurn keeps runtime failure notices out of assistant memory text", async () => {
+  let captured = null;
+  const appLike = {
+    projectDomains: {
+      memory: {
+        async writebackTurn(args) {
+          captured = args;
+          return { ok: true };
+        },
+      },
+    },
+    consumeTurnWritebackContext() {
+      return {
+        bindingKey: "binding-1",
+        dispatchedAtMs: Date.now() - 1000,
+        prepared: {
+          senderId: "user-1",
+          accountId: "account-1",
+          provider: "weixin",
+          originalText: "刚才是不是断了",
+          runtimeText: "刚才是不是断了",
+          text: "刚才是不是断了",
+          receivedAt: "2026-05-01T08:00:00.000Z",
+          memoryContextPacket: null,
+        },
+        model: "claude-opus-4-6",
+      };
+    },
+    threadStateStore: {
+      getThreadState() {
+        return { lastReplyText: "" };
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+  };
+
+  await CyberbossApp.prototype.writebackRuntimeTurn.call(appLike, {
+    event: {
+      type: "runtime.turn.failed",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        text: "❌ Runtime process exited unexpectedly",
+      },
+    },
+    linked: { bindingKey: "binding-1" },
+  });
+
+  assert.equal(captured.assistantTextFinal, "");
+  assert.deepEqual(captured.outboundMessages, []);
+  assert.equal(captured.status, "error");
+  assert.equal(captured.error, "❌ Runtime process exited unexpectedly");
+});
+
 test("flushPendingInboundMessages batches queued messages from the same scope into one turn", async () => {
   const dispatched = [];
   const scopeKey = "binding-1::/workspace";
