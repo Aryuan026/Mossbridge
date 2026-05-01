@@ -44,6 +44,8 @@ class AsherieMemoryService {
         truthLayerDirOverride: this.config.asherieTruthLayerDir,
         memoryTreeDirOverride: this.config.asherieMemoryTreeDir,
         caseIndexDirOverride: this.config.asherieCaseIndexDir,
+        notionSyncDirOverride: this.config.asherieNotionSyncDir,
+        appDailyCaptureDirOverride: this.config.asherieAppDailyCaptureDir,
         warmMemoryDirOverride: this.config.asherieWarmMemoryDir,
         memoryVersionBankDirOverride: this.config.asherieMemoryVersionBankDir,
       },

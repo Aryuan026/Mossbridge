@@ -79,11 +79,13 @@ MossbridgeData/
     truth_layer/
     memory_tree/
     case_index/
+    notion_sync/
     raw_transcript_archive/
     dreaming_mutation_log/
     relationship_contracts/
     curated_memories.json
   cache/
+    app_daily_captures/
     conversation_cache/
     raw_transcript_active/
     wakeup_journal.json
@@ -117,6 +119,10 @@ MossbridgeData/
   兼容旧冷树或更深层归档。新部署可以先空着。
 - `storage/case_index/`
   记录“这个 agent 帮用户做过什么事”的工作索引。第一阶段可以先用 JSON/Markdown。
+- `storage/notion_sync/`
+  和 Notion 固有记忆同步的中间层。对齐 Driftstone 的 `memory_entries`、`source_topics`、`persona_workspace`。
+- `cache/app_daily_captures/`
+  官方 app / ChatGPT web 抓取插件的每日对话入口。它是原始沉淀素材，不是稳定记忆。
 - `storage/dreaming_mutation_log/`
   记录 dreaming 做过哪些整理和改写，方便回滚和审计。
 - `cache/`
@@ -204,3 +210,17 @@ Codex 调试时要确认：
 - 添加一个 ongoing track 后，主动唤醒能携带它。
 
 如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。后面再逐步补 dreaming、树边生成、case index 检索和公开版 rename。
+
+## 官方 app 与 Notion 互通
+
+如果用户希望 WeChat、Codex、官方 app 三边记忆互通，不要让官方 app 直接依赖 Mossbridge 本地文件。
+
+推荐方式：
+
+- 官方 app / ChatGPT web 的每日对话抓取进入 `cache/app_daily_captures/`。
+- 归一化后进入 `cache/conversation_cache/`，参与 dreaming。
+- 固有记忆通过 Notion 的 `memory_entries` / `source_topics` 同步。
+- Mossbridge 周期性把 Notion 稳定记忆导入本地 `warm_memory`、`memory_tree`、`case_index`。
+- 官方 app 通过 Notion 工具读取稳定记忆，不直接读 WeChat 状态目录。
+
+更多见 [docs/notion-memory-interop.md](./notion-memory-interop.md)。

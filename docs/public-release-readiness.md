@@ -151,6 +151,8 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 完成跨窗口 conversation cache 到 dreaming 的整理链路。
 - 给冷层拓扑定义更稳定的 provider 接口。
 - 明确 case index 的落盘结构和召回入口。
+- 明确 Notion stable memory 与本地 warm/tree/case 的导入导出契约。
+- 明确官方 app / ChatGPT web daily capture 如何进入 conversation cache。
 - 验证主动 wakeup 的 context packet 足够支撑自然对话。
 - 避免通过关键词作弊提高个别记忆召回。
 
@@ -178,6 +180,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 写 “如何绑定 workspace” 指南。
 - 写 “如何切换 Claude 模型” 指南。
 - 写 “记忆仓可以不用 / 可以外接 / 可以共享”的说明。
+- 写 “Notion 固有记忆同步 / 官方 app 每日抓取”说明。
 - 写 “从 Cyberboss 分叉而来，差异在哪里”的公开说明。
 
 ## 分享给朋友前的验收标准

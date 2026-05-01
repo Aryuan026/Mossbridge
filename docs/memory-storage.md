@@ -101,6 +101,14 @@ ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传
 - 最近少量对话切片
 - 必要时再加 case refs 或冷层引用
 
+### `cache/app_daily_captures/`
+
+官方 app / ChatGPT web 抓取插件的每日对话入口。
+
+它解决的是“官方 app 端的上文怎么进入沉淀池”，不是“固有记忆怎么长期同步”。推荐一日一个目录，先保存 raw/daily capture，再归一化进 `conversation_cache/`。
+
+这个目录可以接浏览器插件、网页抓取脚本或官方导出的每日对话记录。进入这里的内容默认是近期素材，不是稳定记忆。
+
 ### `storage/memory_versions/`
 
 旧版记忆包兼容层。当前代码里仍然支持 `persona_memos`、`hard_facts`、`case_updates`。
@@ -186,6 +194,29 @@ Bridge 自己的轻量关系树预留位。
 ```
 
 Case index 不应该在每轮亲密闲聊里强行注入。它更适合在用户问“你之前怎么修的”“那个项目在哪”“我们做过哪些 case”时被召回。
+
+### `storage/notion_sync/`
+
+Notion 固有记忆同步层。
+
+它对齐 Driftstone 的 Notion staging bundle：
+
+```text
+00_manifest.json
+01_memory_entries.json
+02_source_topics.json
+03_persona_workspace_snapshot.json
+```
+
+推荐职责：
+
+- `memory_entries` 作为跨端稳定记忆表。
+- `source_topics` 作为来源话题索引和证据索引。
+- `persona_workspace` 作为稳定人格/工作台快照。
+- 本地 `warm_memory`、`memory_tree`、`case_index` 从 Notion stable memory 周期性导入。
+- 本地 dreaming 确认后的固有记忆进入 export queue，等待写回 Notion。
+
+更完整的同步契约见 [docs/notion-memory-interop.md](./notion-memory-interop.md)。
 
 ## 冷层不是另一套温卡
 
@@ -303,6 +334,8 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / case_index
 - 对话里的稳定关系、偏好、象征物，进入温层。
 - 短中期活跃事件，进入 ongoing。
 - 已完成的工程、文件工作、调试结论，进入 case index。
+- 官方 app / ChatGPT web 的每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
+- 跨端固有记忆通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
 - 不要把短期事件默认推进冷层。
 
