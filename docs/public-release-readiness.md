@@ -152,6 +152,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 给冷层拓扑定义更稳定的 provider 接口。
 - 明确 case index 的落盘结构和召回入口。
 - 明确 Notion stable memory 与本地 warm/tree/case 的导入导出契约。
+- 为 Driftstone/Notion staging 增加归一化层，避免第一轮导出格式直接写进 memory tree。
 - 明确官方 app / ChatGPT web daily capture 如何进入 conversation cache。
 - 验证主动 wakeup 的 context packet 足够支撑自然对话。
 - 避免通过关键词作弊提高个别记忆召回。

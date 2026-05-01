@@ -15,7 +15,9 @@ Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 
 
 ## 参考来源
 
-当前对齐参考是本机 Driftstone 最后导出的 Notion staging bundle：
+当前对齐参考是本机 Driftstone 最后导出的 Notion staging bundle。
+
+注意：这批 Driftstone 导出是第一轮优化结果，只能作为 `notion_staging` 输入格式参考，不能直接视为 Mossbridge 的 canonical memory tree schema。
 
 ```text
 /Users/mac/Documents/Codex/0-github/202604-Driftstone/output/notion_staging/
@@ -27,7 +29,31 @@ Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 
     04_sample_memory_entries.json
 ```
 
-这套结构的重点是机器可读，而不是只给人看的笔记。
+这套结构的重点是机器可读，而不是只给人看的笔记。它更像“可导入的索引卡盒”，不是“已经长好的关系树”。
+
+## Driftstone v1 观察结论
+
+对 `ajimem_2025-03` 的第一轮检查结论：
+
+- 字段骨架已经有用。`entry_id`、`entry_type`、`month_key`、`summary`、`recall_payload`、`source_ref`、`source_window_id`、`source_msg_range` 等足够支撑后续导入器。
+- `memory_shape` 仍然偏斜。308 条里有 197 条是 `self_definition`，其中 195 条 persona 全部落到 `self_definition`，说明分类层还没完全把事件、关系、偏好、协议、人物画像分开。
+- `activation_triggers` 已经去掉大部分工作台流水号，但仍有不少泛词，例如用户名、共生、事件、关系。它们可以做弱召回信号，不应该直接生成树边。
+- `recall_payload` 平均约 166 字，适合做轻量召回文本；但它和 `summary`、`recall_facts` 仍有大量重叠。导入时要去重，不要三层一起原样塞进上下文。
+- `source_topics` 和 `memory_entries.topic_ids` 目前不是同一个稳定命名空间。`memory_entries` 里类似 `topic.month_bundle_...`，`source_topics` 里类似 `topic.f1rhjk`。第一版导入器不能只靠 `topic_id` join，应该同时用 `chunk_id`、`source_window_id`、`source_bundle_id`、`source_msg_range` 兜底。
+
+因此当前规则是：
+
+```text
+Driftstone bundle -> Notion import candidate
+Notion import candidate -> normalized memory candidate
+normalized memory candidate -> warm/tree/case
+```
+
+不要直接：
+
+```text
+Driftstone bundle -> memory_tree
+```
 
 ## 三端地图
 
@@ -111,7 +137,7 @@ storage/notion_sync/bundles/<bundle_id>/00_manifest.json
 
 ### `01_memory_entries.json`
 
-这是固有记忆主表，应该对齐 Mossbridge 的 warm/case/tree 三层。
+这是固有记忆候选主表，应该先进入 Mossbridge 的 Notion import candidate，再经过归一化后分流到 warm/case/tree 三层。
 
 关键字段：
 
@@ -144,16 +170,24 @@ storage/notion_sync/bundles/<bundle_id>/00_manifest.json
 - `privacy_codes`
 - `quality_flags`
 
-推荐映射：
+第一版推荐映射：
 
-- `entry_type=persona` 或 `memory_shape` 是自我定义、人物画像、偏好、关系节点时，进入 `storage/warm_memory/`。
-- `entry_type=case` 或 `memory_shape=project_line` 时，进入 `storage/case_index/`。
-- `topic_ids`、`family_id`、`entity_refs`、`event_anchor` 可生成 `storage/memory_tree/` 的 node/edge/evidence。
+- `entry_type=persona` 或 `memory_shape` 是自我定义、人物画像、偏好、关系节点时，先进入 warm-memory candidate；人工或 dreaming 确认后再写入 `storage/warm_memory/`。
+- `entry_type=case` 或 `memory_shape=project_line` 时，进入 case candidate；确认后写入 `storage/case_index/`。
+- `topic_ids`、`family_id`、`entity_refs`、`event_anchor` 只能生成 tree candidate。只有当证据关系明确时，才能写入 `storage/memory_tree/` 的 node/edge/evidence。
 - `source_ref`、`source_window_id`、`source_msg_range` 保留为证据，不要丢。
+
+字段使用边界：
+
+- `summary`: 给人和模型快速理解这条记忆。
+- `recall_payload`: 给检索阶段使用的压缩文本。
+- `recall_facts`: 给前台模型引用的事实句，导入时要和 `summary` 去重。
+- `expression_fingerprint`: 只能作为语言指纹候选池，不应作为必须模仿的风格规则。
+- `activation_triggers`: 弱召回键，不是树边，不是最终 tags。
 
 ### `02_source_topics.json`
 
-这是来源话题表，适合当作 conversation source index。
+这是来源话题表，适合当作 conversation source index，不是 memory tree 本体。
 
 关键字段：
 
@@ -180,9 +214,20 @@ storage/notion_sync/bundles/<bundle_id>/00_manifest.json
 - 给 daily captures 建立可回溯 source index。
 - 让主动浮现时知道哪些话题是 high priority，哪些只是 background。
 
+当前 Driftstone v1 要特别注意：`source_topics.topic_id` 不一定能直接对应 `memory_entries.topic_ids`。导入器应该优先尝试多字段对齐：
+
+```text
+topic_id exact match
+  -> chunk_id match
+  -> source_window_id + source_msg_range overlap
+  -> source_bundle_id + source_window_title
+```
+
+如果这些都不能对齐，就保留为 orphan source topic，不要强行挂到某张温卡上。
+
 ### `03_persona_workspace_snapshot.json`
 
-这是官方 app / Notion 端最有价值的“稳定人格工作台快照”。
+这是官方 app / Notion 端最有价值的“稳定人格工作台快照”，但它仍然是快照，不是树。
 
 它不应该每轮注入前台模型，但可以用于：
 
@@ -268,6 +313,60 @@ Notion stable memory
   -> dreaming/export queue
   -> Notion stable memory
 ```
+
+## Import Normalization Layer
+
+Mossbridge 后续需要一个显式归一化层，避免把 Driftstone v1 的中间态直接写进运行记忆。
+
+建议中间文件：
+
+```text
+storage/notion_sync/
+  bundles/<bundle_id>/
+    00_manifest.json
+    01_memory_entries.json
+    02_source_topics.json
+    03_persona_workspace_snapshot.json
+  normalized/
+    memory_candidates.jsonl
+    topic_candidates.jsonl
+    tree_edge_candidates.jsonl
+```
+
+`memory_candidates.jsonl` 建议字段：
+
+```json
+{
+  "candidate_id": "notion:entry:rid_xxx",
+  "source_entry_id": "rid_xxx",
+  "candidate_kind": "warm_memory",
+  "title": "记忆标题",
+  "summary": "去重后的摘要",
+  "recall_text": "短召回文本",
+  "facts": [],
+  "tags": [],
+  "entities": [],
+  "source_refs": [],
+  "quality_flags": [],
+  "import_status": "candidate"
+}
+```
+
+`tree_edge_candidates.jsonl` 只保存候选关系，不直接等于事实：
+
+```json
+{
+  "candidate_id": "notion:edge:family_id:xxx",
+  "from_ref": "entry:rid_xxx",
+  "to_ref": "topic:topic_xxx",
+  "relation_type": "topic_evidence",
+  "evidence_refs": ["source_ref:window_xxx"],
+  "confidence": "candidate",
+  "import_status": "candidate"
+}
+```
+
+只有 `import_status=accepted` 后，才写入 `warm_memory`、`memory_tree` 或 `case_index`。
 
 ## 冲突处理
 
