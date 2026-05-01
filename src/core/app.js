@@ -19,6 +19,7 @@ const { resolveWorkspaceOfficePaths } = require("./workspace-office-layout");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { RuntimeContextUsageStore } = require("./runtime-context-usage-store");
+const { WeixinIngressAuditStore } = require("./weixin-ingress-audit-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
 const { SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
@@ -73,6 +74,7 @@ class CyberbossApp {
     this.runtimeAdapter = createRuntimeAdapter(config);
     this.threadStateStore = new ThreadStateStore();
     this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
+    this.weixinIngressAuditStore = new WeixinIngressAuditStore({ filePath: config.weixinIngressAuditFile });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
@@ -180,13 +182,15 @@ class CyberbossApp {
             this.flushPendingSystemMessages(),
             this.flushPendingTimelineScreenshots(account),
           ]);
+          const syncBufferBefore = this.channelAdapter.loadSyncBuffer();
           const response = await this.channelAdapter.getUpdates({
-            syncBuffer: this.channelAdapter.loadSyncBuffer(),
+            syncBuffer: syncBufferBefore,
             timeoutMs: this.resolveLongPollTimeoutMs(),
           });
           assertWeixinUpdateResponse(response);
           consecutiveFailures = 0;
           const messages = sortInboundUpdateMessages(Array.isArray(response?.msgs) ? response.msgs : []);
+          this.recordWeixinPollAudit({ response, messages, syncBufferBefore });
           for (const message of messages) {
             if (shutdown.stopped) {
               break;
@@ -349,12 +353,72 @@ class CyberbossApp {
   async handleIncomingMessage(message) {
     const normalized = this.channelAdapter.normalizeIncomingMessage(message);
     if (!normalized) {
+      this.recordWeixinInboundAudit({
+        stage: "filtered",
+        rawMessage: message,
+      });
       return;
     }
 
+    this.recordWeixinInboundAudit({
+      stage: "accepted",
+      rawMessage: message,
+      normalized,
+    });
     recordUserMessage();
     this.primeDeferredRepliesForSender(normalized);
-    await this.handlePreparedMessage(normalized, { allowCommands: true });
+    try {
+      await this.handlePreparedMessage(normalized, { allowCommands: true });
+      this.recordWeixinInboundAudit({
+        stage: "dispatched",
+        rawMessage: message,
+        normalized,
+      });
+    } catch (error) {
+      this.recordWeixinInboundAudit({
+        stage: "error",
+        rawMessage: message,
+        normalized,
+        error,
+      });
+      throw error;
+    }
+  }
+
+  recordWeixinPollAudit({ response, messages, syncBufferBefore }) {
+    const newBuf = typeof response?.get_updates_buf === "string" ? response.get_updates_buf.trim() : "";
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
+    this.weixinIngressAuditStore?.recordPoll?.({
+      ret: response?.ret ?? null,
+      errcode: response?.errcode ?? null,
+      messageCount,
+      syncBufferChanged: Boolean(newBuf && newBuf !== syncBufferBefore),
+      messageIds: (Array.isArray(messages) ? messages : [])
+        .slice(0, 12)
+        .map((message) => normalizeCommandArgument(String(message?.message_id ?? message?.client_id ?? ""))),
+    });
+    if (messageCount > 0) {
+      console.log(`[asheriebridge] weixin poll messages=${messageCount}`);
+    }
+  }
+
+  recordWeixinInboundAudit({ stage = "", rawMessage = null, normalized = null, error = null } = {}) {
+    const textPreview = normalized
+      ? (normalizeText(normalized.originalText) || normalizeText(normalized.text))
+      : "";
+    const event = this.weixinIngressAuditStore?.recordInbound?.({
+      stage: normalizeText(stage) || "unknown",
+      messageId: normalizeCommandArgument(String(rawMessage?.message_id ?? normalized?.messageId ?? "")),
+      messageType: Number.isFinite(Number(rawMessage?.message_type)) ? Number(rawMessage.message_type) : null,
+      senderId: normalizeText(normalized?.senderId) || normalizeText(rawMessage?.from_user_id),
+      contextTokenPresent: Boolean(normalizeText(normalized?.contextToken) || normalizeText(rawMessage?.context_token)),
+      textPreview,
+      error: error instanceof Error ? error.message : normalizeText(error),
+    });
+    if (event && stage !== "dispatched") {
+      const suffix = event.error ? ` error=${event.error}` : "";
+      console.log(`[asheriebridge] weixin inbound ${event.stage} message=${event.messageId || "(unknown)"}${suffix}`);
+    }
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {

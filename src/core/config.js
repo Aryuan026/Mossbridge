@@ -33,6 +33,7 @@ function readConfig() {
     deferredSystemReplyQueueFile: path.join(stateDir, "deferred-system-replies.json"),
     checkinConfigFile: path.join(stateDir, "checkin-config.json"),
     runtimeContextUsageFile: path.join(stateDir, "runtime-context-usage.json"),
+    weixinIngressAuditFile: path.join(stateDir, "weixin-ingress-audit.json"),
     timelineScreenshotQueueFile: path.join(stateDir, "timeline-screenshot-queue.json"),
     projectToolContextFile: path.join(stateDir, "project-tool-runtime-context.json"),
     stickersDir: path.join(stateDir, "stickers"),
