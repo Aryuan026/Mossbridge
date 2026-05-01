@@ -92,6 +92,39 @@ test("StickerService saves, dedupes, updates, picks, sends, and deletes stickers
   assert.equal(fs.existsSync(resolveStickerFilePath(config, "stk_012")), false);
 });
 
+test("StickerService keeps archive stickers searchable but out of default picking", async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["开心", "小萝卜"],
+    desc: "归档里的开心小萝卜，只在翻大仓时出现。",
+    pack: "小萝卜",
+    status: "archive",
+    favorite: true,
+    source: "manifest",
+    sourceId: "demo-1",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  fs.copyFileSync(resolveStickerFilePath(config, "stk_001"), resolveStickerFilePath(config, "stk_012"));
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: null,
+  });
+
+  const defaultPick = await service.pick({ tag: "小萝卜", limit: 5 });
+  assert.equal(defaultPick.candidates.length, 0);
+
+  const archivePick = await service.pick({ tag: "小萝卜", status: "archive", limit: 5 });
+  assert.equal(archivePick.candidates[0].stickerId, "stk_012");
+  assert.equal(archivePick.candidates[0].pack, "小萝卜");
+  assert.equal(archivePick.candidates[0].favorite, true);
+
+  const listed = await service.list({ pack: "小萝卜", status: "archive", limit: 5 });
+  assert.equal(listed.stickers[0].sourceId, "demo-1");
+});
+
 test("ensureStickerCatalogFilesSync merges presets without overwriting custom ids", () => {
   const config = createTempStickerConfig();
   fs.mkdirSync(config.stickersDir, { recursive: true });

@@ -17,9 +17,13 @@ const MAX_PICK_LIMIT = 20;
 const MAX_STICKER_SAVE_BATCH_SIZE = 10;
 const MAX_STICKER_MUTATION_BATCH_SIZE = 50;
 const MIN_STICKER_DESC_CHARS = 16;
+const STICKER_STATUS_ACTIVE = "active";
+const STICKER_STATUS_ARCHIVE = "archive";
+const STICKER_STATUS_VALUES = [STICKER_STATUS_ACTIVE, STICKER_STATUS_ARCHIVE];
 const STICKER_TAG_GUIDANCE = "Reuse existing tags when they fit. Otherwise create short new tags; new tags are added to the tag list.";
 const STICKER_DESC_GUIDANCE = `Prefer descs of ${MIN_STICKER_DESC_CHARS} or more characters. If readable text exists, append it after the short scene description.`;
 const STICKER_DESC_FIELD_DESCRIPTION = `A concrete sticker description. ${STICKER_DESC_GUIDANCE}`;
+const STICKER_STATUS_FIELD_DESCRIPTION = "Optional sticker status. active is available for normal picking; archive stays searchable but is not picked by default.";
 
 class StickerService {
   constructor({ config, channelAdapter, sessionStore, channelFileService }) {
@@ -88,44 +92,63 @@ class StickerService {
     }
   }
 
-  async pick({ tag = "", limit = DEFAULT_PICK_LIMIT } = {}) {
+  async pick({ tag = "", limit = DEFAULT_PICK_LIMIT, pack = "", status = STICKER_STATUS_ACTIVE, includeArchive = false } = {}) {
     ensureStickerCatalogFilesSync(this.config);
     const normalizedTag = normalizeText(tag);
     if (!normalizedTag) {
       throw new Error("Sticker tag is required.");
     }
     const normalizedLimit = normalizePickLimit(limit);
+    const normalizedPack = normalizeText(pack);
+    const normalizedStatus = normalizeStickerStatus(status, STICKER_STATUS_ACTIVE);
     const index = loadStickerIndexSync(this.config);
     const entries = Object.entries(index)
       .filter(([stickerId, value]) => Array.isArray(value?.tags)
         && value.tags.includes(normalizedTag)
+        && (!normalizedPack || normalizeText(value?.pack) === normalizedPack)
+        && (includeArchive || normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) === normalizedStatus)
         && fs.existsSync(resolveStickerFilePath(this.config, stickerId)))
       .slice(-normalizedLimit)
       .reverse()
       .map(([stickerId, value]) => ({
         stickerId,
         desc: normalizeText(value?.desc),
+        tags: Array.isArray(value?.tags) ? value.tags : [],
+        pack: normalizeText(value?.pack),
+        status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
+        favorite: Boolean(value?.favorite),
       }));
 
     return {
       tag: normalizedTag,
+      pack: normalizedPack,
+      status: includeArchive ? "any" : normalizedStatus,
       candidates: entries,
     };
   }
 
-  async list({ tag = "", limit = MAX_PICK_LIMIT, includeMissing = false } = {}) {
+  async list({ tag = "", limit = MAX_PICK_LIMIT, includeMissing = false, pack = "", status = "" } = {}) {
     ensureStickerCatalogFilesSync(this.config);
     const normalizedTag = normalizeText(tag);
+    const normalizedPack = normalizeText(pack);
+    const normalizedStatus = normalizeOptionalStickerStatus(status);
     const normalizedLimit = normalizePickLimit(limit);
     const index = loadStickerIndexSync(this.config);
     const stickers = Object.entries(index)
       .filter(([, value]) => !normalizedTag || (Array.isArray(value?.tags) && value.tags.includes(normalizedTag)))
+      .filter(([, value]) => !normalizedPack || normalizeText(value?.pack) === normalizedPack)
+      .filter(([, value]) => !normalizedStatus || normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) === normalizedStatus)
       .map(([stickerId, value]) => {
         const filePath = resolveStickerFilePath(this.config, stickerId);
         return {
           stickerId,
           tags: Array.isArray(value?.tags) ? value.tags : [],
           desc: normalizeText(value?.desc),
+          pack: normalizeText(value?.pack),
+          status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
+          favorite: Boolean(value?.favorite),
+          source: normalizeText(value?.source),
+          sourceId: normalizeText(value?.sourceId),
           filePath,
           hasFile: fs.existsSync(filePath),
         };
@@ -136,6 +159,8 @@ class StickerService {
 
     return {
       tag: normalizedTag,
+      pack: normalizedPack,
+      status: normalizedStatus,
       count: stickers.length,
       stickers,
     };
@@ -215,9 +240,15 @@ class StickerService {
     }
     const tagCatalog = loadStickerTagsSync(this.config);
     for (const item of normalizedItems) {
+      const previous = index[item.stickerId] || {};
       index[item.stickerId] = {
         tags: item.tags,
         desc: item.desc,
+        pack: item.pack ?? normalizeText(previous.pack),
+        status: item.status ?? normalizeStickerStatus(previous.status, STICKER_STATUS_ACTIVE),
+        favorite: item.favorite ?? Boolean(previous.favorite),
+        source: item.source ?? normalizeText(previous.source),
+        sourceId: item.sourceId ?? normalizeText(previous.sourceId),
       };
       tagCatalog.splice(0, tagCatalog.length, ...mergeStickerTagCatalog(tagCatalog, item.tags));
     }
@@ -420,6 +451,11 @@ function normalizeStickerIndexPayload(value) {
         ? Array.from(new Set(entry.tags.map((item) => normalizeText(item)).filter(Boolean)))
         : [],
       desc: normalizeText(entry?.desc),
+      pack: normalizeText(entry?.pack),
+      status: normalizeStickerStatus(entry?.status, STICKER_STATUS_ACTIVE),
+      favorite: Boolean(entry?.favorite),
+      source: normalizeText(entry?.source),
+      sourceId: normalizeText(entry?.sourceId),
     };
   }
   return normalized;
@@ -454,6 +490,19 @@ function normalizeStickerDesc(desc) {
     throw new Error("Sticker description is required.");
   }
   return normalized;
+}
+
+function normalizeStickerStatus(status, fallback = STICKER_STATUS_ACTIVE) {
+  const normalized = normalizeText(status).toLowerCase();
+  if (STICKER_STATUS_VALUES.includes(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeOptionalStickerStatus(status) {
+  const normalized = normalizeText(status);
+  return normalized ? normalizeStickerStatus(normalized, STICKER_STATUS_ACTIVE) : "";
 }
 
 function normalizePickLimit(limit) {
@@ -557,6 +606,11 @@ function normalizeStickerSaveItems(items, config = {}) {
       filePath: resolveStickerInboxFilePath(config, item.filePath),
       tags: normalizeStickerTags(item.tags),
       desc: normalizeStickerDesc(item.desc),
+      pack: normalizeText(item.pack),
+      status: normalizeStickerStatus(item.status, STICKER_STATUS_ACTIVE),
+      favorite: Boolean(item.favorite),
+      source: normalizeText(item.source),
+      sourceId: normalizeText(item.sourceId),
     };
   });
 }
@@ -588,6 +642,11 @@ function normalizeStickerUpdateItems(items) {
       stickerId,
       tags: normalizeStickerTags(item.tags),
       desc: normalizeStickerDesc(item.desc),
+      pack: hasOwn(item, "pack") ? normalizeText(item.pack) : undefined,
+      status: hasOwn(item, "status") ? normalizeStickerStatus(item.status, STICKER_STATUS_ACTIVE) : undefined,
+      favorite: hasOwn(item, "favorite") ? Boolean(item.favorite) : undefined,
+      source: hasOwn(item, "source") ? normalizeText(item.source) : undefined,
+      sourceId: hasOwn(item, "sourceId") ? normalizeText(item.sourceId) : undefined,
     };
   });
 }
@@ -692,6 +751,11 @@ async function saveStickerEntry({
     index[stickerId] = {
       tags: item.tags,
       desc: item.desc,
+      pack: item.pack,
+      status: item.status,
+      favorite: item.favorite,
+      source: item.source,
+      sourceId: item.sourceId,
     };
     hashByStickerId.set(stickerId, normalizedHash);
     tagCatalog.splice(0, tagCatalog.length, ...mergeStickerTagCatalog(tagCatalog, item.tags));
@@ -703,6 +767,11 @@ async function saveStickerEntry({
         deduped: false,
         tags: item.tags,
         desc: item.desc,
+        pack: item.pack,
+        status: item.status,
+        favorite: item.favorite,
+        source: item.source,
+        sourceId: item.sourceId,
       },
       createdPath: stickerPath,
     };
@@ -740,6 +809,10 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function isUnderDirectory(filePath, parentDir) {
   const normalizedParentDir = path.resolve(parentDir);
   const normalizedFilePath = path.resolve(filePath);
@@ -762,6 +835,9 @@ module.exports = {
   STICKER_TAG_GUIDANCE,
   STICKER_DESC_GUIDANCE,
   STICKER_DESC_FIELD_DESCRIPTION,
+  STICKER_STATUS_ACTIVE,
+  STICKER_STATUS_ARCHIVE,
+  STICKER_STATUS_FIELD_DESCRIPTION,
   StickerService,
   allocateNextStickerId,
   buildStickerPaths,

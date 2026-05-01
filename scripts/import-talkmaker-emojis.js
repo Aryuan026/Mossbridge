@@ -17,25 +17,30 @@ const {
 
 const SERIES_TAG = "小萝卜";
 const DEFAULT_STATE_DIR = path.join(os.homedir(), ".asheriebridge");
+const DEFAULT_IMPORT_STATUS = "archive";
+const IMPORT_STATUS_VALUES = ["active", "archive"];
 
 async function main() {
   const args = process.argv.slice(2);
-  const metadataPath = readFlag(args, "--metadata");
+  const manifestPath = readFlag(args, "--manifest");
+  const metadataPath = readFlag(args, "--metadata") || readFlag(args, "--talkmaker-metadata");
   const imagesDir = readFlag(args, "--images");
   const stateDir = readFlag(args, "--state-dir") || process.env.ASHERIEBRIDGE_STATE_DIR || DEFAULT_STATE_DIR;
+  const pack = readFlag(args, "--pack") || (metadataPath ? SERIES_TAG : "");
+  const statusFlag = readFlag(args, "--status");
+  const status = statusFlag ? normalizeImportStatus(statusFlag) : "";
+  const source = readFlag(args, "--source") || (metadataPath ? "talkmaker" : "manifest");
   const dryRun = hasFlag(args, "--dry-run");
 
-  if (!metadataPath || !imagesDir) {
-    throw new Error("Usage: import-talkmaker-emojis.js --metadata <emojis_metadata.json> --images <images_dir> [--state-dir <dir>] [--dry-run]");
+  if (!manifestPath && (!metadataPath || !imagesDir)) {
+    throw new Error("Usage: import-talkmaker-emojis.js (--manifest <stickers.json> [--images <dir>] | --metadata <emojis_metadata.json> --images <dir>) [--pack <name>] [--status active|archive] [--state-dir <dir>] [--dry-run]");
   }
 
   const config = buildConfig({ stateDir });
-  const entries = loadTalkmakerMetadata({ metadataPath, imagesDir });
-  const planned = entries.map((entry) => ({
-    ...entry,
-    tags: tagsForMeaning(entry.meaning),
-    desc: buildStickerDesc(entry),
-  }));
+  const entries = manifestPath
+    ? loadStickerManifest({ manifestPath, imagesDir, defaultPack: pack, defaultStatus: status, defaultSource: source })
+    : loadTalkmakerMetadata({ metadataPath, imagesDir, defaultPack: pack, defaultStatus: status || DEFAULT_IMPORT_STATUS, defaultSource: source });
+  const planned = entries.map((entry) => planStickerEntry(entry));
 
   if (dryRun) {
     printPlan({ planned, stateDir });
@@ -46,7 +51,7 @@ async function main() {
   console.log(`Imported stickers: created=${result.createdCount}, deduped=${result.dedupedCount}, total=${result.results.length}`);
   for (const item of result.results) {
     const marker = item.created ? "created" : "deduped";
-    console.log(`${marker} ${item.stickerId} ${item.sourceId} tags=${item.tags.join(",")} desc=${item.desc}`);
+    console.log(`${marker} ${item.stickerId} ${item.sourceId} pack=${item.pack || "(none)"} status=${item.status || "(existing)"} tags=${item.tags.join(",")} desc=${item.desc}`);
   }
 }
 
@@ -65,7 +70,13 @@ function buildConfig({ stateDir }) {
   };
 }
 
-function loadTalkmakerMetadata({ metadataPath, imagesDir }) {
+function loadTalkmakerMetadata({
+  metadataPath,
+  imagesDir,
+  defaultPack = SERIES_TAG,
+  defaultStatus = DEFAULT_IMPORT_STATUS,
+  defaultSource = "talkmaker",
+}) {
   const resolvedMetadataPath = path.resolve(metadataPath);
   const resolvedImagesDir = path.resolve(imagesDir);
   const parsed = JSON.parse(fs.readFileSync(resolvedMetadataPath, "utf8"));
@@ -73,11 +84,18 @@ function loadTalkmakerMetadata({ metadataPath, imagesDir }) {
     throw new Error("Talkmaker metadata must be a JSON array.");
   }
   return parsed
-    .map((item, index) => normalizeTalkmakerEntry({ item, index, imagesDir: resolvedImagesDir }))
+    .map((item, index) => normalizeTalkmakerEntry({
+      item,
+      index,
+      imagesDir: resolvedImagesDir,
+      defaultPack,
+      defaultStatus,
+      defaultSource,
+    }))
     .sort((left, right) => left.sourceId.localeCompare(right.sourceId, "en", { numeric: true }));
 }
 
-function normalizeTalkmakerEntry({ item, index, imagesDir }) {
+function normalizeTalkmakerEntry({ item, index, imagesDir, defaultPack = SERIES_TAG, defaultStatus = DEFAULT_IMPORT_STATUS, defaultSource = "talkmaker" }) {
   if (!item || typeof item !== "object" || Array.isArray(item)) {
     throw new Error(`Metadata item must be an object: ${index}`);
   }
@@ -94,6 +112,10 @@ function normalizeTalkmakerEntry({ item, index, imagesDir }) {
   }
   return {
     sourceId,
+    source: defaultSource,
+    pack: defaultPack,
+    status: normalizeImportStatus(defaultStatus),
+    favorite: false,
     meaning,
     rawContent,
     fileName,
@@ -101,7 +123,115 @@ function normalizeTalkmakerEntry({ item, index, imagesDir }) {
   };
 }
 
-function tagsForMeaning(meaning) {
+function loadStickerManifest({ manifestPath, imagesDir = "", defaultPack = "", defaultStatus = "", defaultSource = "manifest" }) {
+  const resolvedManifestPath = path.resolve(manifestPath);
+  const manifestDir = path.dirname(resolvedManifestPath);
+  const parsed = loadJsonOrJsonl(resolvedManifestPath);
+  const manifestDefaults = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed
+    : {};
+  const items = Array.isArray(parsed) ? parsed : parsed?.items;
+  if (!Array.isArray(items)) {
+    throw new Error("Sticker manifest must be a JSON array, JSONL file, or an object with an items array.");
+  }
+  const resolvedImagesDir = imagesDir ? path.resolve(imagesDir) : manifestDir;
+  const resolvedPack = normalizeText(defaultPack) || normalizeText(manifestDefaults.pack);
+  const resolvedStatus = normalizeImportStatus(defaultStatus || manifestDefaults.status || DEFAULT_IMPORT_STATUS);
+  const resolvedSource = normalizeText(defaultSource) || normalizeText(manifestDefaults.source) || "manifest";
+  return items
+    .map((item, index) => normalizeManifestEntry({
+      item,
+      index,
+      imagesDir: resolvedImagesDir,
+      manifestDir,
+      defaultPack: resolvedPack,
+      defaultStatus: resolvedStatus,
+      defaultSource: resolvedSource,
+    }))
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId, "en", { numeric: true }));
+}
+
+function normalizeManifestEntry({
+  item,
+  index,
+  imagesDir,
+  manifestDir,
+  defaultPack = "",
+  defaultStatus = DEFAULT_IMPORT_STATUS,
+  defaultSource = "manifest",
+}) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    throw new Error(`Manifest item must be an object: ${index}`);
+  }
+  const sourceId = normalizeText(item.sourceId) || normalizeText(item.id) || `manifest-${String(index + 1).padStart(4, "0")}`;
+  const meaning = normalizeText(item.meaning) || normalizeText(item.title);
+  const rawContent = normalizeText(item.rawContent) || normalizeText(item.raw) || normalizeText(item.description);
+  const fileName = normalizeText(item.fileName) || normalizeText(item.filename);
+  const filePath = resolveManifestFilePath({
+    filePath: normalizeText(item.filePath) || normalizeText(item.path),
+    fileName,
+    imagesDir,
+    manifestDir,
+    sourceId,
+  });
+  return {
+    sourceId,
+    source: normalizeText(item.source) || defaultSource,
+    pack: normalizeText(item.pack) || defaultPack,
+    status: normalizeImportStatus(item.status || defaultStatus),
+    favorite: Boolean(item.favorite),
+    meaning,
+    rawContent,
+    fileName: fileName || path.basename(filePath),
+    filePath,
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    desc: normalizeText(item.desc),
+  };
+}
+
+function resolveManifestFilePath({ filePath = "", fileName = "", imagesDir = "", manifestDir = "", sourceId = "" }) {
+  const candidate = filePath
+    ? (path.isAbsolute(filePath) ? filePath : path.resolve(manifestDir, filePath))
+    : path.resolve(imagesDir || manifestDir, fileName);
+  if (!fileName && !filePath) {
+    throw new Error(`Manifest item is missing filePath or fileName: ${sourceId}`);
+  }
+  if (!fs.existsSync(candidate)) {
+    throw new Error(`Image file does not exist for ${sourceId}: ${candidate}`);
+  }
+  return candidate;
+}
+
+function loadJsonOrJsonl(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  if (path.extname(filePath).toLowerCase() === ".jsonl") {
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
+  return JSON.parse(raw);
+}
+
+function planStickerEntry(entry) {
+  const pack = normalizeText(entry.pack);
+  const tags = Array.isArray(entry.tags) && entry.tags.length
+    ? normalizeImportTags(entry.tags, pack)
+    : tagsForMeaning(entry.meaning, pack);
+  return {
+    ...entry,
+    pack,
+    status: normalizeImportStatus(entry.status || DEFAULT_IMPORT_STATUS),
+    source: normalizeText(entry.source),
+    sourceId: normalizeText(entry.sourceId),
+    favorite: Boolean(entry.favorite),
+    tags,
+    desc: normalizeText(entry.desc) || buildStickerDesc(entry),
+  };
+}
+
+function tagsForMeaning(meaning, pack = SERIES_TAG) {
   const normalized = normalizeText(meaning);
   const mapping = [
     [/挑衅|得意/, ["得意", "挑衅"]],
@@ -146,18 +276,20 @@ function tagsForMeaning(meaning) {
   ];
   const matched = mapping.find(([pattern]) => pattern.test(normalized));
   const semanticTags = matched ? matched[1] : [normalized || "可爱"];
-  return unique([SERIES_TAG, ...semanticTags]).slice(0, 3);
+  return unique([pack, ...semanticTags]).slice(0, 3);
 }
 
 function buildStickerDesc(entry) {
+  const pack = normalizeText(entry.pack) || SERIES_TAG;
+  const meaning = normalizeText(entry.meaning);
   const raw = compactRawContent(entry.rawContent);
-  return `${SERIES_TAG}${entry.meaning}：${raw}`;
+  return `${pack}${meaning ? meaning : "表情"}：${raw}`;
 }
 
 function compactRawContent(rawContent) {
   const normalized = normalizeText(rawContent).replace(/\s+/g, " ");
   if (!normalized) {
-    return "小萝卜系列表情包。";
+    return "表情包。";
   }
   const withoutFiller = normalized
     .replace(/生气雪情绪/g, "生气情绪")
@@ -212,11 +344,14 @@ async function importOneSticker({ config, index, hashByStickerId, item }) {
     if (duplicateStickerId) {
       return {
         sourceId: item.sourceId,
+        source: item.source,
         stickerId: duplicateStickerId,
         created: false,
         deduped: true,
         tags: index[duplicateStickerId]?.tags || [],
         desc: index[duplicateStickerId]?.desc || "",
+        pack: index[duplicateStickerId]?.pack || "",
+        status: index[duplicateStickerId]?.status || "",
       };
     }
     const stickerId = allocateNextStickerId(index);
@@ -226,6 +361,11 @@ async function importOneSticker({ config, index, hashByStickerId, item }) {
     index[stickerId] = {
       tags: item.tags,
       desc: item.desc,
+      pack: item.pack,
+      status: item.status,
+      favorite: item.favorite,
+      source: item.source,
+      sourceId: item.sourceId,
     };
     hashByStickerId.set(stickerId, normalizedHash);
     return {
@@ -235,6 +375,10 @@ async function importOneSticker({ config, index, hashByStickerId, item }) {
       deduped: false,
       tags: item.tags,
       desc: item.desc,
+      pack: item.pack,
+      status: item.status,
+      favorite: item.favorite,
+      source: item.source,
     };
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -276,10 +420,19 @@ async function writeJsonFile(filePath, value) {
 }
 
 function printPlan({ planned, stateDir }) {
-  console.log(`Talkmaker sticker import dry run: entries=${planned.length}, stateDir=${stateDir}`);
+  console.log(`Sticker import dry run: entries=${planned.length}, stateDir=${stateDir}`);
   for (const item of planned) {
-    console.log(`${item.sourceId} tags=${item.tags.join(",")} desc=${item.desc}`);
+    console.log(`${item.sourceId} pack=${item.pack || "(none)"} status=${item.status} tags=${item.tags.join(",")} desc=${item.desc}`);
   }
+}
+
+function normalizeImportTags(tags, pack = "") {
+  return unique([pack, ...tags]).slice(0, 3);
+}
+
+function normalizeImportStatus(status) {
+  const normalized = normalizeText(status).toLowerCase();
+  return IMPORT_STATUS_VALUES.includes(normalized) ? normalized : DEFAULT_IMPORT_STATUS;
 }
 
 function unique(values) {
@@ -316,6 +469,9 @@ if (require.main === module) {
 module.exports = {
   buildStickerDesc,
   compactRawContent,
+  loadStickerManifest,
   loadTalkmakerMetadata,
+  normalizeImportStatus,
+  planStickerEntry,
   tagsForMeaning,
 };

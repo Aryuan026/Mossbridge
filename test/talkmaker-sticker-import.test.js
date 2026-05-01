@@ -7,7 +7,9 @@ const test = require("node:test");
 const {
   buildStickerDesc,
   compactRawContent,
+  loadStickerManifest,
   loadTalkmakerMetadata,
+  planStickerEntry,
   tagsForMeaning,
 } = require("../scripts/import-talkmaker-emojis");
 
@@ -45,4 +47,33 @@ test("talkmaker import loads metadata and sorts by source id", () => {
   const entries = loadTalkmakerMetadata({ metadataPath, imagesDir });
   assert.deepEqual(entries.map((item) => item.sourceId), ["emoji-id-0001", "emoji-id-0002"]);
   assert.deepEqual(entries.map((item) => item.meaning), ["生气", "开心跳跃"]);
+  assert.equal(entries[0].status, "archive");
+});
+
+test("sticker import accepts generic manifests with pack and status metadata", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sticker-manifest-test-"));
+  const imagesDir = path.join(root, "images");
+  fs.mkdirSync(imagesDir, { recursive: true });
+  fs.writeFileSync(path.join(imagesDir, "ok.gif"), "gif-ok");
+  const manifestPath = path.join(root, "stickers.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    pack: "测试包",
+    status: "active",
+    items: [{
+      id: "ok-1",
+      fileName: "ok.gif",
+      tags: ["OK", "赞同"],
+      desc: "测试包 OK 小人，适合轻快确认。",
+      favorite: true,
+    }],
+  }));
+
+  const entries = loadStickerManifest({ manifestPath, imagesDir, defaultSource: "unit-test" });
+  const planned = planStickerEntry(entries[0]);
+  assert.equal(planned.sourceId, "ok-1");
+  assert.equal(planned.source, "unit-test");
+  assert.equal(planned.pack, "测试包");
+  assert.equal(planned.status, "active");
+  assert.equal(planned.favorite, true);
+  assert.deepEqual(planned.tags, ["测试包", "OK", "赞同"]);
 });

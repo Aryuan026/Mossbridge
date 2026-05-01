@@ -1,6 +1,7 @@
 const { WhereaboutsToolHost } = require("whereabouts-mcp");
 const {
   STICKER_DESC_FIELD_DESCRIPTION,
+  STICKER_STATUS_FIELD_DESCRIPTION,
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
 
@@ -240,6 +241,9 @@ const PROJECT_TOOLS = [
       properties: {
         tag: { type: "string", description: `One sticker tag. ${STICKER_TAG_GUIDANCE}` },
         limit: { type: "integer", description: "Optional number of candidates, default 5, max 20." },
+        pack: { type: "string", description: "Optional sticker pack filter, for example 小萝卜." },
+        status: { type: "string", description: `${STICKER_STATUS_FIELD_DESCRIPTION} Defaults to active.` },
+        includeArchive: { type: "boolean", description: "When true, archived stickers can be considered too." },
       },
       additionalProperties: false,
     },
@@ -260,6 +264,8 @@ const PROJECT_TOOLS = [
       type: "object",
       properties: {
         tag: { type: "string", description: "Optional sticker tag filter." },
+        pack: { type: "string", description: "Optional sticker pack filter." },
+        status: { type: "string", description: "Optional active/archive filter." },
         limit: { type: "integer", description: "Optional number of stickers, default 20, max 20." },
         includeMissing: { type: "boolean", description: "Include catalog entries whose gif file is missing." },
       },
@@ -318,6 +324,11 @@ const PROJECT_TOOLS = [
                 items: { type: "string" },
               },
               desc: { type: "string", description: STICKER_DESC_FIELD_DESCRIPTION },
+              pack: { type: "string", description: "Optional sticker pack name." },
+              status: { type: "string", description: STICKER_STATUS_FIELD_DESCRIPTION },
+              favorite: { type: "boolean", description: "Optional marker for core frequently used stickers." },
+              source: { type: "string", description: "Optional import/source channel name." },
+              sourceId: { type: "string", description: "Optional source id from the upstream catalog." },
             },
             additionalProperties: false,
           },
@@ -356,6 +367,11 @@ const PROJECT_TOOLS = [
                 items: { type: "string" },
               },
               desc: { type: "string", description: STICKER_DESC_FIELD_DESCRIPTION },
+              pack: { type: "string", description: "Optional sticker pack name." },
+              status: { type: "string", description: STICKER_STATUS_FIELD_DESCRIPTION },
+              favorite: { type: "boolean", description: "Optional marker for core frequently used stickers." },
+              source: { type: "string", description: "Optional import/source channel name." },
+              sourceId: { type: "string", description: "Optional source id from the upstream catalog." },
             },
             additionalProperties: false,
           },
