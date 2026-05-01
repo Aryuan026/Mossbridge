@@ -175,6 +175,7 @@ Before making this repository public, do a final naming and privacy pass:
 - [docs/commands.md](./docs/commands.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
+- [docs/public-release-readiness.md](./docs/public-release-readiness.md)
 
 Some docs still preserve Cyberboss or AsherieBridge wording because the internal rename has not been done yet.
 

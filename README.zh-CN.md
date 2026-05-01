@@ -145,6 +145,12 @@ Mossbridge 的目标是让代码和私人数据可分割。
 - 确认空记忆仓也能跑起来
 - 写清楚哪些功能内置，哪些需要用户自己的记忆仓提供
 
+## 文档
+
+- [docs/memory-storage.md](./docs/memory-storage.md)
+- [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
+- [docs/public-release-readiness.md](./docs/public-release-readiness.md)
+
 ## License
 
 本项目保留上游 AGPL 授权脉络，使用 `AGPL-3.0-only`。
