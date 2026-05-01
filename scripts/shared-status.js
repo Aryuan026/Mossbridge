@@ -8,12 +8,12 @@ const {
 } = require("./shared-common");
 
 async function main() {
-  const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
+  const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
   const isCodex = runtime === "codex";
   console.log(`runtime=${runtime}`);
   console.log(`listen=${listenUrl}`);
   printPidState("shared_app_server_pid", appServerPidFile);
-  printPidState("shared_cyberboss_pid", bridgePidFile);
+  printPidState("shared_asheriebridge_pid", bridgePidFile);
   if (!isCodex) {
     console.log(`readyz=skipped`);
   } else {

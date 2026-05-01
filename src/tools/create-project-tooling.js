@@ -3,7 +3,10 @@ const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { ChannelFileService } = require("../services/channel-file-service");
 const { DiaryService } = require("../services/diary-service");
+const { AsherieMemoryService } = require("../services/asherie-memory-service");
 const { ReminderService } = require("../services/reminder-service");
+const { createServiceDomains } = require("../services/service-domains");
+const { StickerService } = require("../services/sticker-service");
 const { SystemMessageService } = require("../services/system-message-service");
 const { TimelineService } = require("../services/timeline-service");
 const { RuntimeContextStore } = require("./runtime-context-store");
@@ -20,11 +23,19 @@ function createProjectTooling(config, options = {}) {
   const runtimeContextStore = options.runtimeContextStore || new RuntimeContextStore({
     filePath: config.projectToolContextFile,
   });
+  const channelFileService = new ChannelFileService({ config, channelAdapter, sessionStore });
   const services = {
+    asherieMemory: new AsherieMemoryService({ config }),
     diary: new DiaryService({ config }),
     reminder: new ReminderService({ config, sessionStore }),
     system: new SystemMessageService({ config, sessionStore }),
-    channelFile: new ChannelFileService({ config, channelAdapter, sessionStore }),
+    channelFile: channelFileService,
+    sticker: new StickerService({
+      config,
+      channelAdapter,
+      sessionStore,
+      channelFileService,
+    }),
     timeline: new TimelineService({ config, timelineIntegration, sessionStore }),
     whereabouts: new WhereaboutsService({
       config: {
@@ -44,12 +55,14 @@ function createProjectTooling(config, options = {}) {
       },
     }),
   };
+  const domains = createServiceDomains(services);
   const toolHost = new ProjectToolHost({
     services,
     runtimeContextStore,
   });
   return {
     services,
+    domains,
     toolHost,
     runtimeContextStore,
   };

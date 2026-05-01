@@ -14,7 +14,7 @@ class SystemMessageService {
     this.queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
   }
 
-  queueMessage({ text = "", userId = "", workspaceRoot = "" } = {}, context = {}) {
+  queueMessage({ text = "", userId = "", workspaceRoot = "", kind = "", priority = "", title = "", metadata = null } = {}, context = {}) {
     const normalizedText = normalizeText(text);
     if (!normalizedText) {
       throw new Error("system send requires text");
@@ -65,6 +65,10 @@ class SystemMessageService {
       senderId,
       workspaceRoot: resolvedWorkspaceRoot,
       text: normalizedText,
+      kind: normalizeText(kind),
+      priority: normalizeText(priority),
+      title: normalizeText(title),
+      metadata: metadata && typeof metadata === "object" ? metadata : {},
       createdAt: new Date().toISOString(),
     });
   }

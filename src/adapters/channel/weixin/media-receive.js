@@ -1,28 +1,41 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
+const { resolveWorkspaceOfficePaths } = require("../../../core/workspace-office-layout");
 
-const DEFAULT_INBOX_DIR = "inbox";
 const MAX_FILE_NAME_LENGTH = 120;
+const MAX_AUTO_NOTE_SUMMARY_CHARS = 700;
+const MAX_AUTO_NOTE_DETAILS_CHARS = 4000;
 
 async function persistIncomingWeixinAttachments({
   attachments,
+  config = {},
+  workspaceRoot = "",
   stateDir,
   cdnBaseUrl,
   messageId = "",
   receivedAt = "",
+  messageText = "",
 }) {
   const saved = [];
   const failed = [];
+  const officePaths = resolveWorkspaceOfficePaths({
+    workspaceRoot,
+    config: {
+      ...config,
+      stateDir,
+    },
+  });
 
   for (const attachment of Array.isArray(attachments) ? attachments : []) {
     try {
       const persisted = await persistSingleAttachment({
         attachment,
-        stateDir,
+        officePaths,
         cdnBaseUrl,
         messageId,
         receivedAt,
+        messageText,
       });
       saved.push(persisted);
     } catch (error) {
@@ -37,7 +50,7 @@ async function persistIncomingWeixinAttachments({
   return { saved, failed };
 }
 
-async function persistSingleAttachment({ attachment, stateDir, cdnBaseUrl, messageId, receivedAt }) {
+async function persistSingleAttachment({ attachment, officePaths, cdnBaseUrl, messageId, receivedAt, messageText }) {
   const download = await downloadAttachmentPayload(attachment, cdnBaseUrl);
   const plaintext = decodeAttachmentPayload(download.bytes, attachment, download.contentType);
   const fileName = buildTargetFileName({
@@ -46,9 +59,36 @@ async function persistSingleAttachment({ attachment, stateDir, cdnBaseUrl, messa
     contentType: download.contentType,
     messageId,
   });
-  const targetDir = buildInboxDirectory(stateDir, receivedAt);
+  const dateFolder = normalizeDateFolder(receivedAt);
+  const targetDir = buildInboxDirectory(officePaths.inboxRoot, dateFolder);
   const absolutePath = await writeUniqueFile(targetDir, fileName, plaintext);
-  const relativePath = path.relative(stateDir, absolutePath).replace(/\\/g, "/");
+  const noteAbsolutePath = await ensureAttachmentNote({
+    officePaths,
+    dateFolder,
+    absolutePath,
+    fileName: path.basename(absolutePath),
+    attachment,
+    contentType: download.contentType,
+    receivedAt,
+    messageText,
+  });
+  await appendAttachmentJournal({
+    officePaths,
+    absolutePath,
+    noteAbsolutePath,
+    attachment,
+    contentType: download.contentType,
+    receivedAt,
+    messageId,
+    sizeBytes: plaintext.length,
+    messageText,
+  });
+  const relativePath = officePaths.workspaceRoot
+    ? path.relative(officePaths.workspaceRoot, absolutePath).replace(/\\/g, "/")
+    : path.basename(absolutePath);
+  const noteRelativePath = officePaths.workspaceRoot && noteAbsolutePath
+    ? path.relative(officePaths.workspaceRoot, noteAbsolutePath).replace(/\\/g, "/")
+    : "";
 
   return {
     kind: attachment.kind || "file",
@@ -62,13 +102,14 @@ async function persistSingleAttachment({ attachment, stateDir, cdnBaseUrl, messa
     fileName: path.basename(absolutePath),
     absolutePath,
     relativePath,
+    noteAbsolutePath,
+    noteRelativePath,
     sizeBytes: plaintext.length,
   };
 }
 
-function buildInboxDirectory(stateDir, receivedAt) {
-  const day = normalizeDateFolder(receivedAt);
-  return path.join(stateDir, DEFAULT_INBOX_DIR, day);
+function buildInboxDirectory(inboxRoot, dateFolder) {
+  return path.join(inboxRoot, dateFolder);
 }
 
 function normalizeDateFolder(receivedAt) {
@@ -380,6 +421,230 @@ async function writeUniqueFile(targetDir, fileName, plaintext) {
   throw new Error("unable to allocate a unique attachment file name");
 }
 
+async function ensureAttachmentNote({
+  officePaths,
+  dateFolder,
+  absolutePath,
+  fileName,
+  attachment,
+  contentType,
+  receivedAt,
+  messageText,
+}) {
+  const notesRoot = normalizeText(officePaths?.notesRoot);
+  if (!notesRoot) {
+    return "";
+  }
+
+  const noteDir = path.join(notesRoot, dateFolder);
+  await fs.mkdir(noteDir, { recursive: true });
+  const notePath = path.join(noteDir, `${path.parse(fileName).name}.md`);
+  const noteBody = buildAttachmentNoteTemplate({
+    absolutePath,
+    fileName,
+    notePath,
+    attachment,
+    contentType,
+    receivedAt,
+    messageText,
+    workspaceRoot: officePaths.workspaceRoot,
+  });
+
+  try {
+    await fs.writeFile(notePath, noteBody, { flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw error;
+    }
+  }
+
+  return notePath;
+}
+
+async function appendAttachmentJournal({
+  officePaths,
+  absolutePath,
+  noteAbsolutePath,
+  attachment,
+  contentType,
+  receivedAt,
+  messageId,
+  sizeBytes,
+  messageText,
+}) {
+  const journalFile = normalizeText(officePaths?.journalFile);
+  if (!journalFile) {
+    return;
+  }
+
+  const workspaceRoot = normalizeText(officePaths?.workspaceRoot);
+  await fs.mkdir(path.dirname(journalFile), { recursive: true });
+  const payload = {
+    recorded_at: new Date().toISOString(),
+    received_at: normalizeText(receivedAt),
+    message_id: normalizeText(messageId),
+    kind: normalizeText(attachment?.kind) || "file",
+    source_file_name: normalizeText(attachment?.fileName),
+    content_type: normalizeContentType(contentType),
+    saved_file: absolutePath,
+    saved_file_relative: workspaceRoot ? path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/") : "",
+    note_file: normalizeText(noteAbsolutePath),
+    note_file_relative: workspaceRoot && noteAbsolutePath
+      ? path.relative(workspaceRoot, noteAbsolutePath).replace(/\\/g, "/")
+      : "",
+    size_bytes: Number(sizeBytes) || 0,
+    user_text: normalizeText(messageText),
+  };
+  await fs.appendFile(journalFile, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
+async function finalizeAttachmentNotes({
+  attachments,
+  assistantTextFinal = "",
+  writebackResult = null,
+  completedAt = "",
+} = {}) {
+  const explanation = normalizeText(assistantTextFinal);
+  if (!explanation) {
+    return { updated: 0, skipped: 0 };
+  }
+
+  let updated = 0;
+  let skipped = 0;
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    const notePath = normalizeText(attachment?.noteAbsolutePath);
+    if (!notePath) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const changed = await finalizeSingleAttachmentNote({
+        notePath,
+        attachment,
+        explanation,
+        writebackResult,
+        completedAt,
+      });
+      if (changed) {
+        updated += 1;
+      } else {
+        skipped += 1;
+      }
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { updated, skipped };
+}
+
+async function finalizeSingleAttachmentNote({
+  notePath,
+  attachment,
+  explanation,
+  writebackResult,
+  completedAt,
+}) {
+  let existing = "";
+  try {
+    existing = await fs.readFile(notePath, "utf8");
+  } catch {
+    return false;
+  }
+  const recordId = normalizeText(
+    writebackResult?.appended_record?.record_id
+    || writebackResult?.appendedRecord?.record_id
+    || writebackResult?.record_id
+  );
+  const recordPath = normalizeText(
+    writebackResult?.appended_record?.path
+    || writebackResult?.appendedRecord?.path
+    || writebackResult?.path
+  );
+  const completed = normalizeText(completedAt) || new Date().toISOString();
+  const savedFile = normalizeText(attachment?.relativePath || attachment?.absolutePath || attachment?.fileName);
+  const shortSummary = firstParagraph(explanation).slice(0, MAX_AUTO_NOTE_SUMMARY_CHARS);
+  const details = truncateText(explanation, MAX_AUTO_NOTE_DETAILS_CHARS);
+  const sourceLines = [
+    `auto_captured_at: ${completed}`,
+    recordId ? `conversation_cache_record: ${recordId}` : "",
+    recordPath ? `conversation_cache_path: ${recordPath}` : "",
+    savedFile ? `saved_file_ref: ${savedFile}` : "",
+  ].filter(Boolean);
+
+  let next = existing;
+  next = replacePendingSection(next, "Summary", [
+    "Auto-captured from the assistant reply in the same attachment turn.",
+    "",
+    shortSummary,
+  ].join("\n").trim());
+  next = replacePendingSection(next, "Why It May Matter", [
+    "This attachment was referenced by a normal WeChat turn and written back into the shared conversation basin.",
+    "The text below preserves the front-stage interpretation so the file is not a silent blob if the raw image is unavailable later.",
+    "",
+    sourceLines.join("\n"),
+  ].join("\n").trim());
+  next = replacePendingSection(next, "Visible Text / Details", details);
+  next = replacePendingSection(next, "Follow-up", [
+    "If this attachment becomes long-term evidence, replace or refine this auto-captured note with a tighter human/agent-verified description after inspecting the raw file.",
+  ].join("\n"));
+
+  if (next === existing) {
+    return false;
+  }
+  await fs.writeFile(notePath, next, "utf8");
+  return true;
+}
+
+function buildAttachmentNoteTemplate({
+  absolutePath,
+  fileName,
+  notePath,
+  attachment,
+  contentType,
+  receivedAt,
+  messageText,
+  workspaceRoot,
+}) {
+  const savedRelative = workspaceRoot
+    ? path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/")
+    : fileName;
+  const noteRelative = workspaceRoot
+    ? path.relative(workspaceRoot, notePath).replace(/\\/g, "/")
+    : path.basename(notePath);
+  const parts = [
+    "# Attachment Note",
+    "",
+    `- received_at: ${normalizeText(receivedAt) || new Date().toISOString()}`,
+    `- kind: ${normalizeText(attachment?.kind) || "file"}`,
+    `- content_type: ${normalizeContentType(contentType) || "unknown"}`,
+    `- original_name: ${normalizeText(attachment?.fileName) || path.basename(absolutePath)}`,
+    `- saved_file: ${savedRelative}`,
+    `- note_file: ${noteRelative}`,
+  ];
+
+  const normalizedMessageText = normalizeText(messageText);
+  if (normalizedMessageText) {
+    parts.push(`- message_text: ${normalizedMessageText}`);
+  }
+
+  parts.push(
+    "",
+    "## Summary",
+    "<pending>",
+    "",
+    "## Why It May Matter",
+    "<pending>",
+    "",
+    "## Visible Text / Details",
+    "<pending>",
+    "",
+    "## Follow-up",
+    "<pending>",
+    "",
+  );
+  return parts.join("\n");
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -388,6 +653,39 @@ function normalizeContentType(value) {
   return typeof value === "string" ? value.split(";")[0].trim().toLowerCase() : "";
 }
 
+function replacePendingSection(markdown, title, replacement) {
+  const safeReplacement = normalizeText(replacement);
+  if (!safeReplacement) {
+    return markdown;
+  }
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(## ${escapedTitle}\\n)([\\s\\S]*?)(?=\\n## |\\n?$)`, "m");
+  const match = markdown.match(pattern);
+  if (!match) {
+    return markdown;
+  }
+  const body = normalizeText(match[2]);
+  if (body && body !== "<pending>") {
+    return markdown;
+  }
+  return markdown.replace(pattern, `$1${safeReplacement}\n`);
+}
+
+function firstParagraph(value) {
+  const paragraphs = normalizeText(value)
+    .split(/\n{2,}/)
+    .map((part) => normalizeText(part.replace(/^#+\s*/gm, "").replace(/\*\*/g, "")))
+    .filter(Boolean);
+  return paragraphs[0] || normalizeText(value);
+}
+
+function truncateText(value, maxChars) {
+  const text = normalizeText(value);
+  const limit = Math.max(1, Number(maxChars) || 1);
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
 module.exports = {
+  finalizeAttachmentNotes,
   persistIncomingWeixinAttachments,
 };

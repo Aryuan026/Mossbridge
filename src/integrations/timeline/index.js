@@ -231,7 +231,7 @@ function normalizeText(value) {
 
 function resolveTimelineChromePath() {
   const configured = normalizeText(process.env.TIMELINE_FOR_AGENT_CHROME_PATH)
-    || normalizeText(process.env.CYBERBOSS_SCREENSHOT_CHROME_PATH);
+    || normalizeText(process.env.ASHERIEBRIDGE_SCREENSHOT_CHROME_PATH);
   if (configured) {
     return configured;
   }

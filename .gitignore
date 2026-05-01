@@ -7,3 +7,18 @@ node_modules/
 npm-debug.log*
 third_party/
 firmware/
+
+# Runtime state and personal data. Keep code portable; keep memory/data local.
+/.asheriebridge/
+/asherie_gateway/
+/sync-buffers/
+/accounts/
+/logs/
+/inbox/
+/stickers/
+/diary/
+/wechat/inbox/
+/context/attachment-notes/
+/context/attachment-journal.jsonl
+*.pid
+*.log

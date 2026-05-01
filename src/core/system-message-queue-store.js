@@ -85,6 +85,10 @@ function normalizeSystemMessage(message) {
   const workspaceRoot = normalizeText(message.workspaceRoot);
   const text = normalizeText(message.text);
   const createdAt = normalizeIsoTime(message.createdAt);
+  const kind = normalizeText(message.kind) || "generic";
+  const priority = normalizeText(message.priority) || "normal";
+  const title = normalizeText(message.title);
+  const metadata = normalizeMetadata(message.metadata);
 
   if (!id || !accountId || !senderId || !workspaceRoot || !text) {
     return null;
@@ -96,8 +100,23 @@ function normalizeSystemMessage(message) {
     senderId,
     workspaceRoot,
     text,
+    kind,
+    priority,
+    title,
+    metadata,
     createdAt: createdAt || new Date().toISOString(),
   };
+}
+
+function normalizeMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return {};
+  }
 }
 
 function normalizeIsoTime(value) {

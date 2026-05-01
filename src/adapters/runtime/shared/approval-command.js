@@ -115,16 +115,23 @@ function canonicalizeCommandTokens(tokens) {
   if (executable === "node" || executable === "node.exe") {
     const binPath = normalizeString(normalized[1]);
     const binBase = baseName(binPath);
-    if ((binPath === "./bin/cyberboss.js" || /\/bin\/cyberboss\.js$/u.test(binPath)) && normalized.length >= 4) {
-      return ["cyberboss", normalizeString(normalized[2]), normalizeString(normalized[3])].filter(Boolean);
+    if (
+      (binPath === "./bin/asheriebridge.js"
+        || /\/bin\/asheriebridge\.js$/u.test(binPath))
+      && normalized.length >= 4
+    ) {
+      return ["asheriebridge", normalizeString(normalized[2]), normalizeString(normalized[3])].filter(Boolean);
     }
     if (binBase) {
       return [executable, binBase];
     }
   }
 
-  if (executable === "cyberboss" || executable === "cyberboss.js") {
-    return ["cyberboss", normalizeString(normalized[1]), normalizeString(normalized[2])].filter(Boolean);
+  if (
+    executable === "asheriebridge"
+      || executable === "asheriebridge.js"
+  ) {
+    return ["asheriebridge", normalizeString(normalized[1]), normalizeString(normalized[2])].filter(Boolean);
   }
 
   return normalized;

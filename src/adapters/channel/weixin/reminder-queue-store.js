@@ -71,6 +71,26 @@ class ReminderQueueStore {
     const first = this.state.reminders[0];
     return Number.isFinite(first?.dueAtMs) ? first.dueAtMs : 0;
   }
+
+  listPending() {
+    this.load();
+    return this.state.reminders.slice();
+  }
+
+  cancel(reminderId) {
+    this.load();
+    const normalized = typeof reminderId === "string" ? reminderId.trim() : "";
+    if (!normalized) {
+      return false;
+    }
+    const before = this.state.reminders.length;
+    this.state.reminders = this.state.reminders.filter((r) => r.id !== normalized);
+    if (this.state.reminders.length < before) {
+      this.save();
+      return true;
+    }
+    return false;
+  }
 }
 
 function normalizeReminder(reminder) {

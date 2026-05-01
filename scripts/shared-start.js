@@ -10,7 +10,7 @@ const {
 } = require("./shared-common");
 
 async function main() {
-  const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
+  const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
   console.log(`starting shared bridge runtime=${runtime}`);
   const appServer = await ensureSharedAppServer();
   const appServerPidLabel = appServer.pid ? ` pid=${appServer.pid}` : "";
@@ -22,17 +22,17 @@ async function main() {
 
   const existingBridgePid = ensureBridgeNotRunning();
   if (existingBridgePid) {
-    console.log(`shared cyberboss already running pid=${existingBridgePid}`);
+    console.log(`shared asheriebridge already running pid=${existingBridgePid}`);
     return;
   }
 
   const childEnv = { ...process.env };
   const isCodex = runtime === "codex";
   if (isCodex) {
-    childEnv.CYBERBOSS_CODEX_ENDPOINT = listenUrl;
+    childEnv.ASHERIEBRIDGE_CODEX_ENDPOINT = listenUrl;
   }
 
-  const child = spawn(process.execPath, ["./bin/cyberboss.js", "start", "--checkin"], {
+  const child = spawn(process.execPath, ["./bin/asheriebridge.js", "start", "--checkin"], {
     cwd: rootDir,
     env: childEnv,
     stdio: "inherit",

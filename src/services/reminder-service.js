@@ -69,6 +69,36 @@ class ReminderService {
     });
     return reminder;
   }
+
+  list({ userId = "" } = {}, context = {}) {
+    const account = resolveSelectedAccount(this.config);
+    const senderId = resolveReminderSenderId({
+      config: this.config,
+      accountId: account.accountId,
+      explicitUser: userId,
+      context,
+      sessionStore: this.sessionStore,
+    });
+    const all = this.queue.listPending();
+    const filtered = senderId
+      ? all.filter((r) => r.senderId === senderId && r.accountId === account.accountId)
+      : all.filter((r) => r.accountId === account.accountId);
+    return filtered.map((r) => ({
+      id: r.id,
+      text: r.text,
+      dueAt: new Date(r.dueAtMs).toISOString(),
+      createdAt: r.createdAt,
+    }));
+  }
+
+  cancel({ reminder_id = "" } = {}) {
+    const normalized = typeof reminder_id === "string" ? reminder_id.trim() : "";
+    if (!normalized) {
+      throw new Error("reminder_id is required.");
+    }
+    const cancelled = this.queue.cancel(normalized);
+    return { cancelled, reminder_id: normalized };
+  }
 }
 
 function resolveReminderSenderId({ config, accountId, explicitUser = "", context = {}, sessionStore = null }) {

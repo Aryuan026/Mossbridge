@@ -10,16 +10,26 @@ const { runSystemCheckinPoller } = require("./app/system-checkin-poller");
 const { buildTerminalHelpText } = require("./core/command-registry");
 const { createProjectTooling } = require("./tools/create-project-tooling");
 const { runToolMcpServer } = require("./tools/mcp-stdio-server");
+const { ensureStickerCatalogFilesSync } = require("./services/sticker-service");
 
-function ensureDefaultStateDirectory() {
-  fs.mkdirSync(path.join(os.homedir(), ".cyberboss"), { recursive: true });
+function resolvePreferredStateDirectory() {
+  return process.env.ASHERIEBRIDGE_STATE_DIR || path.join(os.homedir(), ".asheriebridge");
+}
+
+function ensureStateDirectory(stateDir) {
+  const target = typeof stateDir === "string" && stateDir.trim()
+    ? stateDir.trim()
+    : resolvePreferredStateDirectory();
+  fs.mkdirSync(target, { recursive: true });
+  return target;
 }
 
 function loadEnv() {
-  ensureDefaultStateDirectory();
+  const stateDir = resolvePreferredStateDirectory();
   const candidates = [
     path.join(process.cwd(), ".env"),
-    path.join(os.homedir(), ".cyberboss", ".env"),
+    path.join(stateDir, ".env"),
+    path.join(os.homedir(), ".asheriebridge", ".env"),
   ];
   for (const envPath of candidates) {
     if (!fs.existsSync(envPath)) {
@@ -32,13 +42,15 @@ function loadEnv() {
 }
 
 function ensureRuntimeEnv() {
-  if (!process.env.CYBERBOSS_HOME) {
-    process.env.CYBERBOSS_HOME = path.resolve(__dirname, "..");
+  const home = path.resolve(__dirname, "..");
+  if (!process.env.ASHERIEBRIDGE_HOME) {
+    process.env.ASHERIEBRIDGE_HOME = home;
   }
 }
 
 function ensureBootstrapFiles(config) {
   ensureInstructionsTemplate(config);
+  ensureStickerCatalogFilesSync(config);
 }
 
 function ensureInstructionsTemplate(config) {
@@ -80,12 +92,12 @@ function installRuntimeErrorHooks() {
 
   process.on("unhandledRejection", (reason) => {
     const message = reason instanceof Error ? reason.stack || reason.message : String(reason);
-    console.error(`[cyberboss] unhandled rejection ${message}`);
+    console.error(`[asheriebridge] unhandled rejection ${message}`);
   });
 
   process.on("uncaughtException", (error) => {
     const message = error instanceof Error ? error.stack || error.message : String(error);
-    console.error(`[cyberboss] uncaught exception ${message}`);
+    console.error(`[asheriebridge] uncaught exception ${message}`);
     process.exitCode = 1;
   });
 }
@@ -96,8 +108,11 @@ async function main() {
   installRuntimeErrorHooks();
   const argv = process.argv.slice(2);
   const config = readConfig();
-  ensureBootstrapFiles(config);
   const command = config.mode || "help";
+  if (command !== "help" && command !== "--help" && command !== "-h") {
+    ensureStateDirectory(config.stateDir);
+    ensureBootstrapFiles(config);
+  }
   let app = null;
   const getApp = () => {
     if (!app) {

@@ -27,9 +27,11 @@ test("parseCheckinRangeMinutes accepts min-max minute ranges", () => {
 test("checkin config store falls back to defaults and persists overrides", () => {
   const store = createStore();
   assert.deepEqual(store.getRange(), {
-    minIntervalMs: DEFAULT_MIN_INTERVAL_MS,
-    maxIntervalMs: DEFAULT_MAX_INTERVAL_MS,
+    minIntervalMs: 5 * 60_000,
+    maxIntervalMs: 25 * 60_000,
   });
+  assert.equal(DEFAULT_MIN_INTERVAL_MS, 5 * 60_000);
+  assert.equal(DEFAULT_MAX_INTERVAL_MS, 25 * 60_000);
   store.setRange({ minIntervalMs: 4 * 60_000, maxIntervalMs: 25 * 60_000 });
   assert.deepEqual(store.getRange(), {
     minIntervalMs: 4 * 60_000,

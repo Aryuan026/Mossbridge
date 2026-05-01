@@ -247,6 +247,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
         queuedBindings.push({ threadId, target });
       },
     },
+    rememberTurnWritebackContext() {},
     scheduleRuntimeEventWatchdog() {},
   };
 
@@ -275,6 +276,66 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
   }]);
   assert.deepEqual(queuedBindings, []);
   assert.deepEqual(order, ["begin", "typing"]);
+});
+
+test("dispatchPreparedTurn marks claudecode opening turns for a slower watchdog", async () => {
+  const watchdogCalls = [];
+  const appLike = {
+    channelAdapter: {
+      async sendTyping() {},
+      async sendText() {},
+    },
+    turnGateStore: {
+      begin() {
+        return "binding-1::/workspace";
+      },
+      attachThread() {},
+      releaseScope() {},
+    },
+    runtimeAdapter: {
+      async sendTextTurn() {
+        return { threadId: "thread-1", turnId: "turn-1", openingTurn: true };
+      },
+      getSessionStore() {
+        return {
+          getRuntimeParamsForWorkspace() {
+            return { model: "" };
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      bindReplyTargetForTurn() {},
+      queueReplyTargetForThread() {},
+    },
+    scheduleRuntimeEventWatchdog(payload) {
+      watchdogCalls.push(payload);
+    },
+    runtimeContextStore: {
+      setActiveContext() {},
+    },
+    rememberTurnWritebackContext() {},
+  };
+
+  const dispatched = await CyberbossApp.prototype.dispatchPreparedTurn.call(appLike, {
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    prepared: {
+      workspaceId: "default",
+      accountId: "acc-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      text: "hello",
+    },
+  });
+
+  assert.equal(dispatched, true);
+  assert.equal(watchdogCalls.length, 1);
+  assert.equal(watchdogCalls[0].openingTurn, true);
 });
 
 test("completed turns flush queued inbound work before system messages", async () => {
@@ -308,6 +369,7 @@ test("completed turns flush queued inbound work before system messages", async (
     hasPendingInboundMessage() {
       return false;
     },
+    async writebackRuntimeTurn() {},
     async stopTypingForThread() {
       calls.push("stopTyping");
     },
@@ -361,6 +423,7 @@ test("completed turns keep the boundary closed until queued inbound work has bee
     hasPendingInboundMessage() {
       return true;
     },
+    async writebackRuntimeTurn() {},
     async stopTypingForThread() {
       calls.push("stopTyping");
     },
@@ -411,6 +474,7 @@ test("completed turns flush queued inbound work before system messages", async (
     hasPendingInboundMessage() {
       return false;
     },
+    async writebackRuntimeTurn() {},
     async stopTypingForThread() {
       calls.push("stopTyping");
     },
@@ -447,6 +511,9 @@ test("failed turns still send error back when thread binding lookup is missing",
       async handleRuntimeEvent() {},
     },
     runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
       getSessionStore() {
         return {
           clearApprovalPrompt() {},
@@ -474,6 +541,7 @@ test("failed turns still send error back when thread binding lookup is missing",
         sent.push(payload);
       },
     },
+    async writebackRuntimeTurn() {},
     async sendFailureToThread(threadId, text, fallbackTarget) {
       return CyberbossApp.prototype.sendFailureToThread.call(this, threadId, text, fallbackTarget);
     },
@@ -499,6 +567,69 @@ test("failed turns still send error back when thread binding lookup is missing",
     text: "❌ Execution failed\ncontext window exceeded",
     contextToken: "ctx-1",
   }]);
+});
+
+test("claudecode failed turns clear the saved workspace thread binding before recovery", async () => {
+  const clearCalls = [];
+  const appLike = {
+    streamDelivery: {
+      resolveReplyTargetForRun() {
+        return null;
+      },
+      async handleRuntimeEvent() {},
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          clearApprovalPrompt() {},
+          clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            clearCalls.push(["pending", bindingKey, workspaceRoot]);
+          },
+          clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            clearCalls.push(["thread", bindingKey, workspaceRoot]);
+          },
+          findBindingForThreadId() {
+            return {
+              bindingKey: "binding-1",
+              workspaceRoot: "/workspace",
+            };
+          },
+        };
+      },
+    },
+    turnGateStore: {
+      releaseThread() {},
+      isPending() {
+        return false;
+      },
+    },
+    turnBoundaryScopeKeys: new Set(),
+    hasPendingInboundMessage() {
+      return false;
+    },
+    async writebackRuntimeTurn() {},
+    async stopTypingForThread() {},
+    async sendFailureToThread() {},
+    async flushPendingInboundMessages() {},
+    async flushPendingSystemMessages() {},
+  };
+
+  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+    type: "runtime.turn.failed",
+    payload: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      text: "❌ Runtime process exited unexpectedly",
+    },
+  });
+
+  assert.deepEqual(clearCalls, [
+    ["pending", "binding-1", "/workspace"],
+    ["thread", "binding-1", "/workspace"],
+  ]);
 });
 
 test("flushPendingInboundMessages batches queued messages from the same scope into one turn", async () => {
@@ -549,6 +680,73 @@ test("flushPendingInboundMessages batches queued messages from the same scope in
   assert.equal(dispatched[0].prepared.contextToken, "ctx-1");
   assert.match(dispatched[0].prepared.text, /Multiple newer WeChat messages arrived/);
   assert.match(dispatched[0].prepared.text, /第一条[\s\S]*第二条/);
+});
+
+test("flushPendingInboundMessages rebuilds one fresh memory prelude for queued messages", async () => {
+  const dispatched = [];
+  const memoryInputs = [];
+  const scopeKey = "binding-1::/workspace";
+  const oldPrelude = "[AsherieBridge memory context]\n- warm: stale card\n\n===== Current Inbound Message =====\n";
+  const appLike = {
+    pendingInboundByScope: new Map([[
+      scopeKey,
+      {
+        bindingKey: "binding-1",
+        workspaceRoot: "/workspace",
+        messages: [
+          {
+            workspaceId: "default",
+            accountId: "acc-1",
+            senderId: "user-1",
+            messageId: "101",
+            contextToken: "ctx-1",
+            provider: "weixin",
+            originalText: "第一条",
+            runtimeText: "[2026-04-13 16:00]\n第一条",
+            text: `${oldPrelude}[2026-04-13 16:00]\n第一条`,
+            receivedAt: "2026-04-13T08:00:01.000Z",
+          },
+          {
+            workspaceId: "default",
+            accountId: "acc-1",
+            senderId: "user-1",
+            messageId: "102",
+            contextToken: "ctx-2",
+            provider: "weixin",
+            originalText: "第二条",
+            runtimeText: "[2026-04-13 16:01]\n第二条",
+            text: `${oldPrelude}[2026-04-13 16:01]\n第二条`,
+            receivedAt: "2026-04-13T08:00:02.000Z",
+          },
+        ],
+      },
+    ]]),
+    isTurnDispatchBlocked() {
+      return false;
+    },
+    async attachMemoryContextToPreparedText(_normalized, runtimeText) {
+      memoryInputs.push(runtimeText);
+      return {
+        text: `[fresh memory]\n\n${runtimeText}`,
+        packet: { ok: true, fresh: true },
+      };
+    },
+    async dispatchPreparedTurn(payload) {
+      dispatched.push(payload);
+      return true;
+    },
+  };
+
+  await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);
+
+  assert.equal(memoryInputs.length, 1);
+  assert.doesNotMatch(memoryInputs[0], /stale card/);
+  assert.match(memoryInputs[0], /第一条[\s\S]*第二条/);
+  assert.equal(dispatched.length, 1);
+  assert.match(dispatched[0].prepared.text, /^\[fresh memory\]/);
+  assert.deepEqual(dispatched[0].prepared.memoryContextPacket, { ok: true, fresh: true });
+  assert.equal(dispatched[0].prepared.originalText, "第一条\n\n第二条");
+  assert.doesNotMatch(dispatched[0].prepared.originalText, /AsherieBridge memory context/);
 });
 
 test("flushPendingInboundMessages falls back to messageId ordering when receivedAt ties", async () => {

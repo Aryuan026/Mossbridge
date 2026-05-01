@@ -360,6 +360,7 @@ ${HOME}/.cyberboss
 ## 文档入口
 
 - [docs/commands.md](./docs/commands.md)
+- [docs/memory-storage.md](./docs/memory-storage.md)
 
 <a id="faq"></a>
 ## FAQ

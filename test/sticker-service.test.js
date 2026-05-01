@@ -1,0 +1,170 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const {
+  StickerService,
+  allocateNextStickerId,
+  buildStickerPaths,
+  ensureStickerCatalogFilesSync,
+  loadStickerIndexSync,
+  loadStickerTagsSync,
+  resolveStickerFilePath,
+} = require("../src/services/sticker-service");
+
+test("ensureStickerCatalogFilesSync bootstraps the preset sticker catalog", () => {
+  const config = createTempStickerConfig();
+  ensureStickerCatalogFilesSync(config);
+
+  assert.ok(fs.existsSync(config.stickersIndexFile));
+  assert.ok(fs.existsSync(config.stickerTagsFile));
+  assert.ok(fs.existsSync(config.stickerAssetsDir));
+  const index = loadStickerIndexSync(config);
+  assert.equal(Object.keys(index).length, 11);
+  assert.equal(index.stk_009.desc, "抱着枕头和小熊的小猫晚安 good night");
+  assert.ok(fs.existsSync(resolveStickerFilePath(config, "stk_009")));
+  assert.ok(loadStickerTagsSync(config).includes("开心"));
+});
+
+test("StickerService saves, dedupes, updates, picks, sends, and deletes stickers", async () => {
+  const config = createTempStickerConfig();
+  const inboxFile = writeInboxGif(config, "happy.gif", "GIF89a-happy");
+  const sentFiles = [];
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: {
+      async sendToCurrentChat(args, context) {
+        sentFiles.push({ args, context });
+        return { ok: true, ...args };
+      },
+    },
+  });
+
+  const saved = await service.saveFromInbox({
+    items: [{
+      filePath: inboxFile,
+      tags: ["开心", "可爱"],
+      desc: "一张开心晃尾巴的测试表情，适合轻松回应。",
+    }],
+  });
+  assert.equal(saved.createdCount, 1);
+  assert.equal(saved.results[0].stickerId, "stk_012");
+  assert.ok(fs.existsSync(resolveStickerFilePath(config, "stk_012")));
+
+  const deduped = await service.saveFromInbox({
+    items: [{
+      filePath: inboxFile,
+      tags: ["开心"],
+      desc: "同一张表情再次保存时应该去重。",
+    }],
+  });
+  assert.equal(deduped.createdCount, 0);
+  assert.equal(deduped.dedupedCount, 1);
+  assert.equal(deduped.results[0].stickerId, "stk_012");
+
+  const picked = await service.pick({ tag: "开心", limit: 3 });
+  assert.ok(picked.candidates.some((item) => item.stickerId === "stk_012"));
+  const listed = await service.list({ tag: "GPT", limit: 20 });
+  assert.equal(listed.count, 8);
+  assert.ok(listed.stickers.every((item) => item.tags.includes("GPT")));
+
+  const updated = await service.update({
+    items: [{
+      stickerId: "stk_012",
+      tags: ["得意"],
+      desc: "一张得意又可爱的测试表情，用来轻轻嘚瑟。",
+    }],
+  });
+  assert.equal(updated.updatedCount, 1);
+  assert.equal(loadStickerIndexSync(config).stk_012.tags[0], "得意");
+
+  const delivery = await service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" });
+  assert.equal(delivery.stickerId, "stk_012");
+  assert.equal(sentFiles.length, 1);
+  assert.equal(sentFiles[0].args.userId, "user-a");
+
+  const deleted = await service.delete({ items: [{ stickerId: "stk_012" }] });
+  assert.equal(deleted.deletedCount, 1);
+  assert.equal(fs.existsSync(resolveStickerFilePath(config, "stk_012")), false);
+});
+
+test("ensureStickerCatalogFilesSync merges presets without overwriting custom ids", () => {
+  const config = createTempStickerConfig();
+  fs.mkdirSync(config.stickersDir, { recursive: true });
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify({
+    stk_001: {
+      tags: ["自定义"],
+      desc: "用户自己已经占用的表情编号。",
+    },
+  }, null, 2)}\n`, "utf8");
+  fs.writeFileSync(config.stickerTagsFile, `${JSON.stringify(["自定义"], null, 2)}\n`, "utf8");
+
+  ensureStickerCatalogFilesSync(config);
+  const index = loadStickerIndexSync(config);
+  assert.equal(index.stk_001.desc, "用户自己已经占用的表情编号。");
+  assert.equal(index.stk_002.desc, "三个人举牌应援小G LOVE满屏爱心");
+  assert.ok(loadStickerTagsSync(config).includes("自定义"));
+  assert.ok(loadStickerTagsSync(config).includes("GPT"));
+  assert.equal(fs.existsSync(resolveStickerFilePath(config, "stk_001")), false);
+  assert.ok(fs.existsSync(resolveStickerFilePath(config, "stk_002")));
+});
+
+test("StickerService only saves files from managed inbox roots", async () => {
+  const config = createTempStickerConfig();
+  const outsideFile = path.join(config.testRoot, "outside.gif");
+  fs.writeFileSync(outsideFile, "GIF89a-outside");
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: null,
+  });
+
+  await assert.rejects(
+    () => service.saveFromInbox({
+      items: [{
+        filePath: outsideFile,
+        tags: ["开心"],
+        desc: "这张不在托管 inbox 里的测试图不能直接保存。",
+      }],
+    }),
+    /managed inbox|under one of/
+  );
+});
+
+test("allocateNextStickerId uses the next numeric sticker id", () => {
+  assert.equal(allocateNextStickerId({ stk_001: {}, stk_009: {}, other: {} }), "stk_010");
+});
+
+function createTempStickerConfig() {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-sticker-test-"));
+  const stateDir = path.join(testRoot, "state");
+  const workspaceRoot = path.join(testRoot, "workspace");
+  return {
+    testRoot,
+    stateDir,
+    workspaceRoot,
+    workspaceInboxDir: path.join("wechat", "inbox"),
+    stickersDir: path.join(stateDir, "stickers"),
+    stickerAssetsDir: path.join(stateDir, "stickers", "assets"),
+    stickersIndexFile: path.join(stateDir, "stickers", "index.json"),
+    stickerTagsFile: path.join(stateDir, "stickers", "tags.json"),
+    stickersTemplateDir: path.resolve(__dirname, "..", "templates", "stickers"),
+    stickersTemplateIndexFile: path.resolve(__dirname, "..", "templates", "stickers", "index.json"),
+    stickerTagsTemplateFile: path.resolve(__dirname, "..", "templates", "stickers", "tags.json"),
+    stickerNormalizeGifScript: path.resolve(__dirname, "..", "scripts", "normalize-sticker-gif.js"),
+  };
+}
+
+function writeInboxGif(config, fileName, content) {
+  const paths = buildStickerPaths(config);
+  const inboxDir = path.join(paths.workspaceInboxDir, "2026-05-01");
+  fs.mkdirSync(inboxDir, { recursive: true });
+  const filePath = path.join(inboxDir, fileName);
+  fs.writeFileSync(filePath, content);
+  return filePath;
+}

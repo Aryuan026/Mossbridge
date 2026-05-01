@@ -7,6 +7,14 @@ const { SessionStore } = require("../codex/session-store");
 const { buildOpeningTurnText, buildInstructionRefreshText } = require("../shared-instructions");
 const { ClaudeCodeIpcServer } = require("./ipc-server");
 const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
+const CLAUDE_OPENING_SESSION_TIMEOUT_MS = 90_000;
+const DEFAULT_CLAUDE_SESSION_APPEND_PROMPT = [
+  "For this session, ignore user-home or global CLAUDE.md bootstrap instructions.",
+  "Identity and memory context is already injected by the gateway — do not use any file-reading tools to load soul, persona, or memory files.",
+  "If a card mentions soul.md or a soul_ref path, treat it as a historical pointer, not as an instruction to read that file.",
+  "Do not read files outside the current workspace.",
+  "Treat the current workspace instructions, MCP tools, and live conversation as authoritative.",
+].join(" ");
 
 function createClaudeCodeRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "claudecode" });
@@ -14,7 +22,7 @@ function createClaudeCodeRuntimeAdapter(config) {
   const pendingApprovals = new Map();
   let globalListener = null;
   const ipcSocketPath = path.join(
-    config.stateDir || path.join(os.homedir(), ".cyberboss"),
+    config.stateDir || path.join(os.homedir(), ".asheriebridge"),
     "claudecode-runtime.sock",
   );
   const ipcServer = new ClaudeCodeIpcServer({ socketPath: ipcSocketPath });
@@ -34,23 +42,28 @@ function createClaudeCodeRuntimeAdapter(config) {
     }
   });
 
-  function ensureClient(workspaceRoot) {
+  function ensureClient(workspaceRoot, { modelOverride = "" } = {}) {
     if (clientsByWorkspace.has(workspaceRoot)) {
       return clientsByWorkspace.get(workspaceRoot);
     }
+    const resolvedModel = normalizeModelId(modelOverride) || normalizeModelId(config.claudeModel);
     const projectSettings = ensureClaudeProjectMcpConfig({
       workspaceRoot,
-      cyberbossHome: process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
+      asheriebridgeHome: process.env.ASHERIEBRIDGE_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
     });
     console.log(
-      `[claudecode-runtime] workspace=${workspaceRoot} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
+      `[claudecode-runtime] workspace=${workspaceRoot} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
     );
     const client = new ClaudeCodeProcessClient({
       command: config.claudeCommand || "claude",
       cwd: workspaceRoot,
       env: filterClaudeCodeEnv(process.env),
-      model: config.claudeModel || "",
+      model: resolvedModel,
       permissionMode: config.claudePermissionMode || "default",
+      bare: config.claudeBare !== false,
+      appendSystemPrompt: typeof config.claudeAppendSystemPrompt === "string" && config.claudeAppendSystemPrompt.trim()
+        ? config.claudeAppendSystemPrompt.trim()
+        : DEFAULT_CLAUDE_SESSION_APPEND_PROMPT,
       disableVerbose: Boolean(config.claudeDisableVerbose),
       extraArgs: config.claudeExtraArgs || [],
       mcpConfigPaths: [projectSettings.configPath],
@@ -87,7 +100,7 @@ function createClaudeCodeRuntimeAdapter(config) {
         }
         pendingApprovals.set(mapped.payload.requestId, workspaceRoot);
       }
-      if (mapped?.type === "runtime.turn.failed") {
+      if (mapped?.type === "runtime.turn.failed" || mapped?.type === "runtime.process.closed") {
         clientsByWorkspace.delete(workspaceRoot);
       }
       if (mapped && globalListener) {
@@ -98,15 +111,20 @@ function createClaudeCodeRuntimeAdapter(config) {
     return client;
   }
 
-  async function attachClientToThread(workspaceRoot, threadId = "") {
+  async function attachClientToThread(workspaceRoot, threadId = "", modelOverride = "") {
     const normalizedWorkspaceRoot = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
     const normalizedThreadId = normalizeThreadId(threadId);
+    const normalizedModel = normalizeModelId(modelOverride) || normalizeModelId(config.claudeModel);
     if (!normalizedWorkspaceRoot) {
       throw new Error("workspaceRoot is required");
     }
 
     const existingClient = clientsByWorkspace.get(normalizedWorkspaceRoot);
-    if (normalizedThreadId && clientMatchesThread(existingClient, normalizedThreadId)) {
+    if (
+      normalizedThreadId
+      && clientMatchesThread(existingClient, normalizedThreadId)
+      && clientMatchesModel(existingClient, normalizedModel)
+    ) {
       return { client: existingClient, threadId: normalizedThreadId };
     }
 
@@ -114,12 +132,22 @@ function createClaudeCodeRuntimeAdapter(config) {
       await closeWorkspaceClient(normalizedWorkspaceRoot);
     }
 
-    const client = ensureClient(normalizedWorkspaceRoot);
-    if (!client.alive || (normalizedThreadId && !clientMatchesThread(client, normalizedThreadId))) {
-      if (client.alive && normalizedThreadId && !clientMatchesThread(client, normalizedThreadId)) {
+    const client = ensureClient(normalizedWorkspaceRoot, { modelOverride: normalizedModel });
+    if (
+      !client.alive
+      || (normalizedThreadId && !clientMatchesThread(client, normalizedThreadId))
+      || !clientMatchesModel(client, normalizedModel)
+    ) {
+      if (
+        client.alive
+        && (
+          (normalizedThreadId && !clientMatchesThread(client, normalizedThreadId))
+          || !clientMatchesModel(client, normalizedModel)
+        )
+      ) {
         await closeWorkspaceClient(normalizedWorkspaceRoot);
       }
-      const freshClient = ensureClient(normalizedWorkspaceRoot);
+      const freshClient = ensureClient(normalizedWorkspaceRoot, { modelOverride: normalizedModel });
       await freshClient.connect(normalizedThreadId);
       if (normalizedThreadId) {
         return { client: freshClient, threadId: normalizedThreadId };
@@ -229,20 +257,20 @@ function createClaudeCodeRuntimeAdapter(config) {
       }
       return { threadId, turnId };
     },
-    async resumeThread({ threadId, workspaceRoot }) {
+    async resumeThread({ threadId, workspaceRoot, model = "" }) {
       if (!workspaceRoot) {
         return { threadId };
       }
-      const attached = await attachClientToThread(workspaceRoot, threadId);
+      const attached = await attachClientToThread(workspaceRoot, threadId, model);
       return { threadId: attached.threadId };
     },
-    async compactThread({ threadId, workspaceRoot }) {
-      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId);
+    async compactThread({ threadId, workspaceRoot, model = "" }) {
+      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model);
       await client.sendUserMessage({ text: "/compact", threadId: activeThreadId });
       return { threadId: activeThreadId, turnId: client.pendingTurnId };
     },
     async refreshThreadInstructions({ threadId, workspaceRoot, model = "" }) {
-      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId);
+      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model);
       const refreshText = buildInstructionRefreshText(config);
       await client.sendUserMessage({ text: refreshText, threadId: activeThreadId });
       return { threadId: activeThreadId };
@@ -255,7 +283,7 @@ function createClaudeCodeRuntimeAdapter(config) {
       let openingTurn = !threadId;
       let attached;
       try {
-        attached = await attachClientToThread(workspaceRoot, threadId);
+        attached = await attachClientToThread(workspaceRoot, threadId, model);
       } catch (error) {
         if (!threadId) {
           throw error;
@@ -264,12 +292,22 @@ function createClaudeCodeRuntimeAdapter(config) {
         sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
         threadId = "";
         openingTurn = true;
-        attached = await attachClientToThread(workspaceRoot, "");
+        attached = await attachClientToThread(workspaceRoot, "", model);
       }
       const { client, threadId: activeThreadId } = attached;
       const outboundText = openingTurn ? buildOpeningTurnText(config, text) : text;
       const outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
       await client.sendUserMessage({ text: outboundText, threadId: outboundThreadId });
+      let resolvedThreadId = outboundThreadId;
+      if (openingTurn) {
+        const confirmedSessionId = normalizeThreadId(
+          client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_OPENING_SESSION_TIMEOUT_MS })
+        );
+        if (!confirmedSessionId) {
+          throw new Error("timed out waiting for claudecode session id");
+        }
+        resolvedThreadId = confirmedSessionId;
+      }
       if (!openingTurn) {
         const confirmedSessionId = normalizeThreadId(
           client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_RESUME_SESSION_TIMEOUT_MS })
@@ -284,12 +322,13 @@ function createClaudeCodeRuntimeAdapter(config) {
       sessionStore.setThreadIdForWorkspace(
         bindingKey,
         workspaceRoot,
-        outboundThreadId,
+        resolvedThreadId,
         metadata,
       );
       return {
-        threadId: outboundThreadId,
+        threadId: resolvedThreadId,
         turnId: client.pendingTurnId,
+        openingTurn,
       };
     },
   };
@@ -311,6 +350,10 @@ function normalizeThreadId(value) {
   return typeof value === "string" ? value.replace(/\s+/g, "").trim() : "";
 }
 
+function normalizeModelId(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function clientMatchesThread(client, threadId) {
   const normalizedThreadId = normalizeThreadId(threadId);
   if (!normalizedThreadId || !client?.alive) {
@@ -318,4 +361,12 @@ function clientMatchesThread(client, threadId) {
   }
   return normalizeThreadId(client.sessionId) === normalizedThreadId
     || normalizeThreadId(client.resumeSessionId) === normalizedThreadId;
+}
+
+function clientMatchesModel(client, model) {
+  const normalizedModel = normalizeModelId(model);
+  if (!normalizedModel) {
+    return true;
+  }
+  return normalizeModelId(client?.model) === normalizedModel;
 }

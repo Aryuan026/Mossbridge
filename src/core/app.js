@@ -4,7 +4,10 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
-const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
+const {
+  finalizeAttachmentNotes,
+  persistIncomingWeixinAttachments,
+} = require("../adapters/channel/weixin/media-receive");
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
 const { findModelByQuery } = require("../adapters/runtime/codex/model-catalog");
@@ -12,6 +15,7 @@ const { createTimelineIntegration } = require("../integrations/timeline");
 const { buildWeixinHelpText } = require("./command-registry");
 const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
+const { resolveWorkspaceOfficePaths } = require("./workspace-office-layout");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
@@ -30,6 +34,8 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
+const { recordUserMessage, recordAiReply } = require("./activity-tracker");
+const { isRuntimeCapacityNotice, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
@@ -39,6 +45,7 @@ const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 8_000;
 const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
+const OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS = 90_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -57,6 +64,7 @@ class CyberbossApp {
       timelineIntegration: this.timelineIntegration,
     });
     this.projectServices = projectTooling.services;
+    this.projectDomains = projectTooling.domains;
     this.projectToolHost = projectTooling.toolHost;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
@@ -69,6 +77,8 @@ class CyberbossApp {
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
     this.turnBoundaryScopeKeys = new Set();
+    this.turnWritebackContextByRunKey = new Map();
+    this.pendingTurnWritebackByThreadId = new Map();
     this.systemMessageDispatcher = null;
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
@@ -86,7 +96,7 @@ class CyberbossApp {
         .then(() => this.handleRuntimeEvent(event))
         .catch((error) => {
           const message = error instanceof Error ? error.stack || error.message : String(error);
-          console.error(`[cyberboss] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
+          console.error(`[asheriebridge] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
         });
     });
   }
@@ -97,6 +107,7 @@ class CyberbossApp {
       channel: this.channelAdapter.describe(),
       runtime: this.runtimeAdapter.describe(),
       timeline: this.timelineIntegration.describe(),
+      memory: this.projectDomains?.memory?.describe ? this.projectDomains.memory.describe() : null,
       threads: this.threadStateStore.snapshot(),
     }, null, 2));
   }
@@ -122,25 +133,25 @@ class CyberbossApp {
     const syncBuffer = this.channelAdapter.loadSyncBuffer();
     await this.restoreBoundThreadSubscriptions();
 
-    console.log("[cyberboss] bootstrap ok");
-    console.log(`[cyberboss] channel=${this.channelAdapter.describe().id}`);
-    console.log(`[cyberboss] runtime=${this.runtimeAdapter.describe().id}`);
-    console.log(`[cyberboss] timeline=${this.timelineIntegration.describe().id}`);
-    console.log(`[cyberboss] account=${account.accountId}`);
-    console.log(`[cyberboss] baseUrl=${account.baseUrl}`);
-    console.log(`[cyberboss] workspaceRoot=${this.config.workspaceRoot}`);
-    console.log(`[cyberboss] knownContextTokens=${knownContextTokens}`);
-    console.log(`[cyberboss] syncBuffer=${syncBuffer ? "ready" : "empty"}`);
-    console.log(`[cyberboss] runtimeEndpoint=${runtimeState.endpoint || runtimeState.command || "(spawn)"}`);
-    console.log(`[cyberboss] runtimeModels=${runtimeState.models?.length || 0}`);
+    console.log("[asheriebridge] bootstrap ok");
+    console.log(`[asheriebridge] channel=${this.channelAdapter.describe().id}`);
+    console.log(`[asheriebridge] runtime=${this.runtimeAdapter.describe().id}`);
+    console.log(`[asheriebridge] timeline=${this.timelineIntegration.describe().id}`);
+    console.log(`[asheriebridge] account=${account.accountId}`);
+    console.log(`[asheriebridge] baseUrl=${account.baseUrl}`);
+    console.log(`[asheriebridge] workspaceRoot=${this.config.workspaceRoot}`);
+    console.log(`[asheriebridge] knownContextTokens=${knownContextTokens}`);
+    console.log(`[asheriebridge] syncBuffer=${syncBuffer ? "ready" : "empty"}`);
+    console.log(`[asheriebridge] runtimeEndpoint=${runtimeState.endpoint || runtimeState.command || "(spawn)"}`);
+    console.log(`[asheriebridge] runtimeModels=${runtimeState.models?.length || 0}`);
     if (this.config.startWithLocationServer) {
       await this.ensureLocationServerStarted();
     }
-    console.log("[cyberboss] bridge loop started; waiting for WeChat messages.");
+    console.log("[asheriebridge] bridge loop started; waiting for WeChat messages.");
     if (this.config.startWithCheckin) {
-      console.log("[cyberboss] checkin: enabled");
+      console.log("[asheriebridge] checkin: enabled");
       void runSystemCheckinPoller(this.config).catch((error) => {
-        console.error(`[cyberboss] checkin poller stopped: ${error.message}`);
+        console.error(`[asheriebridge] checkin poller stopped: ${error.message}`);
       });
     }
 
@@ -188,7 +199,7 @@ class CyberbossApp {
           }
 
           consecutiveFailures += 1;
-          console.error(`[cyberboss] poll failed: ${formatErrorMessage(error)}`);
+          console.error(`[asheriebridge] poll failed: ${formatErrorMessage(error)}`);
           await sleep(consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS);
         }
       }
@@ -200,23 +211,23 @@ class CyberbossApp {
   }
 
   async ensureLocationServerStarted() {
-    if (!this.projectServices?.whereabouts) {
+    if (!this.projectDomains?.presence) {
       return null;
     }
-    await this.projectServices.whereabouts.startServer({
+    await this.projectDomains.presence.startWhereaboutsServer({
       onAccepted: (result) => this.handleLocationAccepted(result),
     });
     console.log(
-      `[cyberboss] locationServer=http://${this.config.locationHost}:${this.config.locationPort} store=${this.config.locationStoreFile}`
+      `[asheriebridge] locationServer=http://${this.config.locationHost}:${this.config.locationPort} store=${this.config.locationStoreFile}`
     );
-    return this.projectServices.whereabouts.server || null;
+    return this.projectDomains.presence.getWhereaboutsServer();
   }
 
   async closeLocationServer() {
-    if (!this.projectServices?.whereabouts) {
+    if (!this.projectDomains?.presence) {
       return;
     }
-    await this.projectServices.whereabouts.closeServer();
+    await this.projectDomains.presence.closeWhereaboutsServer();
   }
 
   handleLocationAccepted(result) {
@@ -254,6 +265,13 @@ class CyberbossApp {
         senderId,
         workspaceRoot,
         text: triggerText,
+        kind: "location_trigger",
+        priority: "normal",
+        title: normalizeText(point?.trigger) || "location_trigger",
+        metadata: {
+          trigger: normalizeText(point?.trigger),
+          observedAt: normalizeIsoTime(point?.receivedAt) || normalizeIsoTime(point?.timestamp) || "",
+        },
         createdAt: normalizeIsoTime(point?.receivedAt) || normalizeIsoTime(point?.timestamp) || new Date().toISOString(),
       });
     }
@@ -265,6 +283,15 @@ class CyberbossApp {
         senderId,
         workspaceRoot,
         text: buildLocationMovementSystemText(movementEvent),
+        kind: "location_movement",
+        priority: "normal",
+        title: "major_move",
+        metadata: {
+          fromLabel: normalizeText(movementEvent?.fromAddress) || formatLatLng(movementEvent?.fromCenterLat, movementEvent?.fromCenterLng),
+          toLabel: normalizeText(movementEvent?.toAddress) || formatLatLng(movementEvent?.toCenterLat, movementEvent?.toCenterLng),
+          distanceText: `${formatCompactNumber(movementEvent?.distanceMeters || 0)}m`,
+          observedAt: normalizeIsoTime(movementEvent?.movedAt) || "",
+        },
         createdAt: normalizeIsoTime(movementEvent?.movedAt) || new Date().toISOString(),
       });
     }
@@ -285,7 +312,7 @@ class CyberbossApp {
     sidePadding = undefined,
     locale = "",
   } = {}) {
-    return this.projectServices.timeline.queueScreenshot({
+    return this.projectDomains.calendar.queueScreenshot({
       userId: senderId,
       outputFile,
       selector,
@@ -303,7 +330,7 @@ class CyberbossApp {
   }
 
   async sendLocalFileToCurrentChat({ senderId = "", filePath = "" } = {}) {
-    return this.projectServices.channelFile.sendToCurrentChat({
+    return this.projectDomains.transport.sendFileToCurrentChat({
       userId: senderId,
       filePath,
     }, {});
@@ -315,6 +342,7 @@ class CyberbossApp {
       return;
     }
 
+    recordUserMessage();
     this.primeDeferredRepliesForSender(normalized);
     await this.handlePreparedMessage(normalized, { allowCommands: true });
   }
@@ -348,7 +376,7 @@ class CyberbossApp {
     });
     this.streamDelivery.setDeferredReplyPrefix(bindingKey, formatDeferredSystemReplyBatch(pendingReplies));
     console.warn(
-      `[cyberboss] queued deferred reply prefix sender=${normalized.senderId} count=${pendingReplies.length}`
+      `[asheriebridge] queued deferred reply prefix sender=${normalized.senderId} count=${pendingReplies.length}`
     );
   }
 
@@ -406,6 +434,7 @@ class CyberbossApp {
     }).catch(() => {});
 
     try {
+      const dispatchedAtMs = Date.now();
       const turn = await this.runtimeAdapter.sendTextTurn({
         bindingKey,
         workspaceRoot,
@@ -440,11 +469,13 @@ class CyberbossApp {
       } else {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
+      this.rememberTurnWritebackContext({ turn, prepared, bindingKey, workspaceRoot, dispatchedAtMs });
       this.scheduleRuntimeEventWatchdog({
         bindingKey,
         workspaceRoot,
         normalized: prepared,
         threadId: turn.threadId,
+        openingTurn: Boolean(turn?.openingTurn),
       });
       return true;
     } catch (error) {
@@ -477,8 +508,12 @@ class CyberbossApp {
       messageId: prepared.messageId,
       contextToken: prepared.contextToken,
       provider: prepared.provider,
-      text: prepared.text,
+      originalText: prepared.originalText,
+      runtimeText: prepared.runtimeText || prepared.text,
+      text: prepared.runtimeText || prepared.text,
       receivedAt: prepared.receivedAt,
+      attachments: prepared.attachments || [],
+      attachmentFailures: prepared.attachmentFailures || [],
     });
     this.pendingInboundByScope.set(scopeKey, current);
     void this.channelAdapter.sendTyping({
@@ -508,18 +543,33 @@ class CyberbossApp {
       }
       const merged = mergePendingInboundDraft(draft);
       this.pendingInboundByScope.delete(scopeKey);
+      const preparedForDispatch = {
+        workspaceId: merged.workspaceId,
+        accountId: merged.accountId,
+        senderId: merged.senderId,
+        contextToken: merged.contextToken,
+        provider: merged.provider,
+        originalText: merged.originalText,
+        runtimeText: merged.runtimeText || merged.text,
+        text: merged.text,
+        receivedAt: merged.receivedAt,
+        attachments: merged.attachments || [],
+        attachmentFailures: merged.attachmentFailures || [],
+        memoryContextPacket: merged.memoryContextPacket || null,
+      };
+      if (typeof this.attachMemoryContextToPreparedText === "function") {
+        const memoryContext = await this.attachMemoryContextToPreparedText(
+          preparedForDispatch,
+          preparedForDispatch.runtimeText || preparedForDispatch.text,
+          merged.workspaceRoot,
+        );
+        preparedForDispatch.text = memoryContext.text;
+        preparedForDispatch.memoryContextPacket = memoryContext.packet;
+      }
       const dispatched = await this.dispatchPreparedTurn({
         bindingKey: merged.bindingKey,
         workspaceRoot: merged.workspaceRoot,
-        prepared: {
-          workspaceId: merged.workspaceId,
-          accountId: merged.accountId,
-          senderId: merged.senderId,
-          contextToken: merged.contextToken,
-          provider: merged.provider,
-          text: merged.text,
-          receivedAt: merged.receivedAt,
-        },
+        prepared: preparedForDispatch,
       });
       if (!dispatched) {
         this.pendingInboundByScope.set(scopeKey, draft);
@@ -527,7 +577,7 @@ class CyberbossApp {
     }
   }
 
-  scheduleRuntimeEventWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "" }) {
+  scheduleRuntimeEventWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "", openingTurn = false }) {
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const candidateThreadId = normalizeCommandArgument(threadId)
       || sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
@@ -538,40 +588,56 @@ class CyberbossApp {
 
     const runtimeName = this.runtimeAdapter.describe().id || "runtime";
     const isCodex = runtimeName === "codex";
+    const isClaudeCode = runtimeName === "claudecode";
+    const suppressNotice = openingTurn && isClaudeCode;
+    const noticeTimeoutMs = suppressNotice ? 0 : FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS;
+    const failureTimeoutMs = openingTurn && isClaudeCode
+      ? OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS
+      : FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS;
 
     this.clearRuntimeEventWatchdog(normalizedThreadId);
-    const noticeTimer = setTimeout(async () => {
-      const watchdog = this.pendingRuntimeEventWatchdogs.get(normalizedThreadId);
-      if (!watchdog) {
-        return;
-      }
-      const currentThreadState = this.threadStateStore.getThreadState(normalizedThreadId);
-      if (currentThreadState?.status === "running" || currentThreadState?.turnId) {
-        return;
-      }
-      watchdog.noticeSent = true;
-      const noticeLines = isCodex
-        ? [
-            `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
-            "If your terminal is still reconnecting, this round is probably still stuck in shared-thread startup.",
-            "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
-            `workspace: ${workspaceRoot}`,
-            `thread: ${normalizedThreadId}`,
-          ]
-        : [
-            `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
-            "The runtime process may still be starting up.",
-            "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
-            `workspace: ${workspaceRoot}`,
-            `thread: ${normalizedThreadId}`,
-          ];
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        contextToken: normalized.contextToken,
-        preserveBlock: true,
-        text: noticeLines.join("\n"),
-      }).catch(() => {});
-    }, FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS);
+    const noticeTimer = noticeTimeoutMs > 0
+      ? setTimeout(async () => {
+        const watchdog = this.pendingRuntimeEventWatchdogs.get(normalizedThreadId);
+        if (!watchdog) {
+          return;
+        }
+        const currentThreadState = this.threadStateStore.getThreadState(normalizedThreadId);
+        if (currentThreadState?.status === "running" || currentThreadState?.turnId) {
+          return;
+        }
+        watchdog.noticeSent = true;
+        const noticeLines = isCodex
+          ? [
+              `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
+              "If your terminal is still reconnecting, this round is probably still stuck in shared-thread startup.",
+              "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
+              `workspace: ${workspaceRoot}`,
+              `thread: ${normalizedThreadId}`,
+            ]
+          : isClaudeCode
+            ? [
+                "⏳ 我已经收到这句了，只是 ClaudeCode 这边第一口气还没吐出来。",
+                "它这会儿大概率还在处理这轮输入，不一定是坏住了。",
+                "你不用继续在聊天框里等着；如果它马上接上，正文会自己回来。",
+                `workspace: ${workspaceRoot}`,
+                `thread: ${normalizedThreadId}`,
+              ]
+            : [
+                `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
+                "The runtime process may still be starting up.",
+                "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
+                `workspace: ${workspaceRoot}`,
+                `thread: ${normalizedThreadId}`,
+              ];
+        await this.channelAdapter.sendText({
+          userId: normalized.senderId,
+          contextToken: normalized.contextToken,
+          preserveBlock: true,
+          text: noticeLines.join("\n"),
+        }).catch(() => {});
+      }, noticeTimeoutMs)
+      : null;
     const failureTimer = setTimeout(async () => {
       this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
       const currentThreadState = this.threadStateStore.getThreadState(normalizedThreadId);
@@ -596,12 +662,29 @@ class CyberbossApp {
             "3. Open another terminal and run `npm run shared:open`",
             "4. Confirm the terminal is attached to the same thread shown above, not a private thread",
           ]
+        : isClaudeCode
+          ? [
+              "❌ 这句已经进桥了，但 ClaudeCode 这边到现在还没吐出第一条事件。",
+              openingTurn
+                ? "如果这是新线程的第一轮，现在更像是启动真的卡住了，不只是慢。"
+                : "这时就更像是 ClaudeCode 进程本身卡住或退出了。",
+              `workspace: ${workspaceRoot}`,
+              `thread: ${normalizedThreadId}`,
+              "建议顺手看这几步：",
+              "1. 在项目目录跑 `npm run shared:status:claudecode`",
+              "2. 如果桥没起来，跑 `npm run shared:start:claudecode`",
+              "3. 再看一下这条微信绑定是不是还在同一个 workspace 里",
+            ]
         : [
             `❌ This message has already reached the bridge, but ${runtimeName} still has not returned the first event.`,
             "The runtime process may have failed to start or exited unexpectedly.",
             `workspace: ${workspaceRoot}`,
             `thread: ${normalizedThreadId}`,
-            "Check whether the runtime process is still running, or run `npm run shared:status`.",
+            "Recommended order:",
+            "1. Run `npm run shared:status:claudecode` in the project directory",
+            "2. If the bridge is down, run `npm run shared:start:claudecode`",
+            "3. Open another terminal and run `npm run shared:open:claudecode`",
+            "4. Confirm ClaudeCode is still attached to the same workspace shown above",
           ];
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
@@ -609,7 +692,7 @@ class CyberbossApp {
         preserveBlock: true,
         text: failureLines.join("\n"),
       }).catch(() => {});
-    }, FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS);
+    }, failureTimeoutMs);
     this.pendingRuntimeEventWatchdogs.set(normalizedThreadId, {
       noticeTimer,
       failureTimer,
@@ -632,66 +715,68 @@ class CyberbossApp {
   }
 
   async prepareIncomingMessageForRuntime(normalized, workspaceRoot) {
+    let runtimeText = "";
+    let attachments = [];
+    let attachmentFailures = [];
+
     if (normalized?.provider === "system") {
-      return {
-        ...normalized,
-        originalText: normalized.text,
-        text: String(normalized.text || "").trim(),
-        attachments: [],
-        attachmentFailures: [],
-      };
-    }
-
-    const attachments = Array.isArray(normalized.attachments) ? normalized.attachments : [];
-    if (!attachments.length) {
-      return {
-        ...normalized,
-        originalText: normalized.text,
-        text: buildInboundText(normalized, { saved: [], failed: [] }, this.config, {
+      runtimeText = String(normalized.text || "").trim();
+    } else {
+      const incomingAttachments = Array.isArray(normalized.attachments) ? normalized.attachments : [];
+      if (!incomingAttachments.length) {
+        runtimeText = buildInboundText(normalized, { saved: [], failed: [] }, this.config, {
           runtimeId: this.runtimeAdapter?.describe?.().id || "",
-        }),
-        attachments: [],
-        attachmentFailures: [],
-      };
+          workspaceRoot,
+        });
+      } else {
+        const persisted = await persistIncomingWeixinAttachments({
+          attachments: incomingAttachments,
+          config: this.config,
+          workspaceRoot,
+          stateDir: this.config.stateDir,
+          cdnBaseUrl: this.config.weixinCdnBaseUrl,
+          messageId: normalized.messageId,
+          receivedAt: normalized.receivedAt,
+          messageText: normalized.text,
+        });
+        attachments = persisted.saved;
+        attachmentFailures = persisted.failed;
+
+        if (!persisted.saved.length && persisted.failed.length && !String(normalized.text || "").trim()) {
+          await this.channelAdapter.sendText({
+            userId: normalized.senderId,
+            text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
+            contextToken: normalized.contextToken,
+            preserveBlock: true,
+          }).catch(() => {});
+          return null;
+        }
+
+        runtimeText = buildInboundText(normalized, persisted, this.config, {
+          runtimeId: this.runtimeAdapter?.describe?.().id || "",
+          workspaceRoot,
+        });
+        if (!runtimeText) {
+          await this.channelAdapter.sendText({
+            userId: normalized.senderId,
+            text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
+            contextToken: normalized.contextToken,
+            preserveBlock: true,
+          }).catch(() => {});
+          return null;
+        }
+      }
     }
 
-    const persisted = await persistIncomingWeixinAttachments({
-      attachments,
-      stateDir: this.config.stateDir,
-      cdnBaseUrl: this.config.weixinCdnBaseUrl,
-      messageId: normalized.messageId,
-      receivedAt: normalized.receivedAt,
-    });
-
-    if (!persisted.saved.length && persisted.failed.length && !String(normalized.text || "").trim()) {
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
-        contextToken: normalized.contextToken,
-        preserveBlock: true,
-      }).catch(() => {});
-      return null;
-    }
-
-    const codexInboundText = buildInboundText(normalized, persisted, this.config, {
-      runtimeId: this.runtimeAdapter?.describe?.().id || "",
-    });
-    if (!codexInboundText) {
-      await this.channelAdapter.sendText({
-        userId: normalized.senderId,
-        text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
-        contextToken: normalized.contextToken,
-        preserveBlock: true,
-      }).catch(() => {});
-      return null;
-    }
-
+    const memoryContext = await this.attachMemoryContextToPreparedText(normalized, runtimeText, workspaceRoot);
     return {
       ...normalized,
       originalText: normalized.text,
-      text: codexInboundText,
-      attachments: persisted.saved,
-      attachmentFailures: persisted.failed,
+      runtimeText,
+      text: memoryContext.text,
+      attachments,
+      attachmentFailures,
+      memoryContextPacket: memoryContext.packet,
     };
   }
 
@@ -713,7 +798,7 @@ class CyberbossApp {
     const pendingJobs = this.timelineScreenshotQueue.drainForAccount(account.accountId);
     for (const job of pendingJobs) {
       try {
-        const captured = await this.projectServices.timeline.captureScreenshot({
+        const captured = await this.projectDomains.calendar.captureScreenshot({
           outputFile: job.outputFile,
           selector: job.selector,
           range: job.range,
@@ -733,7 +818,7 @@ class CyberbossApp {
         });
       } catch (error) {
         const messageText = error instanceof Error ? error.message : String(error || "unknown error");
-        console.error(`[cyberboss] timeline screenshot failed job=${job.id} ${messageText}`);
+        console.error(`[asheriebridge] timeline screenshot failed job=${job.id} ${messageText}`);
         await this.channelAdapter.sendTyping({
           userId: job.senderId,
           status: 0,
@@ -780,6 +865,13 @@ class CyberbossApp {
           senderId: reminder.senderId,
           workspaceRoot: this.resolveReminderWorkspaceRoot(reminder),
           text: buildReminderSystemTrigger(reminder, this.config),
+          kind: "reminder_due",
+          priority: "high",
+          title: "due_reminder",
+          metadata: {
+            reminderText: normalizeText(reminder?.text),
+            dueAt: formatReminderDueAt(reminder?.dueAtMs),
+          },
           createdAt: new Date().toISOString(),
         });
       } catch {
@@ -801,6 +893,11 @@ class CyberbossApp {
   }
 
   async dispatchSystemMessage(message) {
+    if (isDirectVisibleReplySystemMessage(message)) {
+      await this.sendDirectVisibleSystemReply(message);
+      return true;
+    }
+
     const prepared = this.systemMessageDispatcher?.buildPreparedMessage(message, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
     if (!prepared) {
       throw new Error("system message could not be prepared");
@@ -814,7 +911,35 @@ class CyberbossApp {
     if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
       return false;
     }
-    return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared });
+    const preparedForDispatch = { ...prepared };
+    const runtimeText = preparedForDispatch.runtimeText || preparedForDispatch.text;
+    const memoryContext = await this.attachMemoryContextToPreparedText(
+      preparedForDispatch,
+      runtimeText,
+      workspaceRoot,
+    );
+    preparedForDispatch.runtimeText = runtimeText;
+    preparedForDispatch.text = memoryContext.text;
+    preparedForDispatch.memoryContextPacket = memoryContext.packet;
+    return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared: preparedForDispatch });
+  }
+
+  async sendDirectVisibleSystemReply(message) {
+    const senderId = normalizeText(message?.senderId);
+    const text = normalizeText(message?.text);
+    if (!senderId || !text) {
+      throw new Error("direct visible reply requires sender and text");
+    }
+    const contextToken = this.channelAdapter.getKnownContextTokens()[senderId] || "";
+    if (!contextToken) {
+      throw new Error(`Cannot find context token for direct visible reply user=${senderId}`);
+    }
+    await this.channelAdapter.sendText({
+      userId: senderId,
+      text,
+      contextToken,
+    });
+    recordAiReply();
   }
 
   async dispatchChannelCommand(normalized, command) {
@@ -1268,12 +1393,12 @@ class CyberbossApp {
       return;
     }
     console.log(
-      `[cyberboss] approval response requested thread=${threadId} requestId=${approval.requestId} mode=${approvalResponse.result ? "result" : "decision"} workspace=${workspaceRoot}`
+      `[asheriebridge] approval response requested thread=${threadId} requestId=${approval.requestId} mode=${approvalResponse.result ? "result" : "decision"} workspace=${workspaceRoot}`
     );
     await this.runtimeAdapter.respondApproval(approvalResponse);
     this.runtimeAdapter.getSessionStore().clearApprovalPrompt(threadId);
     console.log(
-      `[cyberboss] approval response delivered thread=${threadId} requestId=${approval.requestId}`
+      `[asheriebridge] approval response delivered thread=${threadId} requestId=${approval.requestId}`
     );
     if (command.name === "always" && approvalResponse.decision === "accept") {
       this.runtimeAdapter.getSessionStore().rememberApprovalPrefixForWorkspace(workspaceRoot, approval.commandTokens);
@@ -1392,6 +1517,16 @@ class CyberbossApp {
       const sessionStore = this.runtimeAdapter.getSessionStore();
       sessionStore.clearApprovalPrompt(event.payload.threadId);
       const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event.payload.threadId);
+      if (
+        event.type === "runtime.turn.failed"
+        && this.runtimeAdapter.describe().id === "claudecode"
+        && linked?.bindingKey
+        && linked?.workspaceRoot
+      ) {
+        sessionStore.clearPendingThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
+        sessionStore.clearThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
+      }
+      await this.writebackRuntimeTurn({ event, linked });
       const scopeKey = linked?.bindingKey && linked?.workspaceRoot
         ? buildScopeKey(linked.bindingKey, linked.workspaceRoot)
         : "";
@@ -1449,7 +1584,22 @@ class CyberbossApp {
       return;
     }
     const allowlist = sessionStore.getApprovalCommandAllowlistForWorkspace(linked.workspaceRoot);
-    const shouldAutoApprove = isAutoApprovedStateDirOperation(event.payload, this.config)
+    if (isForbiddenIdentitySeedFileRead(event.payload, { workspaceRoot: linked.workspaceRoot })) {
+      const approvalResponse = buildApprovalResponsePayload(event.payload, "no");
+      if (approvalResponse) {
+        console.log(
+          `[asheriebridge] approval auto-denied forbidden identity seed read thread=${event.payload.threadId} requestId=${event.payload.requestId}`
+        );
+        sessionStore.clearApprovalPrompt(event.payload.threadId);
+        await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
+        this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+      }
+      return;
+    }
+    const shouldAutoApprove = isAutoApprovedStateDirOperation(event.payload, {
+      ...this.config,
+      workspaceRoot: linked.workspaceRoot,
+    })
       || matchesBuiltInCommandPrefix(event.payload.commandTokens)
       || matchesCommandPrefix(event.payload.commandTokens, allowlist);
     if (!shouldAutoApprove) {
@@ -1458,7 +1608,7 @@ class CyberbossApp {
       if (promptState?.signature && promptState.signature === promptSignature) {
         sessionStore.rememberApprovalPrompt(event.payload.threadId, event.payload.requestId, promptSignature);
         console.log(
-          `[cyberboss] approval prompt deduped thread=${event.payload.threadId} requestId=${event.payload.requestId}`
+          `[asheriebridge] approval prompt deduped thread=${event.payload.threadId} requestId=${event.payload.requestId}`
         );
         return;
       }
@@ -1506,9 +1656,15 @@ class CyberbossApp {
     if (!target) {
       return;
     }
+    const runtimeNotice = shieldRuntimeNoticeForDelivery(text, { provider: target.provider });
+    if (runtimeNotice.shielded && runtimeNotice.action === "silent") {
+      return;
+    }
     await this.channelAdapter.sendText({
       userId: target.userId,
-      text: normalizeText(text) || "❌ Execution failed",
+      text: runtimeNotice.shielded
+        ? runtimeNotice.text
+        : (normalizeText(text) || "❌ Execution failed"),
       contextToken: target.contextToken,
     }).catch(() => {});
   }
@@ -1517,12 +1673,12 @@ class CyberbossApp {
     const target = this.resolveReplyTargetForBinding(bindingKey);
     if (!target) {
       console.warn(
-        `[cyberboss] approval prompt skipped binding=${bindingKey} requestId=${approval?.requestId || ""} reason=no_reply_target`
+        `[asheriebridge] approval prompt skipped binding=${bindingKey} requestId=${approval?.requestId || ""} reason=no_reply_target`
       );
       return;
     }
     console.log(
-      `[cyberboss] approval prompt sending binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
+      `[asheriebridge] approval prompt sending binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
     );
     await this.channelAdapter.sendTyping({
       userId: target.userId,
@@ -1536,7 +1692,7 @@ class CyberbossApp {
       preserveBlock: true,
     });
     console.log(
-      `[cyberboss] approval prompt delivered binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
+      `[asheriebridge] approval prompt delivered binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
     );
   }
 
@@ -1568,6 +1724,7 @@ class CyberbossApp {
         await this.runtimeAdapter.resumeThread({
           threadId: normalizedThreadId,
           workspaceRoot: normalizedWorkspaceRoot,
+          model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, normalizedWorkspaceRoot).model,
         }).catch(() => {});
       }
     }
@@ -1589,10 +1746,197 @@ class CyberbossApp {
       provider: "weixin",
     };
   }
+
+  async attachMemoryContextToPreparedText(normalized, runtimeText, workspaceRoot) {
+    const baseText = String(runtimeText || "").trim();
+    const memoryDomain = this.projectDomains?.memory;
+    if (!baseText || !memoryDomain || typeof memoryDomain.captureContextPacket !== "function") {
+      return {
+        text: baseText,
+        packet: null,
+      };
+    }
+
+    try {
+      const packet = await memoryDomain.captureContextPacket({
+        userId: normalized.senderId,
+        senderId: normalized.senderId,
+        query: normalizeText(normalized.originalText) || normalizeText(normalized.text) || baseText,
+        receivedAt: normalized.receivedAt,
+        sourceClient: normalized.provider === "system" ? "asheriebridge_system_turn" : "asheriebridge_wechat",
+        recallMode: normalized.provider === "system" ? "proactive" : "user_triggered",
+        channelId: "weixin",
+        workspaceRoot,
+      });
+      const prelude = normalizeText(packet?.runtime_prelude || packet?.summary);
+      const frontstageNote = buildWechatFrontstageTurnNote(normalized);
+      const sections = [frontstageNote, prelude].filter(Boolean);
+      if (!sections.length) {
+        return {
+          text: baseText,
+          packet,
+        };
+      }
+      return {
+        text: `${sections.join("\n\n")}\n\n===== Current Inbound Message =====\n${baseText}`,
+        packet,
+      };
+    } catch (error) {
+      console.warn(`[asheriebridge] memory context skipped: ${formatErrorMessage(error)}`);
+      return {
+        text: baseText,
+        packet: null,
+      };
+    }
+  }
+
+  rememberTurnWritebackContext({ turn, prepared, bindingKey, workspaceRoot, dispatchedAtMs = 0 }) {
+    const snapshot = {
+      bindingKey,
+      workspaceRoot,
+      dispatchedAtMs: Number(dispatchedAtMs) || 0,
+      prepared: {
+        workspaceId: prepared.workspaceId,
+        accountId: prepared.accountId,
+        senderId: prepared.senderId,
+        provider: prepared.provider,
+        originalText: prepared.originalText,
+        runtimeText: prepared.runtimeText,
+        text: prepared.text,
+        attachments: prepared.attachments || [],
+        receivedAt: prepared.receivedAt,
+        memoryContextPacket: prepared.memoryContextPacket || null,
+        systemTurn: prepared.systemTurn || null,
+      },
+      model: this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model || "",
+    };
+    const turnId = normalizeCommandArgument(turn?.turnId);
+    const threadId = normalizeCommandArgument(turn?.threadId);
+    if (threadId && turnId) {
+      this.turnWritebackContextByRunKey.set(buildRunKey(threadId, turnId), snapshot);
+      return;
+    }
+    if (threadId) {
+      this.pendingTurnWritebackByThreadId.set(threadId, snapshot);
+    }
+  }
+
+  consumeTurnWritebackContext(threadId, turnId) {
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    const normalizedTurnId = normalizeCommandArgument(turnId);
+    const runKey = buildRunKey(normalizedThreadId, normalizedTurnId);
+    const exact = this.turnWritebackContextByRunKey.get(runKey) || null;
+    if (exact) {
+      this.turnWritebackContextByRunKey.delete(runKey);
+      return exact;
+    }
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const pending = this.pendingTurnWritebackByThreadId.get(normalizedThreadId) || null;
+    if (pending) {
+      this.pendingTurnWritebackByThreadId.delete(normalizedThreadId);
+    }
+    return pending;
+  }
+
+  async writebackRuntimeTurn({ event, linked }) {
+    const memoryDomain = this.projectDomains?.memory;
+    if (!memoryDomain || typeof memoryDomain.writebackTurn !== "function") {
+      return;
+    }
+    const snapshot = this.consumeTurnWritebackContext(event?.payload?.threadId, event?.payload?.turnId);
+    if (!snapshot?.prepared?.senderId) {
+      return;
+    }
+    const threadState = this.threadStateStore.getThreadState(event.payload.threadId);
+    const rawAssistantTextFinal = normalizeText(event?.payload?.text) || normalizeText(threadState?.lastReplyText);
+    const runtimeCapacityNotice = isRuntimeCapacityNotice(rawAssistantTextFinal);
+    const assistantTextFinal = runtimeCapacityNotice ? "" : rawAssistantTextFinal;
+    const role = snapshot.prepared.provider === "system" ? "system" : "user";
+    const incomingTextForCache = snapshot.prepared.originalText
+      || snapshot.prepared.runtimeText
+      || snapshot.prepared.text;
+    try {
+      const writebackResult = await memoryDomain.writebackTurn({
+        userId: snapshot.prepared.senderId,
+        senderId: snapshot.prepared.senderId,
+        accountId: snapshot.prepared.accountId,
+        query: incomingTextForCache,
+        incomingMessages: [
+          {
+            role,
+            content: incomingTextForCache,
+            timestamp: snapshot.prepared.receivedAt || new Date().toISOString(),
+          },
+        ],
+        outboundMessages: assistantTextFinal
+          ? [
+              {
+                role: "assistant",
+                content: assistantTextFinal,
+                timestamp: new Date().toISOString(),
+              },
+            ]
+          : [],
+        assistantTextFinal,
+        status: event.type === "runtime.turn.completed" && !runtimeCapacityNotice ? "ok" : "error",
+        error: runtimeCapacityNotice
+          ? rawAssistantTextFinal
+          : (event.type === "runtime.turn.failed" ? normalizeText(event?.payload?.text) : ""),
+        routeId: linked?.bindingKey || snapshot.bindingKey,
+        transportId: snapshot.prepared.provider === "system" ? "system" : "weixin",
+        runtimeId: this.runtimeAdapter.describe().id,
+        channelId: "weixin",
+        endpointId: event.type,
+        threadId: event.payload.threadId,
+        model: snapshot.model,
+        latencyMs: snapshot.dispatchedAtMs ? Math.max(0, Date.now() - snapshot.dispatchedAtMs) : 0,
+        sourceClient: snapshot.prepared.provider === "system" ? "asheriebridge_system_turn" : "asheriebridge_wechat",
+        memoryContextPacket: snapshot.prepared.memoryContextPacket || null,
+        systemTurn: snapshot.prepared.provider === "system"
+          ? {
+              active: true,
+              trigger_text: incomingTextForCache,
+              ...(snapshot.prepared.systemTurn || {}),
+            }
+          : {},
+      });
+      if (event.type === "runtime.turn.completed") {
+        await finalizeAttachmentNotes({
+          attachments: snapshot.prepared.attachments || [],
+          assistantTextFinal,
+          writebackResult,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      console.warn(`[asheriebridge] writeback skipped thread=${event?.payload?.threadId || ""} ${formatErrorMessage(error)}`);
+    }
+  }
+}
+
+function buildWechatFrontstageTurnNote(normalized = {}) {
+  if (normalizeText(normalized?.provider) === "system") {
+    return "";
+  }
+  return [
+    "[WeChat front-stage note]",
+    "This is ordinary one-on-one WeChat conversation, not a terse tool reply.",
+    "Generic runtime defaults such as \"responses should be short and concise\" do not control this front-stage answer.",
+    "If user-side emoji or stickers appear as ordinary emoji or a short parenthetical cue, read them as emotional context only; do not echo transport placeholder syntax as your house style.",
+    "Unless the user clearly wants speed or brevity, do not collapse the reply into only acknowledgment plus a quick follow-up question.",
+    "If the moment is relational, tired, playful, vulnerable, or carrying afterglow from the previous line, stay for one more beat so the reply feels complete before you decide whether a question is even needed.",
+  ].join("\n");
 }
 
 function buildRunKey(threadId, turnId) {
   return `${normalizeCommandArgument(threadId)}:${normalizeCommandArgument(turnId)}`;
+}
+
+function isDirectVisibleReplySystemMessage(message = {}) {
+  const kind = normalizeText(message?.kind).toLowerCase();
+  return kind === "reply" || kind === "direct_reply";
 }
 
 function normalizeReplyTarget(target) {
@@ -1624,7 +1968,7 @@ function formatContextStatusLine({ runtimeName, context, claudeContextWindow, cl
   if (runtimeName === "claudecode") {
     const configuredWindow = Number(claudeContextWindow);
     if (!Number.isFinite(configuredWindow) || configuredWindow <= 0) {
-      return "📦 context: set CYBERBOSS_CLAUDE_CONTEXT_WINDOW";
+      return "📦 context: set ASHERIEBRIDGE_CLAUDE_CONTEXT_WINDOW";
     }
     const reservedOutputTokens = Math.max(0, Number(claudeMaxOutputTokens) || 0);
     const availableMessageWindow = configuredWindow - reservedOutputTokens;
@@ -1898,7 +2242,10 @@ function matchesBuiltInCommandPrefix(commandTokens) {
     return true;
   }
 
-   if (normalized[0] === "mcp_tool" && normalized[1] === "cyberboss_tools") {
+   if (
+    normalized[0] === "mcp_tool"
+      && normalized[1] === "asheriebridge_tools"
+   ) {
     return true;
   }
 
@@ -2057,6 +2404,26 @@ function buildReminderSystemTrigger(reminder, config = {}) {
   return `Due reminder for ${userName}: ${reminderText}`;
 }
 
+function formatReminderDueAt(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "";
+  }
+  const date = new Date(numeric);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date).replace(/\//g, "-");
+}
+
 function buildScopeKey(bindingKey, workspaceRoot) {
   const normalizedBindingKey = normalizeText(bindingKey);
   const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
@@ -2077,28 +2444,40 @@ function mergePendingInboundDraft(draft) {
     return null;
   }
   if (queued.length === 1) {
+    const only = queued[0];
+    const runtimeText = normalizeText(only.runtimeText) || normalizeText(only.text);
+    const originalText = normalizeText(only.originalText) || runtimeText;
     return {
       bindingKey: draft.bindingKey,
       workspaceRoot: draft.workspaceRoot,
-      ...queued[0],
+      ...only,
+      originalText,
+      runtimeText,
+      text: runtimeText,
     };
   }
 
   const latest = queued[queued.length - 1];
-  const blocks = queued
-    .map((message) => String(message.text || "").trim())
+  const runtimeBlocks = queued
+    .map((message) => normalizeText(message.runtimeText) || normalizeText(message.text))
     .filter(Boolean);
+  const originalBlocks = queued
+    .map((message) => normalizeText(message.originalText) || normalizeText(message.runtimeText) || normalizeText(message.text))
+    .filter(Boolean);
+  const runtimeText = [
+    "Multiple newer WeChat messages arrived while you were still handling the previous turn.",
+    "Treat the following blocks as one ordered batch of fresh user input and respond once after considering all of them.",
+    "",
+    runtimeBlocks.join("\n\n"),
+  ].join("\n").trim();
 
   return {
     bindingKey: draft.bindingKey,
     workspaceRoot: draft.workspaceRoot,
     ...latest,
-    text: [
-      "Multiple newer WeChat messages arrived while you were still handling the previous turn.",
-      "Treat the following blocks as one ordered batch of fresh user input and respond once after considering all of them.",
-      "",
-      blocks.join("\n\n"),
-    ].join("\n").trim(),
+    originalText: originalBlocks.join("\n\n"),
+    runtimeText,
+    text: runtimeText,
   };
 }
 
@@ -2108,6 +2487,10 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
   const failed = Array.isArray(persisted?.failed) ? persisted.failed : [];
   const userName = String(config?.userName || "").trim() || "the user";
   const runtimeId = normalizeText(options?.runtimeId).toLowerCase();
+  const officePaths = resolveWorkspaceOfficePaths({
+    workspaceRoot: options?.workspaceRoot,
+    config,
+  });
   const localTime = formatWechatLocalTime(normalized?.receivedAt);
   const lines = [];
   if (localTime) {
@@ -2124,18 +2507,26 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
     if (lines.length) {
       lines.push("");
     }
-    lines.push(`${userName} sent image/file attachments. They were saved under the local data directory:`);
+    lines.push(`${userName} sent image/file attachments. They were saved into the bound workspace office inbox:`);
     for (const item of saved) {
       const suffix = item.sourceFileName ? ` (original name: ${item.sourceFileName})` : "";
-      lines.push(`- [${item.kind}] ${item.absolutePath}${suffix}`);
+      lines.push(`- [${item.kind}] file: ${item.absolutePath}${suffix}`);
+      if (item.noteAbsolutePath) {
+        lines.push(`  note: ${item.noteAbsolutePath}`);
+      }
     }
-    lines.push(`You must read these files before replying to ${userName}.`);
+    lines.push(`You must inspect the raw attachment files before replying to ${userName}.`);
     if (saved.some((item) => isImageAttachmentItem(item))) {
       if (runtimeUsesReadForImages(runtimeId)) {
         lines.push("For images, use `Read` on the saved local image file.");
       } else {
         lines.push("For images, use `view_image`.");
       }
+      lines.push("If an image is clearly meant as a reusable sticker or reaction image, you may save it with the sticker tool after inspecting it.");
+    }
+    if (officePaths.notesRoot) {
+      lines.push("If an attachment may matter beyond this turn, update its paired attachment note with a short factual summary instead of relying on the raw file alone.");
+      lines.push(`Keep durable attachment notes under: ${officePaths.notesRoot}`);
     }
     lines.push(`If a required tool is missing, tell ${userName} exactly what is missing and that you cannot read the file yet.`);
   }
@@ -2164,8 +2555,8 @@ function isImageAttachmentItem(item) {
 }
 
 function isAutoApprovedStateDirOperation(approval, config = {}) {
-  const stateDir = normalizeText(config?.stateDir);
-  if (!stateDir) {
+  const allowedRoots = resolveManagedApprovalRoots(config);
+  if (!allowedRoots.length) {
     return false;
   }
 
@@ -2174,7 +2565,62 @@ function isAutoApprovedStateDirOperation(approval, config = {}) {
     return false;
   }
 
-  return filePaths.every((filePath) => isPathWithinRoot(filePath, stateDir));
+  return filePaths.every((filePath) => allowedRoots.some((root) => isPathWithinRoot(filePath, root)));
+}
+
+function isForbiddenIdentitySeedFileRead(approval, config = {}) {
+  const command = normalizeText(approval?.command).toLowerCase();
+  const reason = normalizeText(approval?.reason).toLowerCase();
+  const isReadRequest = reason === "tool: read" || command === "read" || command.startsWith("read\n");
+  if (!isReadRequest) {
+    return false;
+  }
+  const workspaceRoot = normalizeText(config?.workspaceRoot);
+  const filePaths = extractApprovalFilePaths(approval);
+  return filePaths.some((filePath) => {
+    const normalized = normalizeText(filePath);
+    if (!normalized) {
+      return false;
+    }
+    const lower = normalized.toLowerCase();
+    const base = path.basename(lower);
+    const looksLikeSeed = (
+      base === "soul.md"
+      || base === "persona.md"
+      || base === "人格提示词.md"
+      || lower.includes("/00_system/soul.md")
+      || lower.includes("/aji-memory/00_system/")
+    );
+    if (!looksLikeSeed) {
+      return false;
+    }
+    if (workspaceRoot && isPathWithinRoot(normalized, workspaceRoot)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function resolveManagedApprovalRoots(config = {}) {
+  const roots = [];
+  const stateDir = normalizeText(config?.stateDir);
+  if (stateDir) {
+    roots.push(stateDir);
+  }
+
+  const officePaths = resolveWorkspaceOfficePaths({
+    workspaceRoot: config?.workspaceRoot,
+    config,
+  });
+  const journalDir = normalizeText(officePaths?.journalFile) ? path.dirname(officePaths.journalFile) : "";
+  for (const candidate of [officePaths.inboxRoot, officePaths.notesRoot, journalDir]) {
+    const normalized = normalizeText(candidate);
+    if (normalized && !roots.includes(normalized)) {
+      roots.push(normalized);
+    }
+  }
+
+  return roots;
 }
 
 function sortInboundUpdateMessages(messages) {

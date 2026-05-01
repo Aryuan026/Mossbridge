@@ -7,8 +7,8 @@ const IS_WINDOWS = os.platform() === "win32";
 const DEFAULT_CODEX_COMMAND = "codex";
 const WINDOWS_EXECUTABLE_SUFFIX_RE = /\.(cmd|exe|bat)$/i;
 const CODEX_CLIENT_INFO = {
-  name: "cyberboss_agent",
-  title: "Cyberboss Agent",
+  name: "asheriebridge_agent",
+  title: "AsherieBridge Agent",
   version: "0.1.0",
 };
 
@@ -281,7 +281,7 @@ class CodexRpcClient {
 }
 
 function resolveDefaultCodexCommand(env = process.env) {
-  return normalizeNonEmptyString(env.CYBERBOSS_CODEX_COMMAND) || DEFAULT_CODEX_COMMAND;
+  return normalizeNonEmptyString(env.ASHERIEBRIDGE_CODEX_COMMAND) || DEFAULT_CODEX_COMMAND;
 }
 
 function buildCodexCommandCandidates(configuredCommand) {

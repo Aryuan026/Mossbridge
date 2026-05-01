@@ -76,7 +76,7 @@ function cleanupStaleAccountsForUserId(config, activeAccount) {
   for (const staleAccount of staleAccounts) {
     deleteWeixinAccount(config, staleAccount.accountId);
     clearPersistedContextTokens(config, staleAccount.accountId);
-    console.log(`[cyberboss] removed stale account ${staleAccount.accountId} for userId ${activeUserId}`);
+    console.log(`[asheriebridge] removed stale account ${staleAccount.accountId} for userId ${activeUserId}`);
   }
   return staleAccounts;
 }
@@ -145,7 +145,7 @@ async function waitForWeixinLogin({ apiBaseUrl, botType, timeoutMs }) {
 }
 
 async function runLoginFlow(config) {
-  console.log("[cyberboss] starting WeChat QR login...");
+  console.log("[asheriebridge] starting WeChat QR login...");
   const result = await waitForWeixinLogin({
     apiBaseUrl: config.weixinBaseUrl,
     botType: config.weixinQrBotType,

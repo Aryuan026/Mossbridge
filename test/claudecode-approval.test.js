@@ -15,11 +15,11 @@ test("claudecode approval events extract command tokens from exec_command input"
     requestId: "req-1",
     toolName: "exec_command",
     input: {
-      cmd: "cyberboss reminder write --delay 30m --text 'Reminder text'",
+      cmd: "asheriebridge reminder write --delay 30m --text 'Reminder text'",
     },
   });
 
-  assert.deepEqual(event.payload.commandTokens, ["cyberboss", "reminder", "write"]);
+  assert.deepEqual(event.payload.commandTokens, ["asheriebridge", "reminder", "write"]);
 });
 
 test("claudecode approval events prefer prefix_rule when present", () => {
@@ -44,11 +44,11 @@ test("claudecode approval events canonicalize diary commands for stable always m
     requestId: "req-diary",
     toolName: "exec_command",
     input: {
-      cmd: "/Users/tingyiwen/Dev/cyberboss/bin/cyberboss diary write --date 2026-04-17 --title '4.17' --text 'hello'",
+      cmd: "/Users/tingyiwen/Dev/asheriebridge/bin/asheriebridge diary write --date 2026-04-17 --title '4.17' --text 'hello'",
     },
   });
 
-  assert.deepEqual(event.payload.commandTokens, ["cyberboss", "diary", "write"]);
+  assert.deepEqual(event.payload.commandTokens, ["asheriebridge", "diary", "write"]);
 });
 
 test("claudecode approval events canonicalize view_image tool approvals", () => {
@@ -70,15 +70,15 @@ test("claudecode approval events canonicalize MCP tool approvals for stable alwa
     type: "approval.requested",
     sessionId: "thread-1",
     requestId: "req-mcp-timeline",
-    toolName: "mcp__cyberboss_tools__cyberboss_timeline_write",
+    toolName: "mcp__asheriebridge_tools__asheriebridge_timeline_write",
     input: {
       date: "2026-04-21",
       events: [],
     },
   });
 
-  assert.deepEqual(event.payload.commandTokens, ["mcp_tool", "cyberboss_tools", "cyberboss_timeline_write"]);
-  assert.match(event.payload.command, /^cyberboss_timeline_write\b/);
+  assert.deepEqual(event.payload.commandTokens, ["mcp_tool", "asheriebridge_tools", "asheriebridge_timeline_write"]);
+  assert.match(event.payload.command, /^asheriebridge_timeline_write\b/);
 });
 
 test("claudecode approval events canonicalize Read image approvals for stable matching", () => {
@@ -88,12 +88,12 @@ test("claudecode approval events canonicalize Read image approvals for stable ma
     requestId: "req-read-image",
     toolName: "Read",
     input: {
-      file_path: "/Users/tingyiwen/.cyberboss/inbox/2026-04-17/attachment-5.jpg",
+      file_path: "/Users/tingyiwen/.asheriebridge/inbox/2026-04-17/attachment-5.jpg",
     },
   });
 
   assert.deepEqual(event.payload.commandTokens, ["read_image"]);
-  assert.equal(event.payload.filePath, "/Users/tingyiwen/.cyberboss/inbox/2026-04-17/attachment-5.jpg");
+  assert.equal(event.payload.filePath, "/Users/tingyiwen/.asheriebridge/inbox/2026-04-17/attachment-5.jpg");
 });
 
 test("claudecode approval events keep non-image Read approvals as file reads", () => {
@@ -103,12 +103,12 @@ test("claudecode approval events keep non-image Read approvals as file reads", (
     requestId: "req-read-text",
     toolName: "Read",
     input: {
-      file_path: "/Users/tingyiwen/.cyberboss/inbox/2026-04-17/note.txt",
+      file_path: "/Users/tingyiwen/.asheriebridge/inbox/2026-04-17/note.txt",
     },
   });
 
   assert.deepEqual(event.payload.commandTokens, []);
-  assert.equal(event.payload.filePath, "/Users/tingyiwen/.cyberboss/inbox/2026-04-17/note.txt");
+  assert.equal(event.payload.filePath, "/Users/tingyiwen/.asheriebridge/inbox/2026-04-17/note.txt");
 });
 
 test("claudecode approval events capture Write file paths for state-dir auto approve", () => {
@@ -118,13 +118,13 @@ test("claudecode approval events capture Write file paths for state-dir auto app
     requestId: "req-write",
     toolName: "Write",
     input: {
-      file_path: "/Users/tingyiwen/.cyberboss/notes/today.md",
+      file_path: "/Users/tingyiwen/.asheriebridge/notes/today.md",
       content: "hello",
     },
   });
 
-  assert.equal(event.payload.filePath, "/Users/tingyiwen/.cyberboss/notes/today.md");
-  assert.deepEqual(event.payload.filePaths, ["/Users/tingyiwen/.cyberboss/notes/today.md"]);
+  assert.equal(event.payload.filePath, "/Users/tingyiwen/.asheriebridge/notes/today.md");
+  assert.deepEqual(event.payload.filePaths, ["/Users/tingyiwen/.asheriebridge/notes/today.md"]);
 });
 
 test("claudecode assistant events map usage into context snapshots", () => {
@@ -149,6 +149,27 @@ test("claudecode assistant events map usage into context snapshots", () => {
   assert.equal(event.payload.runtimeId, "claudecode");
   assert.equal(event.payload.threadId, "thread-1");
   assert.equal(event.payload.currentTokens, 27201);
+});
+
+test("claudecode process close only fails an active turn", () => {
+  const activeClose = mapClaudeCodeMessageToRuntimeEvent({
+    type: "process.close",
+    sessionId: "thread-1",
+    turnId: "turn-1",
+    code: 1,
+    stderrTail: "model unavailable",
+  });
+  const idleClose = mapClaudeCodeMessageToRuntimeEvent({
+    type: "process.closed",
+    sessionId: "thread-1",
+    code: 0,
+  });
+
+  assert.equal(activeClose.type, "runtime.turn.failed");
+  assert.match(activeClose.payload.text, /exit code: 1/);
+  assert.match(activeClose.payload.text, /model unavailable/);
+  assert.equal(idleClose.type, "runtime.process.closed");
+  assert.doesNotMatch(idleClose.payload.text, /turn\.failed/);
 });
 
 test("handleRuntimeEvent prompts for project shell commands instead of auto-approving them", async () => {
@@ -190,7 +211,7 @@ test("handleRuntimeEvent prompts for project shell commands instead of auto-appr
     payload: {
       threadId: "thread-1",
       requestId: "req-3",
-      commandTokens: ["cyberboss", "timeline", "write", "--date", "2026-04-17"],
+      commandTokens: ["asheriebridge", "timeline", "write", "--date", "2026-04-17"],
     },
   });
 
@@ -469,6 +490,7 @@ test("handleRuntimeEvent reports compact completion back to WeChat", async () =>
     async flushPendingInboundMessages() {},
     async flushPendingSystemMessages() {},
     async stopTypingForThread() {},
+    async writebackRuntimeTurn() {},
     channelAdapter: {
       async sendText(payload) {
         sent.push(payload.text);
@@ -565,7 +587,7 @@ test("handleRuntimeEvent auto-approves project-native MCP tool approvals without
     payload: {
       threadId: "thread-1",
       requestId: "req-project-tool",
-      commandTokens: ["mcp_tool", "cyberboss_tools", "cyberboss_timeline_write"],
+      commandTokens: ["mcp_tool", "asheriebridge_tools", "asheriebridge_timeline_write"],
     },
   });
 
@@ -575,8 +597,15 @@ test("handleRuntimeEvent auto-approves project-native MCP tool approvals without
 test("handleRuntimeEvent auto-approves inbox image reads for claudecode without prompting", async () => {
   const responses = [];
   const stateDir = path.join(os.tmpdir(), "cyberboss-approval-test");
+  const workspaceRoot = path.join(os.tmpdir(), "cyberboss-office-workspace");
   const appLike = {
-    config: { stateDir },
+    config: {
+      stateDir,
+      workspaceRoot,
+      workspaceInboxDir: path.join("wechat", "inbox"),
+      workspaceAttachmentNotesDir: path.join("context", "attachment-notes"),
+      workspaceAttachmentJournalFile: path.join("context", "attachment-journal.jsonl"),
+    },
     streamDelivery: {
       async handleRuntimeEvent() {},
     },
@@ -585,7 +614,7 @@ test("handleRuntimeEvent auto-approves inbox image reads for claudecode without 
         return {
           clearApprovalPrompt() {},
           findBindingForThreadId() {
-            return { bindingKey: "binding-1", workspaceRoot: "/workspace" };
+            return { bindingKey: "binding-1", workspaceRoot };
           },
           getApprovalCommandAllowlistForWorkspace() {
             return [];
@@ -609,12 +638,64 @@ test("handleRuntimeEvent auto-approves inbox image reads for claudecode without 
     payload: {
       threadId: "thread-1",
       requestId: "req-read-img-2",
-      filePath: path.join(stateDir, "inbox", "2026-04-17", "attachment.jpg"),
+      filePath: path.join(workspaceRoot, "wechat", "inbox", "2026-04-17", "attachment.jpg"),
       commandTokens: ["read_image"],
     },
   });
 
   assert.deepEqual(responses, [{ requestId: "req-read-img-2", decision: "accept" }]);
+});
+
+test("handleRuntimeEvent auto-approves workspace attachment note writes without prompting", async () => {
+  const responses = [];
+  const stateDir = path.join(os.tmpdir(), "cyberboss-approval-test");
+  const workspaceRoot = path.join(os.tmpdir(), "cyberboss-office-workspace");
+  const appLike = {
+    config: {
+      stateDir,
+      workspaceRoot,
+      workspaceInboxDir: path.join("wechat", "inbox"),
+      workspaceAttachmentNotesDir: path.join("context", "attachment-notes"),
+      workspaceAttachmentJournalFile: path.join("context", "attachment-journal.jsonl"),
+    },
+    streamDelivery: {
+      async handleRuntimeEvent() {},
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          clearApprovalPrompt() {},
+          findBindingForThreadId() {
+            return { bindingKey: "binding-1", workspaceRoot };
+          },
+          getApprovalCommandAllowlistForWorkspace() {
+            return [];
+          },
+        };
+      },
+      async respondApproval(payload) {
+        responses.push(payload);
+      },
+    },
+    threadStateStore: {
+      resolveApproval() {},
+    },
+    async sendApprovalPrompt() {
+      throw new Error("should not prompt for attachment note write");
+    },
+  };
+
+  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+    type: "runtime.approval.requested",
+    payload: {
+      threadId: "thread-1",
+      requestId: "req-write-note",
+      filePath: path.join(workspaceRoot, "context", "attachment-notes", "2026-04-26", "meteor.md"),
+      commandTokens: [],
+    },
+  });
+
+  assert.deepEqual(responses, [{ requestId: "req-write-note", decision: "accept" }]);
 });
 
 test("handleRuntimeEvent auto-approves any state-dir file operation without prompting", async () => {
@@ -663,6 +744,53 @@ test("handleRuntimeEvent auto-approves any state-dir file operation without prom
   });
 
   assert.deepEqual(responses, [{ requestId: "req-write-2", decision: "accept" }]);
+});
+
+test("handleRuntimeEvent auto-denies external soul seed reads without prompting", async () => {
+  const responses = [];
+  const appLike = {
+    config: { stateDir: path.join(os.tmpdir(), "cyberboss-approval-test") },
+    streamDelivery: {
+      async handleRuntimeEvent() {},
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          clearApprovalPrompt() {},
+          findBindingForThreadId() {
+            return { bindingKey: "binding-1", workspaceRoot: "/Users/mac/Documents/Codex/1-Asherie" };
+          },
+          getApprovalCommandAllowlistForWorkspace() {
+            return [];
+          },
+        };
+      },
+      async respondApproval(payload) {
+        responses.push(payload);
+      },
+    },
+    threadStateStore: {
+      resolveApproval() {},
+    },
+    async sendApprovalPrompt() {
+      throw new Error("should not prompt for identity seed read");
+    },
+  };
+
+  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+    type: "runtime.approval.requested",
+    payload: {
+      threadId: "thread-1",
+      requestId: "req-soul-read",
+      filePath: "/Users/mac/Documents/AI/Aji-Memory/00_System/soul.md",
+      filePaths: ["/Users/mac/Documents/AI/Aji-Memory/00_System/soul.md"],
+      commandTokens: [],
+      reason: "Tool: Read",
+      command: "Read\nfile_path: \"/Users/mac/Documents/AI/Aji-Memory/00_System/soul.md\"",
+    },
+  });
+
+  assert.deepEqual(responses, [{ requestId: "req-soul-read", decision: "decline" }]);
 });
 
 test("handleRuntimeEvent still prompts for non-inbox image reads", async () => {
@@ -774,7 +902,7 @@ test("handleRuntimeEvent auto-approves allowlisted MCP tool approvals", async ()
             return { bindingKey: "binding-1", workspaceRoot: "/workspace" };
           },
           getApprovalCommandAllowlistForWorkspace() {
-            return [["mcp_tool", "cyberboss_tools", "cyberboss_timeline_write"]];
+            return [["mcp_tool", "asheriebridge_tools", "asheriebridge_timeline_write"]];
           },
         };
       },
@@ -795,7 +923,7 @@ test("handleRuntimeEvent auto-approves allowlisted MCP tool approvals", async ()
     payload: {
       threadId: "thread-1",
       requestId: "req-mcp-allow",
-      commandTokens: ["mcp_tool", "cyberboss_tools", "cyberboss_timeline_write"],
+      commandTokens: ["mcp_tool", "asheriebridge_tools", "asheriebridge_timeline_write"],
     },
   });
 
@@ -996,7 +1124,7 @@ test("handleStatusCommand asks to configure claudecode context window before sho
     contextToken: "ctx-1",
   });
 
-  assert.match(sent[0], /📦 context: set CYBERBOSS_CLAUDE_CONTEXT_WINDOW/);
+  assert.match(sent[0], /📦 context: set ASHERIEBRIDGE_CLAUDE_CONTEXT_WINDOW/);
 });
 
 test("handleStatusCommand shows approximate context details for claudecode when configured", async () => {

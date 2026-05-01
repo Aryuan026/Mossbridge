@@ -1,4 +1,6 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
+const { recordAiReply } = require("./activity-tracker");
+const { shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
@@ -309,7 +311,7 @@ class StreamDelivery {
       const failedDelivery = pendingDeliveries[0];
       const failedText = buildDeliveryPreviewText(failedDelivery);
       void this.deferSystemReply(state, buildEffectiveReplyText(state.deferredReplyPrefix, failedText), error, "plain_reply");
-      console.error(`[cyberboss] failed to deliver reply thread=${state.threadId}: ${error.message}`);
+      console.error(`[asheriebridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
     });
 
     await state.sendChain;
@@ -325,14 +327,14 @@ class StreamDelivery {
     if (resolved.kind === "silent") {
       this.markAllItemsSent(state);
       console.log(
-        `[cyberboss] suppressed system reply thread=${state.threadId} action=silent preview=${JSON.stringify(replyText.slice(0, 120))}`
+        `[asheriebridge] suppressed system reply thread=${state.threadId} action=silent preview=${JSON.stringify(replyText.slice(0, 120))}`
       );
       return;
     }
 
     if (resolved.kind !== "send_message") {
       console.error(
-        `[cyberboss] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
+        `[asheriebridge] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
       );
       return;
     }
@@ -341,7 +343,7 @@ class StreamDelivery {
       await this.sendSystemReply(state, resolved.message);
       this.markAllItemsSent(state);
     }).catch((error) => {
-      console.error(`[cyberboss] failed to deliver system reply thread=${state.threadId}: ${error.message}`);
+      console.error(`[asheriebridge] failed to deliver system reply thread=${state.threadId}: ${error.message}`);
     });
 
     await state.sendChain;
@@ -358,7 +360,7 @@ class StreamDelivery {
 
     if (delivery.kind === "invalid_action") {
       console.error(
-        `[cyberboss] invalid structured action item thread=${state.threadId} reason=${delivery.reason} preview=${JSON.stringify((delivery.sourceText || "").slice(0, 160))}`
+        `[asheriebridge] invalid structured action item thread=${state.threadId} reason=${delivery.reason} preview=${JSON.stringify((delivery.sourceText || "").slice(0, 160))}`
       );
       return;
     }
@@ -393,6 +395,7 @@ class StreamDelivery {
     const initialTarget = state.replyTarget;
     try {
       await this.channelAdapter.sendText(payload);
+      recordAiReply();
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -404,7 +407,7 @@ class StreamDelivery {
         throw error;
       }
       console.warn(
-        `[cyberboss] system reply retrying with refreshed context token thread=${state.threadId} user=${retryTarget.userId}`
+        `[asheriebridge] system reply retrying with refreshed context token thread=${state.threadId} user=${retryTarget.userId}`
       );
       try {
         const retryPayload = {
@@ -416,6 +419,7 @@ class StreamDelivery {
           retryPayload.preserveBlock = true;
         }
         await this.channelAdapter.sendText(retryPayload);
+        recordAiReply();
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
           this.replyTargetByBindingKey.set(state.bindingKey, {
@@ -454,11 +458,11 @@ class StreamDelivery {
         kind,
       });
       console.warn(
-        `[cyberboss] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
+        `[asheriebridge] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
       );
       return true;
     } catch (deferError) {
-      console.error(`[cyberboss] failed to defer system reply thread=${state.threadId}: ${deferError.message}`);
+      console.error(`[asheriebridge] failed to defer system reply thread=${state.threadId}: ${deferError.message}`);
       return false;
     }
   }
@@ -597,6 +601,19 @@ function collectPendingReplyDeliveries(state, { force }) {
     if (!sanitizedText) {
       continue;
     }
+    if (isLikelyToolDeliverySummary(sanitizedText)) {
+      pending.push({ itemId, kind: "silent", sourceText });
+      continue;
+    }
+    const runtimeNotice = shieldRuntimeNoticeForDelivery(sanitizedText, {
+      provider: state?.replyTarget?.provider,
+    });
+    if (runtimeNotice.shielded) {
+      pending.push(runtimeNotice.action === "replace"
+        ? { itemId, kind: "plain", text: runtimeNotice.text }
+        : { itemId, kind: "silent", sourceText });
+      continue;
+    }
     pending.push({ itemId, kind: "plain", text: sanitizedText });
   }
   return pending;
@@ -719,10 +736,22 @@ function sanitizeReplyText(plainReplyText) {
   return trimOuterBlankLines(protocolSanitized.text || "");
 }
 
+function isLikelyToolDeliverySummary(text) {
+  const normalized = trimOuterBlankLines(normalizeLineEndings(text));
+  if (!normalized || normalized.length > 260) {
+    return false;
+  }
+  return /^(回复已发出|消息已发出|已发出)[：:——-]/u.test(normalized);
+}
+
 function resolveSystemReplyAction(replyText) {
   const normalized = normalizeLineEndings(String(replyText || "")).trim();
   if (!normalized) {
     return { kind: "invalid", reason: "final reply is empty" };
+  }
+  const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, { provider: "system" });
+  if (runtimeNotice.shielded) {
+    return { kind: "silent", reason: "runtime capacity notice" };
   }
 
   const candidate = extractSystemActionJsonCandidate(normalized) || normalized;
@@ -731,7 +760,7 @@ function resolveSystemReplyAction(replyText) {
     return { kind: "invalid", reason: "final reply is not a JSON object" };
   }
 
-  const action = normalizeSystemActionName(parsed.action || parsed.cyberboss_action);
+  const action = normalizeSystemActionName(parsed.action);
   if (action === "silent") {
     return { kind: "silent" };
   }
@@ -816,7 +845,9 @@ function tryParseJson(value) {
 }
 
 function extractSystemActionJsonCandidate(text) {
-  const normalized = normalizeLineEndings(String(text || "")).trim();
+  let normalized = normalizeLineEndings(String(text || "")).trim();
+  // Strip trailing markdown code fence if present (model sometimes wraps JSON in ```...```)
+  normalized = normalized.replace(/```\s*$/, "").trim();
   if (!normalized || !normalized.endsWith("}")) {
     return "";
   }
@@ -832,7 +863,7 @@ function extractSystemActionJsonCandidate(text) {
     if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
       continue;
     }
-    if ("action" in parsed || "cyberboss_action" in parsed) {
+    if ("action" in parsed) {
       return candidate;
     }
   }

@@ -6,6 +6,7 @@ const MESSAGE_ITEM_VOICE = 3;
 const MESSAGE_ITEM_FILE = 4;
 const MESSAGE_ITEM_VIDEO = 5;
 const DEDUP_TTL_MS = 5 * 60_000;
+const { normalizeInboundWeixinEmojiShortcodes } = require("./emoji-shortcodes");
 
 function createInboundFilter() {
   const seen = new Map();
@@ -70,7 +71,7 @@ function bodyFromItemList(items) {
   for (const item of items) {
     const itemType = Number(item?.type);
     if (itemType === MESSAGE_ITEM_TEXT) {
-      const text = normalizeText(item?.text_item?.text);
+      const text = normalizeInboundWeixinEmojiShortcodes(normalizeText(item?.text_item?.text)).trim();
       if (!text) {
         continue;
       }
@@ -93,7 +94,7 @@ function bodyFromItemList(items) {
       return `[Quoted: ${parts.join(" | ")}]\n${text}`;
     }
     if (itemType === MESSAGE_ITEM_VOICE) {
-      const voiceText = normalizeText(item?.voice_item?.text);
+      const voiceText = normalizeInboundWeixinEmojiShortcodes(normalizeText(item?.voice_item?.text)).trim();
       if (voiceText) {
         return voiceText;
       }

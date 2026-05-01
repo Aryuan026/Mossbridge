@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-function ensureClaudeProjectMcpConfig({ workspaceRoot, cyberbossHome = "" } = {}) {
+function ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome = "" } = {}) {
   const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
   if (!normalizedWorkspaceRoot) {
     throw new Error("workspaceRoot is required to configure Claude project tools.");
@@ -13,9 +13,9 @@ function ensureClaudeProjectMcpConfig({ workspaceRoot, cyberbossHome = "" } = {}
     ...current,
     mcpServers: {
       ...(current.mcpServers && typeof current.mcpServers === "object" ? current.mcpServers : {}),
-      cyberboss_tools: buildClaudeProjectMcpServerConfig({
+      asheriebridge_tools: buildClaudeProjectMcpServerConfig({
         workspaceRoot: normalizedWorkspaceRoot,
-        cyberbossHome,
+        asheriebridgeHome,
       }),
     },
   };
@@ -26,17 +26,19 @@ function ensureClaudeProjectMcpConfig({ workspaceRoot, cyberbossHome = "" } = {}
 
   return {
     configPath,
-    serverName: "cyberboss_tools",
+    serverName: "asheriebridge_tools",
     config: next,
   };
 }
 
-function buildClaudeProjectMcpServerConfig({ workspaceRoot, cyberbossHome = "" } = {}) {
+function buildClaudeProjectMcpServerConfig({ workspaceRoot, asheriebridgeHome = "" } = {}) {
   const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
-  const home = normalizeText(cyberbossHome) || process.env.CYBERBOSS_HOME || path.resolve(__dirname, "..", "..", "..", "..");
-  const scriptPath = path.join(home, "bin", "cyberboss.js");
+  const home = normalizeText(asheriebridgeHome)
+    || process.env.ASHERIEBRIDGE_HOME
+    || path.resolve(__dirname, "..", "..", "..", "..");
+  const scriptPath = path.join(home, "bin", "asheriebridge.js");
   if (!fs.existsSync(scriptPath)) {
-    throw new Error(`Cyberboss MCP entrypoint not found: ${scriptPath}`);
+    throw new Error(`AsherieBridge MCP entrypoint not found: ${scriptPath}`);
   }
   return {
     command: process.execPath,

@@ -2,13 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="${0:A:h:h}"
-PORT="${CYBERBOSS_SHARED_PORT:-8765}"
+PORT="${ASHERIEBRIDGE_SHARED_PORT:-8765}"
 LISTEN_URL="ws://127.0.0.1:${PORT}"
-STATE_DIR="${CYBERBOSS_STATE_DIR:-$HOME/.cyberboss}"
+STATE_DIR="${ASHERIEBRIDGE_STATE_DIR:-$HOME/.asheriebridge}"
 LOG_DIR="${STATE_DIR}/logs"
 PID_FILE="${LOG_DIR}/shared-app-server.pid"
 LOG_FILE="${LOG_DIR}/shared-app-server.log"
-CODEX_COMMAND="${CYBERBOSS_CODEX_COMMAND:-codex}"
+CODEX_COMMAND="${ASHERIEBRIDGE_CODEX_COMMAND:-codex}"
 
 function lookup_listen_pid() {
   lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null \
@@ -16,12 +16,12 @@ function lookup_listen_pid() {
 }
 
 mkdir -p "${LOG_DIR}"
-export CYBERBOSS_STATE_DIR="${STATE_DIR}"
+export ASHERIEBRIDGE_STATE_DIR="${STATE_DIR}"
 export TIMELINE_FOR_AGENT_STATE_DIR="${STATE_DIR}"
 if [[ -z "${TIMELINE_FOR_AGENT_CHROME_PATH:-}" ]]; then
-  export TIMELINE_FOR_AGENT_CHROME_PATH="${CYBERBOSS_SCREENSHOT_CHROME_PATH:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+  export TIMELINE_FOR_AGENT_CHROME_PATH="${ASHERIEBRIDGE_SCREENSHOT_CHROME_PATH:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 fi
-export CYBERBOSS_HOME="${CYBERBOSS_HOME:-${ROOT_DIR}}"
+export ASHERIEBRIDGE_HOME="${ASHERIEBRIDGE_HOME:-${ROOT_DIR}}"
 
 MCP_CONFIG_ARGS=()
 while IFS= read -r line; do
@@ -33,7 +33,7 @@ done < <(
     const helper = require(process.argv[1]);
     const args = helper.buildCodexMcpConfigArgs(
       helper.resolveCodexProjectToolMcpServerConfig({
-        cyberbossHome: process.env.CYBERBOSS_HOME || process.argv[2],
+        asheriebridgeHome: process.env.ASHERIEBRIDGE_HOME || process.argv[2],
       })
     );
     for (const arg of args) {

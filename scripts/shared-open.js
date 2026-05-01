@@ -11,13 +11,13 @@ const {
 } = require("./shared-common");
 
 async function main() {
-  const workspaceRoot = process.env.CYBERBOSS_WORKSPACE_ROOT || process.cwd();
-  const runtime = process.env.CYBERBOSS_RUNTIME || "codex";
+  const workspaceRoot = process.env.ASHERIEBRIDGE_WORKSPACE_ROOT || process.cwd();
+  const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
 
   if (runtime === "codex") {
     await ensureSharedAppServer();
     const { threadId, workspaceRoot: resolvedWorkspaceRoot } = resolveBoundThread(workspaceRoot);
-    const child = spawn(process.env.CYBERBOSS_CODEX_COMMAND || "codex", [
+    const child = spawn(process.env.ASHERIEBRIDGE_CODEX_COMMAND || "codex", [
       "resume",
       threadId,
       "--remote",
@@ -42,12 +42,12 @@ async function main() {
 
   // For Claude: connect to the bridge's IPC socket so we can observe and
   // interact with the same ClaudeCode process that handles WeChat messages.
-  const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
+  const stateDir = process.env.ASHERIEBRIDGE_STATE_DIR || path.join(os.homedir(), ".asheriebridge");
   const socketPath = path.join(stateDir, "claudecode-runtime.sock");
 
   if (!fs.existsSync(socketPath)) {
     console.error(`Claude IPC socket not found: ${socketPath}`);
-    console.error("Make sure the bridge is running with CYBERBOSS_RUNTIME=claudecode.");
+    console.error("Make sure the bridge is running with ASHERIEBRIDGE_RUNTIME=claudecode.");
     process.exit(1);
   }
 
@@ -236,7 +236,7 @@ function formatReadableToolName(toolName) {
 
 function isProjectNativeToolApproval(toolName) {
   const normalized = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
-  return normalized.startsWith("mcp__cyberboss_tools__");
+  return normalized.startsWith("mcp__asheriebridge_tools__");
 }
 
 main().catch((error) => {

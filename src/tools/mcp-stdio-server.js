@@ -28,7 +28,7 @@ function runToolMcpServer({ toolHost, runtimeId = "", workspaceRoot = "" }) {
             },
           },
           serverInfo: {
-            name: "cyberboss-tools",
+            name: "asheriebridge-tools",
             version: "0.1.0",
           },
         }, reader.getMode());
@@ -141,15 +141,15 @@ function buildToolResources(toolCatalog) {
   const tools = Array.isArray(toolCatalog) ? toolCatalog : [];
   const resources = [];
   resources.push({
-    uri: "cyberboss://tools/index",
-    name: "Cyberboss Tool Index",
-    description: "Overview of Cyberboss project tools with schemas and usage notes.",
+    uri: "asheriebridge://tools/index",
+    name: "AsherieBridge Tool Index",
+    description: "Overview of AsherieBridge project tools with schemas and usage notes.",
     mimeType: "text/markdown",
     text: buildToolIndexMarkdown(tools),
   });
   for (const tool of tools) {
     resources.push({
-      uri: `cyberboss://tools/${tool.name}`,
+      uri: `asheriebridge://tools/${tool.name}`,
       name: `${tool.name} schema`,
       description: `Detailed schema and usage guidance for ${tool.name}.`,
       mimeType: "text/markdown",
@@ -161,9 +161,9 @@ function buildToolResources(toolCatalog) {
 
 function buildToolIndexMarkdown(tools) {
   const lines = [
-    "# Cyberboss Project Tools",
+    "# AsherieBridge Project Tools",
     "",
-    "These are Cyberboss project tools.",
+    "These are AsherieBridge project tools.",
     "",
   ];
   for (const tool of tools) {

@@ -354,6 +354,7 @@ Agent-facing Cyberboss capabilities are project-native structured tools.
 ## Docs
 
 - [docs/commands.md](./docs/commands.md)
+- [docs/memory-storage.md](./docs/memory-storage.md)
 
 <a id="faq"></a>
 ## FAQ

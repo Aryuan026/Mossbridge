@@ -1,12 +1,14 @@
 const { spawn } = require("child_process");
 
 class ClaudeCodeProcessClient {
-  constructor({ command = "claude", cwd, env, model = "", permissionMode = "default", disableVerbose = false, extraArgs = [], mcpConfigPaths = [], ipcServer = null, workspaceRoot = "" }) {
+  constructor({ command = "claude", cwd, env, model = "", permissionMode = "default", bare = false, appendSystemPrompt = "", disableVerbose = false, extraArgs = [], mcpConfigPaths = [], ipcServer = null, workspaceRoot = "" }) {
     this.command = command;
     this.cwd = cwd;
     this.env = env;
     this.model = model;
     this.permissionMode = permissionMode;
+    this.bare = bare;
+    this.appendSystemPrompt = appendSystemPrompt;
     this.disableVerbose = disableVerbose;
     this.extraArgs = extraArgs;
     this.mcpConfigPaths = mcpConfigPaths;
@@ -20,8 +22,10 @@ class ClaudeCodeProcessClient {
     this.sessionId = "";
     this.resumeSessionId = "";
     this.activeThreadId = "";
+    this.assistantItemSequence = 0;
     this.alive = false;
     this.sessionWaiters = new Set();
+    this.stderrTail = "";
   }
 
   onMessage(listener) {
@@ -46,10 +50,16 @@ class ClaudeCodeProcessClient {
     if (this.child) return;
     this.sessionId = "";
     this.resumeSessionId = isValidSessionId(resumeSessionId) ? resumeSessionId : "";
-    this.activeThreadId = "";
+    // When resuming a ClaudeCode conversation, the bridge already knows the
+    // canonical session id. Do not block WeChat delivery waiting for ClaudeCode
+    // to echo the same id before the first streamed event arrives.
+    this.sessionId = this.resumeSessionId;
+    this.activeThreadId = this.resumeSessionId;
     const args = buildArgs({
       model: this.model,
       permissionMode: this.permissionMode,
+      bare: this.bare,
+      appendSystemPrompt: this.appendSystemPrompt,
       disableVerbose: this.disableVerbose,
       extraArgs: this.extraArgs,
       mcpConfigPaths: this.mcpConfigPaths,
@@ -84,26 +94,47 @@ class ClaudeCodeProcessClient {
       const text = chunk.toString("utf8").trim();
       if (text) {
         console.error(`[claudecode-runtime] stderr: ${text}`);
-        if (this.ipcServer && !isPotentiallySensitive(text)) {
-          this.ipcServer.broadcast({ type: "stderr", text });
+        if (!isPotentiallySensitive(text)) {
+          this.stderrTail = appendTextTail(this.stderrTail, text);
+          if (this.ipcServer) {
+            this.ipcServer.broadcast({ type: "stderr", text });
+          }
         }
       }
     });
 
     child.on("error", (err) => {
       this.rejectSessionWaiters(err);
+      const sessionId = this.activeThreadId || this.sessionId;
+      const turnId = this.pendingTurnId;
       this.alive = false;
       this.child = null;
       this.stdin = null;
-      this.emit({ type: "process.error", error: err.message, sessionId: this.activeThreadId || this.sessionId, turnId: this.pendingTurnId }, null);
+      this.emit({
+        type: turnId ? "process.error" : "process.closed",
+        error: err.message,
+        stderrTail: this.stderrTail,
+        sessionId,
+        turnId,
+      }, null);
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       this.rejectSessionWaiters(new Error(`claudecode process closed with code ${code ?? "unknown"}`));
+      const sessionId = this.activeThreadId || this.sessionId;
+      const turnId = this.pendingTurnId;
+      const stderrTail = this.stderrTail;
       this.alive = false;
       this.child = null;
       this.stdin = null;
-      this.emit({ type: "process.close", code, sessionId: this.activeThreadId || this.sessionId, turnId: this.pendingTurnId }, null);
+      this.emit({
+        type: turnId ? "process.close" : "process.closed",
+        code,
+        signal,
+        stderrTail,
+        sessionId,
+        turnId,
+      }, null);
     });
   }
 
@@ -163,6 +194,7 @@ class ClaudeCodeProcessClient {
       if (itemType === "text" && typeof item.text === "string" && item.text) {
         this.emit({
           type: "reply.completed",
+          itemId: nextAssistantItemId(this),
           text: item.text.trim(),
           turnId: this.pendingTurnId,
           sessionId: this.activeThreadId || this.sessionId,
@@ -220,6 +252,7 @@ class ClaudeCodeProcessClient {
     }, raw);
     this.pendingTurnId = "";
     this.activeThreadId = "";
+    this.assistantItemSequence = 0;
   }
 
   handleControlRequest(raw) {
@@ -241,6 +274,7 @@ class ClaudeCodeProcessClient {
     }
     this.pendingTurnId = `turn-${Date.now()}`;
     this.activeThreadId = threadId || this.sessionId;
+    this.assistantItemSequence = 0;
     if (this.ipcServer) {
       this.ipcServer.broadcast({
         type: "inboundMessage",
@@ -355,12 +389,15 @@ class ClaudeCodeProcessClient {
   }
 }
 
-function buildArgs({ model, permissionMode, disableVerbose, extraArgs, mcpConfigPaths, resumeSessionId }) {
+function buildArgs({ model, permissionMode, bare = false, appendSystemPrompt = "", disableVerbose, extraArgs, mcpConfigPaths, resumeSessionId }) {
   const args = [
     "--output-format", "stream-json",
     "--input-format", "stream-json",
     "--permission-prompt-tool", "stdio",
   ];
+  if (bare) {
+    args.push("--bare");
+  }
   if (!disableVerbose) {
     args.push("--verbose");
   }
@@ -372,6 +409,9 @@ function buildArgs({ model, permissionMode, disableVerbose, extraArgs, mcpConfig
   }
   if (model) {
     args.push("--model", model);
+  }
+  if (appendSystemPrompt) {
+    args.push("--append-system-prompt", appendSystemPrompt);
   }
   if (Array.isArray(mcpConfigPaths)) {
     for (const configPath of mcpConfigPaths) {
@@ -400,8 +440,24 @@ function isPotentiallySensitive(text) {
   return SENSITIVE_KEYWORDS.test(text) || SENSITIVE_PATTERNS.test(text);
 }
 
-module.exports = { ClaudeCodeProcessClient };
+function appendTextTail(existing, next, maxLength = 2000) {
+  const joined = [String(existing || "").trim(), String(next || "").trim()]
+    .filter(Boolean)
+    .join("\n");
+  if (joined.length <= maxLength) {
+    return joined;
+  }
+  return joined.slice(joined.length - maxLength);
+}
+
+module.exports = { ClaudeCodeProcessClient, buildArgs };
 
 function isPendingThreadId(threadId) {
   return /^pending-\d+$/u.test(String(threadId || "").trim());
+}
+
+function nextAssistantItemId(client) {
+  const turnId = String(client?.pendingTurnId || "").trim() || "turn";
+  client.assistantItemSequence = Number(client.assistantItemSequence || 0) + 1;
+  return `item-${turnId}-${client.assistantItemSequence}`;
 }

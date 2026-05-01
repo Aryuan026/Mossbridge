@@ -22,14 +22,14 @@ function buildOpeningTurnText(config, userText) {
 function buildInstructionRefreshText(config) {
   const instructions = loadWechatInstructions(config);
   if (!instructions) {
-    return "Refresh your WeChat behavior for this existing thread. Reply in one short Chinese sentence confirming that you have updated your behavior for this thread.";
+    return "Refresh your WeChat behavior for this existing thread. Reply in one natural Chinese sentence confirming that you have updated your behavior for this thread.";
   }
   return [
     "WECHAT SESSION INSTRUCTIONS REFRESH",
     "Re-read and adopt the updated WeChat instructions below for the rest of this existing thread.",
     "This is an internal refresh command, not a user-facing task.",
     "Do not summarize the instructions back in detail.",
-    "Reply in one short Chinese sentence confirming that you have updated your behavior for this thread.",
+    "Reply in one natural Chinese sentence confirming that you have updated your behavior for this thread.",
     "",
     instructions,
   ].join("\n").trim();

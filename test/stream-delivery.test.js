@@ -81,6 +81,44 @@ test("system silent JSON is suppressed", async () => {
   assert.deepEqual(sent, []);
 });
 
+test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-limit-system", {
+    userId: "user-limit",
+    contextToken: "ctx-limit",
+    provider: "system",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-limit-system",
+    turnId: "turn-limit-system",
+    itemId: "item-limit-system",
+    text: "You've hit your limit · resets 10:40pm (Asia/Shanghai)",
+  });
+
+  assert.deepEqual(sent, []);
+});
+
+test("user runtime capacity notices are rewritten into bridge notices", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-limit-user", {
+    userId: "user-limit",
+    contextToken: "ctx-limit",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-limit-user",
+    turnId: "turn-limit-user",
+    itemId: "item-limit-user",
+    text: "You've hit your limit · resets 10:40pm (Asia/Shanghai)",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /ClaudeCode 这边暂时到额度/);
+  assert.match(sent[0].text, /10:40pm \(Asia\/Shanghai\)/);
+});
+
 test("system send_message JSON sends only the message text", async () => {
   const { sent, streamDelivery } = createHarness();
   streamDelivery.queueReplyTargetForThread("thread-2", {
@@ -249,6 +287,24 @@ test("turn.completed result text is delivered when no reply items were emitted",
     text: "工具执行完了，这是最终回复",
     contextToken: "ctx-result",
   }]);
+});
+
+test("plain weixin reply suppresses tool delivery summaries", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-summary", {
+    userId: "user-summary",
+    contextToken: "ctx-summary",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-summary",
+    turnId: "turn-summary",
+    itemId: "item-summary",
+    text: "回复已发出——乖乖接住揉脸，顺便给她一个继续撒娇的台阶。",
+  });
+
+  assert.deepEqual(sent, []);
 });
 
 test("plain weixin reply still strips protocol leak text", async () => {

@@ -4,25 +4,60 @@ const assert = require("node:assert/strict");
 const {
   splitUtf8,
   compactPlainTextForWeixin,
+  normalizeWeixinReplyText,
+  finalizeWeixinDeliveryChunk,
   stripSentenceTailChineseFullStops,
+  stripChunkTailChineseFullStops,
+  normalizeInboundWeixinEmojiShortcodes,
+  normalizeWeixinBracketEmojiShortcodes,
   chunkReplyTextForWeixin,
   mergeShortChunks,
   packChunksForWeixinDelivery,
+  splitTextAtBoundaries,
+  findBoundaryPunctuationEnd,
   collectStreamingBoundaries,
   trimOuterBlankLines,
 } = require("../src/adapters/channel/weixin/index");
+const { bodyFromItemList } = require("../src/adapters/channel/weixin/message-utils");
 
-test("compactPlainTextForWeixin collapses multiple blank lines", () => {
+test("normalizeWeixinReplyText trims outer blank lines but preserves internal blank lines", () => {
   const text = "line1\r\n\r\n\nline2\n\n\nline3";
-  assert.equal(compactPlainTextForWeixin(text), "line1\nline2\nline3");
+  assert.equal(normalizeWeixinReplyText(text), "line1\n\n\nline2\n\n\nline3");
+  assert.equal(compactPlainTextForWeixin(text), "line1\n\n\nline2\n\n\nline3");
 });
 
-test("stripSentenceTailChineseFullStops removes trailing full stops before line end", () => {
+test("stripChunkTailChineseFullStops removes only a single final full stop", () => {
+  assert.equal(stripChunkTailChineseFullStops("你好。"), "你好");
+  assert.equal(stripChunkTailChineseFullStops("你好。。。"), "你好。。。");
+  assert.equal(stripChunkTailChineseFullStops("你好。\n世界。"), "你好。\n世界");
+  assert.equal(stripChunkTailChineseFullStops("你好。\""), "你好\"");
+  assert.equal(stripChunkTailChineseFullStops("a。b。c。"), "a。b。c");
   assert.equal(stripSentenceTailChineseFullStops("你好。"), "你好");
-  assert.equal(stripSentenceTailChineseFullStops("你好。。。"), "你好");
-  assert.equal(stripSentenceTailChineseFullStops("你好。\n世界。"), "你好\n世界");
-  assert.equal(stripSentenceTailChineseFullStops("你好。\""), "你好\"");
-  assert.equal(stripSentenceTailChineseFullStops("a。b。c。"), "a。b。c");
+  assert.equal(finalizeWeixinDeliveryChunk("\n\n你好。\n\n"), "你好");
+});
+
+test("normalizeWeixinBracketEmojiShortcodes converts known WeChat emoji labels only", () => {
+  assert.equal(normalizeWeixinBracketEmojiShortcodes("宝宝[微笑][坏笑]"), "宝宝🙂😏");
+  assert.equal(normalizeWeixinBracketEmojiShortcodes("保留 [track_id:abc] 和 [unknown]"), "保留 [track_id:abc] 和 [unknown]");
+});
+
+test("normalizeInboundWeixinEmojiShortcodes keeps transport placeholders out of runtime text", () => {
+  assert.equal(normalizeInboundWeixinEmojiShortcodes("[哇]连上了"), "😲连上了");
+  assert.equal(
+    normalizeInboundWeixinEmojiShortcodes("宝宝[右哼哼]"),
+    "宝宝（用户发来了一个哼哼、别扭或小不满的微信表情）"
+  );
+  assert.equal(normalizeInboundWeixinEmojiShortcodes("保留 [track_id:abc]"), "保留 [track_id:abc]");
+});
+
+test("bodyFromItemList normalizes WeChat emoji placeholders before runtime intake", () => {
+  const text = bodyFromItemList([{
+    type: 1,
+    text_item: {
+      text: "宝宝[右哼哼]",
+    },
+  }]);
+  assert.equal(text, "宝宝（用户发来了一个哼哼、别扭或小不满的微信表情）");
 });
 
 test("collectStreamingBoundaries finds paragraph, list and punctuation breaks", () => {
@@ -41,7 +76,7 @@ test("chunkReplyTextForWeixin merges short natural boundaries", () => {
   // Each unit is below MIN_WEIXIN_CHUNK (20), so they get merged
   const text = "A。\n\nB。\n\nC。";
   const chunks = chunkReplyTextForWeixin(text);
-  assert.deepEqual(chunks, ["A。\nB。\nC。"]);
+  assert.deepEqual(chunks, ["A。\n\nB。\n\nC。"]);
 });
 
 test("chunkReplyTextForWeixin does not merge chunks above min length", () => {
@@ -50,21 +85,21 @@ test("chunkReplyTextForWeixin does not merge chunks above min length", () => {
   const text = `${longA}\n\n${longB}`;
   const chunks = chunkReplyTextForWeixin(text);
   assert.equal(chunks.length, 2);
-  assert.equal(chunks[0], longA);
+  assert.equal(chunks[0], `${longA}\n\n`);
   assert.equal(chunks[1], longB);
 });
 
 test("chunkReplyTextForWeixin merges short adjacent chunks", () => {
   const text = ["短1", "短2", "这是一段比较长的话，不应该和前面的短句合并在一起"].join("\n\n");
   const chunks = chunkReplyTextForWeixin(text);
-  assert.equal(chunks[0], "短1\n短2");
+  assert.equal(chunks[0], "短1\n\n短2\n\n");
   assert.ok(!chunks[1].startsWith("短2"));
 });
 
 test("mergeShortChunks only merges when both sides are short", () => {
-  const chunks = ["a".repeat(15), "b".repeat(15), "c".repeat(100)];
+  const chunks = [`${"a".repeat(15)}\n\n`, `${"b".repeat(15)}\n`, "c".repeat(100)];
   const merged = mergeShortChunks(chunks, 3800, 20);
-  assert.equal(merged[0], `${"a".repeat(15)}\n${"b".repeat(15)}`);
+  assert.equal(merged[0], `${"a".repeat(15)}\n\n${"b".repeat(15)}\n`);
   assert.equal(merged[1], "c".repeat(100));
 });
 
@@ -97,6 +132,18 @@ test("splitUtf8 hard-truncates oversized text", () => {
   assert.equal(chunks[0].length, 3800);
   assert.equal(chunks[1].length, 3800);
   assert.equal(chunks[2].length, 2400);
+});
+
+test("splitTextAtBoundaries preserves original separators", () => {
+  const text = "A。\n\nB。";
+  const units = splitTextAtBoundaries(text, collectStreamingBoundaries(text));
+  assert.deepEqual(units, ["A。\n\n", "B。"]);
+});
+
+test("findBoundaryPunctuationEnd keeps repeated punctuation together", () => {
+  assert.equal(findBoundaryPunctuationEnd("哇！！！下一句", 1), 4);
+  assert.equal(findBoundaryPunctuationEnd("等等......下一句", 2), 8);
+  assert.equal(findBoundaryPunctuationEnd("a. b", 1), 0);
 });
 
 test("trimOuterBlankLines strips leading and trailing blank lines", () => {

@@ -265,16 +265,21 @@ function listCommandGroups() {
 
 function buildTerminalHelpText() {
   const lines = [
-    "Usage: cyberboss <command>",
+    "Usage: asheriebridge <command>",
     "",
     "Current terminal commands:",
-    "  cyberboss start        start the WeChat bridge and runtime loop",
-    "  cyberboss login        start WeChat QR login",
-    "  cyberboss accounts     list locally saved accounts",
-    "  cyberboss doctor       print current config and thread state",
-    "  npm run shared:start   start the shared app-server and WeChat bridge",
-    "  npm run shared:open    attach to the shared thread currently bound in WeChat",
-    "  npm run shared:status  show shared bridge status",
+    "  asheriebridge start        start the WeChat bridge and runtime loop",
+    "  npm run start:claudecode  start the WeChat bridge with ClaudeCode runtime",
+    "  asheriebridge login        start WeChat QR login",
+    "  asheriebridge accounts     list locally saved accounts",
+    "  asheriebridge doctor       print current config and thread state",
+    "  npm run doctor:claudecode print config and thread state in ClaudeCode mode",
+    "  npm run shared:start   start the shared app-server and WeChat bridge (Codex)",
+    "  npm run shared:start:claudecode  start the shared WeChat bridge with ClaudeCode",
+    "  npm run shared:open    attach to the shared thread currently bound in WeChat (Codex)",
+    "  npm run shared:open:claudecode   attach to the shared ClaudeCode thread",
+    "  npm run shared:status  show shared bridge status (Codex)",
+    "  npm run shared:status:claudecode show shared bridge status (ClaudeCode)",
   ];
 
   for (const group of COMMAND_GROUPS) {
@@ -289,7 +294,7 @@ function buildTerminalHelpText() {
   }
 
   lines.push("");
-  lines.push("Cyberboss capability operations are exposed to models as project tools, not terminal subcommands.");
+  lines.push("AsherieBridge capability operations are exposed to models as project tools, not terminal subcommands.");
   return lines.join("\n");
 }
 
@@ -362,13 +367,13 @@ function toTerminalCommandExample(commandText) {
     case "start":
     case "doctor":
     case "help":
-      return `cyberboss ${normalized}`;
+      return `asheriebridge ${normalized}`;
     case "shared start":
     case "shared open":
     case "shared status":
       return `npm run ${normalized.replace(" ", ":")}`;
     case "start --checkin":
-      return "cyberboss start --checkin";
+      return "asheriebridge start --checkin";
     default:
       return normalized;
   }

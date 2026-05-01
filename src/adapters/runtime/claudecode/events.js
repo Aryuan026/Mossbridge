@@ -27,7 +27,7 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
         payload: {
           threadId: message.sessionId,
           turnId: message.turnId,
-          itemId: `item-${message.turnId}`,
+          itemId: normalizeString(message.itemId) || `item-${message.turnId}`,
           text: message.text,
         },
       };
@@ -66,7 +66,15 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
         payload: {
           threadId: message.sessionId,
           turnId: message.turnId,
-          text: message.error || "❌ Runtime process exited unexpectedly",
+          text: formatProcessFailureText(message),
+        },
+      };
+    case "process.closed":
+      return {
+        type: "runtime.process.closed",
+        payload: {
+          threadId: message.sessionId,
+          text: formatProcessFailureText(message),
         },
       };
     case "session.id":
@@ -134,6 +142,21 @@ function normalizeClaudeContextPayload(message, raw) {
     outputTokens,
     currentTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens + outputTokens,
   };
+}
+
+function formatProcessFailureText(message) {
+  const lines = [message?.error || "❌ Runtime process exited unexpectedly"];
+  if (message && Object.prototype.hasOwnProperty.call(message, "code") && message.code !== null && message.code !== undefined) {
+    lines.push(`exit code: ${message.code}`);
+  }
+  if (message?.signal) {
+    lines.push(`signal: ${message.signal}`);
+  }
+  const stderrTail = normalizeString(message?.stderrTail);
+  if (stderrTail) {
+    lines.push(`stderr: ${stderrTail}`);
+  }
+  return lines.join("\n");
 }
 
 function normalizeString(value) {
