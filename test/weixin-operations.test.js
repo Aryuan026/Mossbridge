@@ -27,3 +27,14 @@ test("weixin operations front-stage guidance allows fuller replies without forci
   assert.match(raw, /do not need to end by asking a question/i);
   assert.match(raw, /too thin for this channel/i);
 });
+
+test("weixin operations explains sticker use without forcing sticker spam", () => {
+  const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
+  const raw = fs.readFileSync(templatePath, "utf8");
+
+  assert.match(raw, /Stickers are a WeChat expression action/i);
+  assert.match(raw, /The normal sticker flow is/i);
+  assert.match(raw, /active sticker drawer/i);
+  assert.match(raw, /Archived sticker packs are a larger wardrobe/i);
+  assert.match(raw, /Do not spam stickers/i);
+});
