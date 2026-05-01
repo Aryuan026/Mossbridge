@@ -46,6 +46,8 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 8_000;
 const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
 const OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS = 90_000;
+const RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 90_000;
+const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -86,11 +88,14 @@ class CyberbossApp {
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
     });
     this.pendingRuntimeEventWatchdogs = new Map();
+    this.runningTurnWatchdogs = new Map();
+    this.watchdogCancelledRunKeys = new Set();
     this.pendingOperationByRunKey = new Map();
     this.runtimeEventChain = Promise.resolve();
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
       this.threadStateStore.applyRuntimeEvent(event);
+      this.observeRunningTurnEvent(event);
       this.runtimeEventChain = this.runtimeEventChain
         .catch(() => {})
         .then(() => this.handleRuntimeEvent(event))
@@ -477,6 +482,13 @@ class CyberbossApp {
         threadId: turn.threadId,
         openingTurn: Boolean(turn?.openingTurn),
       });
+      this.scheduleRunningTurnWatchdog({
+        bindingKey,
+        workspaceRoot,
+        normalized: prepared,
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+      });
       return true;
     } catch (error) {
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
@@ -712,6 +724,149 @@ class CyberbossApp {
     clearTimeout(watchdog.noticeTimer);
     clearTimeout(watchdog.failureTimer);
     this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
+  }
+
+  scheduleRunningTurnWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "", turnId = "" }) {
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    const normalizedTurnId = normalizeCommandArgument(turnId);
+    if (!normalizedThreadId || !normalizedTurnId) {
+      return;
+    }
+    const runKey = buildRunKey(normalizedThreadId, normalizedTurnId);
+    const existing = this.runningTurnWatchdogs.get(runKey);
+    if (existing) {
+      clearTimeout(existing.noticeTimer);
+      clearTimeout(existing.recoveryTimer);
+    }
+
+    const noticeTimer = setTimeout(async () => {
+      const watchdog = this.runningTurnWatchdogs.get(runKey);
+      if (!watchdog || !this.isSameRunningTurn(normalizedThreadId, normalizedTurnId)) {
+        return;
+      }
+      const threadState = this.threadStateStore.getThreadState(normalizedThreadId);
+      if (normalizeText(threadState?.lastReplyText)) {
+        return;
+      }
+      watchdog.noticeSent = true;
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        contextToken: normalized.contextToken,
+        preserveBlock: true,
+        text: [
+          "⏳ 这轮我已经收到，但前台 ClaudeCode 开始后一直没有吐出正文。",
+          "我会继续等一小会儿；如果它还是不动，会自动释放这轮，避免微信一直卡在正在输入。",
+          `workspace: ${workspaceRoot}`,
+          `thread: ${normalizedThreadId}`,
+        ].join("\n"),
+      }).catch(() => {});
+    }, RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS);
+
+    const recoveryTimer = setTimeout(async () => {
+      const watchdog = this.runningTurnWatchdogs.get(runKey);
+      if (!watchdog || !this.isSameRunningTurn(normalizedThreadId, normalizedTurnId)) {
+        return;
+      }
+      this.runningTurnWatchdogs.delete(runKey);
+      this.watchdogCancelledRunKeys.add(runKey);
+      await this.channelAdapter.sendTyping({
+        userId: normalized.senderId,
+        status: 0,
+        contextToken: normalized.contextToken,
+      }).catch(() => {});
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        contextToken: normalized.contextToken,
+        preserveBlock: true,
+        text: [
+          "⚠️ 这轮 ClaudeCode 超过 4 分钟没有完成，我先把卡住的运行释放掉。",
+          "刚才那句话可能需要你重新发一次；后续消息不会继续堵在这轮后面。",
+          `workspace: ${workspaceRoot}`,
+          `thread: ${normalizedThreadId}`,
+        ].join("\n"),
+      }).catch(() => {});
+      await this.runtimeAdapter.cancelTurn({
+        threadId: normalizedThreadId,
+        turnId: normalizedTurnId,
+        workspaceRoot,
+      }).catch((error) => {
+        console.error(`[asheriebridge] stalled turn recovery failed thread=${normalizedThreadId}: ${error.message}`);
+      });
+      this.turnGateStore.releaseThread(normalizedThreadId);
+      await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true }).catch(() => {});
+    }, RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS);
+
+    this.runningTurnWatchdogs.set(runKey, {
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      noticeTimer,
+      recoveryTimer,
+      noticeSent: false,
+    });
+  }
+
+  observeRunningTurnEvent(event) {
+    const threadId = normalizeCommandArgument(event?.payload?.threadId);
+    if (!threadId) {
+      return;
+    }
+    const turnId = normalizeCommandArgument(event?.payload?.turnId);
+    if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
+      this.clearRunningTurnWatchdog(threadId, turnId);
+      return;
+    }
+    if (event.type === "runtime.process.closed") {
+      this.clearRunningTurnWatchdog(threadId);
+      return;
+    }
+    if (![
+      "runtime.turn.started",
+      "runtime.reply.delta",
+      "runtime.reply.completed",
+      "runtime.approval.requested",
+      "runtime.context.updated",
+    ].includes(event.type)) {
+      return;
+    }
+    const activeTurnId = turnId || normalizeCommandArgument(this.threadStateStore.getThreadState(threadId)?.turnId);
+    if (!activeTurnId) {
+      return;
+    }
+    const runKey = buildRunKey(threadId, activeTurnId);
+    const watchdog = this.runningTurnWatchdogs.get(runKey);
+    if (!watchdog) {
+      return;
+    }
+    this.scheduleRunningTurnWatchdog(watchdog);
+  }
+
+  clearRunningTurnWatchdog(threadId, turnId = "") {
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    const normalizedTurnId = normalizeCommandArgument(turnId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    for (const [runKey, watchdog] of this.runningTurnWatchdogs.entries()) {
+      if (
+        watchdog.threadId === normalizedThreadId
+        && (!normalizedTurnId || watchdog.turnId === normalizedTurnId)
+      ) {
+        clearTimeout(watchdog.noticeTimer);
+        clearTimeout(watchdog.recoveryTimer);
+        this.runningTurnWatchdogs.delete(runKey);
+      }
+    }
+  }
+
+  isSameRunningTurn(threadId, turnId) {
+    const threadState = this.threadStateStore.getThreadState(threadId);
+    if (!threadState || !["running", "waiting_approval"].includes(threadState.status)) {
+      return false;
+    }
+    return !turnId || normalizeCommandArgument(threadState.turnId) === normalizeCommandArgument(turnId);
   }
 
   async prepareIncomingMessageForRuntime(normalized, workspaceRoot) {
@@ -1517,8 +1672,10 @@ class CyberbossApp {
       const sessionStore = this.runtimeAdapter.getSessionStore();
       sessionStore.clearApprovalPrompt(event.payload.threadId);
       const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event.payload.threadId);
+      const wasWatchdogCancelled = this.watchdogCancelledRunKeys.delete(completedRunKey);
       if (
         event.type === "runtime.turn.failed"
+        && !wasWatchdogCancelled
         && this.runtimeAdapter.describe().id === "claudecode"
         && linked?.bindingKey
         && linked?.workspaceRoot
@@ -1535,7 +1692,7 @@ class CyberbossApp {
       }
       try {
         this.turnGateStore.releaseThread(event.payload.threadId);
-        if (event.type === "runtime.turn.failed") {
+        if (event.type === "runtime.turn.failed" && !wasWatchdogCancelled) {
           await this.sendFailureToThread(
             event.payload.threadId,
             event.payload.text || "❌ Execution failed",
