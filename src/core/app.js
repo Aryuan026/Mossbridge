@@ -18,6 +18,7 @@ const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./d
 const { resolveWorkspaceOfficePaths } = require("./workspace-office-layout");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
+const { RuntimeContextUsageStore } = require("./runtime-context-usage-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
 const { SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
@@ -71,6 +72,7 @@ class CyberbossApp {
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
     this.threadStateStore = new ThreadStateStore();
+    this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
@@ -90,11 +92,14 @@ class CyberbossApp {
     this.pendingRuntimeEventWatchdogs = new Map();
     this.runningTurnWatchdogs = new Map();
     this.watchdogCancelledRunKeys = new Set();
+    this.pendingAutoCompactByThreadId = new Map();
+    this.lastAutoCompactAtByThreadId = new Map();
     this.pendingOperationByRunKey = new Map();
     this.runtimeEventChain = Promise.resolve();
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
       this.threadStateStore.applyRuntimeEvent(event);
+      this.recordRuntimeContextUsage(event);
       this.observeRunningTurnEvent(event);
       this.runtimeEventChain = this.runtimeEventChain
         .catch(() => {})
@@ -726,6 +731,120 @@ class CyberbossApp {
     this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
   }
 
+  recordRuntimeContextUsage(event) {
+    if (event?.type !== "runtime.context.updated") {
+      return;
+    }
+    const payload = event.payload || {};
+    const runtimeId = normalizeText(payload.runtimeId) || this.runtimeAdapter.describe().id || "";
+    const threadId = normalizeCommandArgument(payload.threadId);
+    const linked = threadId
+      ? this.runtimeAdapter.getSessionStore().findBindingForThreadId(threadId)
+      : null;
+    const usage = buildRuntimeContextUsageSnapshot({
+      payload,
+      runtimeId,
+      linked,
+      config: this.config,
+    });
+    this.runtimeContextUsageStore?.recordContext?.(usage);
+    const decision = evaluateClaudeAutoCompact(usage, this.config);
+    if (!decision.shouldCompact || !threadId) {
+      return;
+    }
+    const lastRequestedAt = Number(this.lastAutoCompactAtByThreadId.get(threadId)) || 0;
+    const minIntervalMs = Math.max(60_000, Number(this.config.claudeAutoCompactMinIntervalMs) || 0);
+    if (lastRequestedAt && Date.now() - lastRequestedAt < minIntervalMs) {
+      return;
+    }
+    this.pendingAutoCompactByThreadId.set(threadId, {
+      ...decision,
+      threadId,
+      runtimeId,
+      workspaceRoot: linked?.workspaceRoot || "",
+      bindingKey: linked?.bindingKey || "",
+    });
+  }
+
+  async maybeAutoCompactAfterTurn({ event, linked, pendingOperation }) {
+    if (this.runtimeAdapter.describe().id !== "claudecode") {
+      return;
+    }
+    if (event?.type !== "runtime.turn.completed") {
+      return;
+    }
+    if (pendingOperation?.kind === "compact") {
+      return;
+    }
+    const threadId = normalizeCommandArgument(event?.payload?.threadId);
+    if (!threadId) {
+      return;
+    }
+    const pending = this.pendingAutoCompactByThreadId.get(threadId);
+    if (!pending?.shouldCompact) {
+      return;
+    }
+    if (!linked?.bindingKey || !linked?.workspaceRoot) {
+      return;
+    }
+    if (
+      this.turnGateStore.isPending(linked.bindingKey, linked.workspaceRoot)
+      || this.hasPendingInboundMessage(linked.bindingKey, linked.workspaceRoot)
+    ) {
+      return;
+    }
+    await this.requestAutoCompact({ threadId, linked, reason: pending });
+  }
+
+  async requestAutoCompact({ threadId, linked, reason }) {
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    if (!normalizedThreadId || !linked?.bindingKey || !linked?.workspaceRoot) {
+      return;
+    }
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const runtimeParams = sessionStore.getRuntimeParamsForWorkspace(linked.bindingKey, linked.workspaceRoot);
+    const requestedAtMs = Date.now();
+    this.lastAutoCompactAtByThreadId.set(normalizedThreadId, requestedAtMs);
+    this.runtimeContextUsageStore?.recordAutoCompact?.({
+      threadId: normalizedThreadId,
+      workspaceRoot: linked.workspaceRoot,
+      bindingKey: linked.bindingKey,
+      reason: normalizeText(reason?.reason) || "context_threshold",
+      currentTokens: reason?.currentTokens,
+      compactThresholdTokens: reason?.compactThresholdTokens,
+      contextWindow: reason?.contextWindow,
+      availableMessageWindow: reason?.availableMessageWindow,
+      compactThresholdPercent: reason?.compactThresholdPercent,
+    });
+    this.streamDelivery.suppressNextRunForThread?.(normalizedThreadId);
+    console.log(
+      `[asheriebridge] auto compact requested thread=${normalizedThreadId} current=${formatCompactNumber(reason?.currentTokens)} threshold=${formatCompactNumber(reason?.compactThresholdTokens)}`
+    );
+    try {
+      const result = await this.runtimeAdapter.compactThread({
+        threadId: normalizedThreadId,
+        workspaceRoot: linked.workspaceRoot,
+        model: runtimeParams.model,
+      });
+      const compactTurnId = normalizeCommandArgument(result?.turnId);
+      if (compactTurnId) {
+        this.pendingOperationByRunKey.set(buildRunKey(normalizedThreadId, compactTurnId), {
+          kind: "compact",
+          auto: true,
+          notify: false,
+          reason: normalizeText(reason?.reason) || "context_threshold",
+        });
+      }
+      this.pendingAutoCompactByThreadId.delete(normalizedThreadId);
+    } catch (error) {
+      this.pendingAutoCompactByThreadId.delete(normalizedThreadId);
+      this.streamDelivery.cancelSuppressedRunForThread?.(normalizedThreadId);
+      console.warn(
+        `[asheriebridge] auto compact failed thread=${normalizedThreadId}: ${error instanceof Error ? error.message : String(error || "unknown error")}`
+      );
+    }
+  }
+
   scheduleRunningTurnWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "", turnId = "" }) {
     const normalizedThreadId = normalizeCommandArgument(threadId);
     const normalizedTurnId = normalizeCommandArgument(turnId);
@@ -1215,7 +1334,10 @@ class CyberbossApp {
     const runtimeName = this.runtimeAdapter.describe().id || "runtime";
     const context = threadState?.context?.runtimeId === runtimeName
       ? threadState.context
-      : this.threadStateStore.getLatestContext(runtimeName);
+      : (
+        this.threadStateStore.getLatestContext(runtimeName)
+        || this.runtimeContextUsageStore?.getContext?.({ threadId, runtimeId: runtimeName })
+      );
     const storedModel = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model || "";
     const isLikelyCodexModel = /gpt|o1|o3|codex/i.test(storedModel);
     const effectiveModel = (runtimeName === "claudecode" && isLikelyCodexModel)
@@ -1669,6 +1791,9 @@ class CyberbossApp {
       if (pendingOperation && pendingOperations?.delete) {
         pendingOperations.delete(completedRunKey);
       }
+      if (pendingOperation?.kind === "compact") {
+        this.pendingAutoCompactByThreadId?.delete?.(event.payload.threadId);
+      }
       const sessionStore = this.runtimeAdapter.getSessionStore();
       sessionStore.clearApprovalPrompt(event.payload.threadId);
       const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event.payload.threadId);
@@ -1692,7 +1817,11 @@ class CyberbossApp {
       }
       try {
         this.turnGateStore.releaseThread(event.payload.threadId);
-        if (event.type === "runtime.turn.failed" && !wasWatchdogCancelled) {
+        if (
+          event.type === "runtime.turn.failed"
+          && !wasWatchdogCancelled
+          && pendingOperation?.notify !== false
+        ) {
           await this.sendFailureToThread(
             event.payload.threadId,
             event.payload.text || "❌ Execution failed",
@@ -1709,7 +1838,11 @@ class CyberbossApp {
           await this.flushPendingInboundMessages();
         }
         await this.flushPendingSystemMessages();
-        if (pendingOperation?.kind === "compact" && event.type === "runtime.turn.completed") {
+        if (
+          pendingOperation?.kind === "compact"
+          && event.type === "runtime.turn.completed"
+          && pendingOperation.notify !== false
+        ) {
           await this.channelAdapter.sendText({
             userId: pendingOperation.userId,
             text: `✅ Compact finished\nthread: ${event.payload.threadId}`,
@@ -1724,6 +1857,9 @@ class CyberbossApp {
           : false;
         if (!shouldKeepTyping) {
           await this.stopTypingForThread(event.payload.threadId);
+        }
+        if (typeof this.maybeAutoCompactAfterTurn === "function") {
+          await this.maybeAutoCompactAfterTurn({ event, linked, pendingOperation });
         }
       } finally {
         if (scopeKey) {
@@ -2119,6 +2255,86 @@ function formatCompactNumber(value) {
     return `${Math.round(normalized / 100) / 10}k`;
   }
   return String(Math.round(normalized));
+}
+
+function buildRuntimeContextUsageSnapshot({ payload = {}, runtimeId = "", linked = null, config = {} } = {}) {
+  const normalizedRuntimeId = normalizeText(runtimeId || payload.runtimeId).toLowerCase();
+  const inputTokens = readNonNegativeNumber(payload.inputTokens) ?? 0;
+  const cacheCreationInputTokens = readNonNegativeNumber(payload.cacheCreationInputTokens) ?? 0;
+  const cacheReadInputTokens = readNonNegativeNumber(payload.cacheReadInputTokens) ?? 0;
+  const outputTokens = readNonNegativeNumber(payload.outputTokens) ?? 0;
+  const summedTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens + outputTokens;
+  const currentTokens = readNonNegativeNumber(payload.currentTokens) ?? summedTokens;
+  const configuredWindow = readNonNegativeNumber(payload.contextWindow)
+    ?? (normalizedRuntimeId === "claudecode" ? readNonNegativeNumber(config.claudeContextWindow) : 0)
+    ?? 0;
+  const reservedOutputTokens = normalizedRuntimeId === "claudecode"
+    ? Math.max(0, readNonNegativeNumber(config.claudeMaxOutputTokens) ?? 0)
+    : 0;
+  const availableMessageWindow = configuredWindow > 0
+    ? Math.max(0, configuredWindow - reservedOutputTokens)
+    : 0;
+  const compactThresholdPercent = clampPercent(config.claudeAutoCompactThresholdPercent, 85);
+  const compactThresholdTokens = availableMessageWindow > 0
+    ? Math.floor((availableMessageWindow * compactThresholdPercent) / 100)
+    : 0;
+  return {
+    ...payload,
+    runtimeId: normalizedRuntimeId,
+    threadId: normalizeCommandArgument(payload.threadId),
+    workspaceRoot: normalizeText(linked?.workspaceRoot),
+    bindingKey: normalizeText(linked?.bindingKey),
+    inputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    outputTokens,
+    currentTokens,
+    contextWindow: configuredWindow,
+    reservedOutputTokens,
+    availableMessageWindow,
+    compactThresholdPercent,
+    compactThresholdTokens,
+  };
+}
+
+function evaluateClaudeAutoCompact(usage = {}, config = {}) {
+  if (config.claudeAutoCompactEnabled === false) {
+    return { shouldCompact: false, reason: "disabled" };
+  }
+  if (normalizeText(usage.runtimeId).toLowerCase() !== "claudecode") {
+    return { shouldCompact: false, reason: "runtime_not_claudecode" };
+  }
+  const currentTokens = readNonNegativeNumber(usage.currentTokens) ?? 0;
+  const compactThresholdTokens = readNonNegativeNumber(usage.compactThresholdTokens) ?? 0;
+  if (compactThresholdTokens <= 0) {
+    return { shouldCompact: false, reason: "context_window_unconfigured" };
+  }
+  if (currentTokens < compactThresholdTokens) {
+    return { shouldCompact: false, reason: "below_threshold" };
+  }
+  return {
+    shouldCompact: true,
+    reason: "context_threshold",
+    currentTokens,
+    compactThresholdTokens,
+    contextWindow: usage.contextWindow,
+    availableMessageWindow: usage.availableMessageWindow,
+    compactThresholdPercent: usage.compactThresholdPercent,
+  };
+}
+
+function readNonNegativeNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.max(0, parsed);
+}
+
+function clampPercent(value, fallback) {
+  const parsed = Number(value);
+  const safeValue = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(1, Math.min(99, Math.round(safeValue)));
 }
 
 function formatContextStatusLine({ runtimeName, context, claudeContextWindow, claudeMaxOutputTokens }) {

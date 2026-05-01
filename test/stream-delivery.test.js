@@ -81,6 +81,32 @@ test("system silent JSON is suppressed", async () => {
   assert.deepEqual(sent, []);
 });
 
+test("suppressNextRunForThread suppresses one ordinary reply run", async () => {
+  const { sent, streamDelivery, bindingByThreadId } = createHarness();
+  bindingByThreadId.set("thread-1", { bindingKey: "binding-1" });
+  streamDelivery.setReplyTarget("binding-1", {
+    userId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+  });
+  streamDelivery.suppressNextRunForThread("thread-1");
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    itemId: "item-1",
+    text: "compact summary",
+  });
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-1",
+    turnId: "turn-2",
+    itemId: "item-2",
+    text: "visible reply",
+  });
+
+  assert.deepEqual(sent.map((payload) => payload.text), ["visible reply"]);
+});
+
 test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {
   const { sent, streamDelivery } = createHarness();
   streamDelivery.queueReplyTargetForThread("thread-limit-system", {

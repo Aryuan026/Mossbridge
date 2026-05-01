@@ -19,6 +19,7 @@ class StreamDelivery {
     this.replyTargetByTurnKey = new Map();
     this.replyTargetQueueByThreadId = new Map();
     this.deferredReplyPrefixByBindingKey = new Map();
+    this.suppressedRunCountByThreadId = new Map();
     this.stateByRunKey = new Map();
     this.runSequence = 0;
   }
@@ -61,6 +62,28 @@ class StreamDelivery {
     if (activeState) {
       this.applyThreadReplyTarget(activeState, normalizedTarget);
     }
+  }
+
+  suppressNextRunForThread(threadId) {
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    const count = this.suppressedRunCountByThreadId.get(normalizedThreadId) || 0;
+    this.suppressedRunCountByThreadId.set(normalizedThreadId, count + 1);
+  }
+
+  cancelSuppressedRunForThread(threadId) {
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    const count = this.suppressedRunCountByThreadId.get(normalizedThreadId) || 0;
+    if (count <= 1) {
+      this.suppressedRunCountByThreadId.delete(normalizedThreadId);
+      return;
+    }
+    this.suppressedRunCountByThreadId.set(normalizedThreadId, count - 1);
   }
 
   setDeferredReplyPrefix(bindingKey, text) {
@@ -163,6 +186,7 @@ class StreamDelivery {
       threadId,
       bindingKey: "",
       replyTarget: null,
+      suppressDelivery: this.consumeSuppressedRun(threadId),
       deferredReplyPrefix: "",
       turnId: normalizeText(turnId),
       itemOrder: [],
@@ -282,6 +306,10 @@ class StreamDelivery {
   }
 
   async flushNow(state, { force }) {
+    if (state.suppressDelivery) {
+      return;
+    }
+
     if (!state.replyTarget) {
       return;
     }
@@ -496,6 +524,23 @@ class StreamDelivery {
     }
     this.replyTargetByTurnKey.delete(normalizedRunKey);
     this.stateByRunKey.delete(normalizedRunKey);
+  }
+
+  consumeSuppressedRun(threadId) {
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalizedThreadId) {
+      return false;
+    }
+    const count = this.suppressedRunCountByThreadId.get(normalizedThreadId) || 0;
+    if (count <= 0) {
+      return false;
+    }
+    if (count === 1) {
+      this.suppressedRunCountByThreadId.delete(normalizedThreadId);
+    } else {
+      this.suppressedRunCountByThreadId.set(normalizedThreadId, count - 1);
+    }
+    return true;
   }
 
   bindQueuedReplyTargetsToActiveThreadRuns(threadId) {

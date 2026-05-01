@@ -1189,6 +1189,200 @@ test("handleStatusCommand shows approximate context details for claudecode when 
   assert.match(sent[0], /📦 context: approx 18k\/66k \| 73% left \| reserve 64k/);
 });
 
+test("handleStatusCommand uses persisted claudecode context when live thread state is cold", async () => {
+  const sent = [];
+  const appLike = {
+    config: {
+      claudeContextWindow: 200000,
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding-1";
+          },
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+          getPendingThreadIdForWorkspace() {
+            return "";
+          },
+          getRuntimeParamsForWorkspace() {
+            return { model: "claude-opus-4-6" };
+          },
+        };
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return { status: "idle" };
+      },
+      getLatestContext() {
+        return null;
+      },
+    },
+    runtimeContextUsageStore: {
+      getContext(payload) {
+        assert.deepEqual(payload, { threadId: "thread-1", runtimeId: "claudecode" });
+        return {
+          runtimeId: "claudecode",
+          threadId: "thread-1",
+          currentTokens: 88000,
+        };
+      },
+    },
+    channelAdapter: {
+      async sendText(payload) {
+        sent.push(payload.text);
+      },
+    },
+  };
+
+  await CyberbossApp.prototype.handleStatusCommand.call(appLike, {
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+  });
+
+  assert.match(sent[0], /📦 context: approx 88k\/200k \| 56% left/);
+});
+
+test("recordRuntimeContextUsage schedules claudecode auto compact above threshold", () => {
+  const recorded = [];
+  const appLike = {
+    config: {
+      claudeContextWindow: 100000,
+      claudeAutoCompactEnabled: true,
+      claudeAutoCompactThresholdPercent: 80,
+      claudeAutoCompactMinIntervalMs: 0,
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          findBindingForThreadId(threadId) {
+            assert.equal(threadId, "thread-1");
+            return {
+              bindingKey: "binding-1",
+              workspaceRoot: "/workspace",
+            };
+          },
+        };
+      },
+    },
+    runtimeContextUsageStore: {
+      recordContext(snapshot) {
+        recorded.push(snapshot);
+      },
+    },
+    pendingAutoCompactByThreadId: new Map(),
+    lastAutoCompactAtByThreadId: new Map(),
+  };
+
+  CyberbossApp.prototype.recordRuntimeContextUsage.call(appLike, {
+    type: "runtime.context.updated",
+    payload: {
+      runtimeId: "claudecode",
+      threadId: "thread-1",
+      currentTokens: 81000,
+    },
+  });
+
+  assert.equal(recorded[0].compactThresholdTokens, 80000);
+  assert.equal(appLike.pendingAutoCompactByThreadId.get("thread-1").shouldCompact, true);
+});
+
+test("maybeAutoCompactAfterTurn silently requests claudecode compaction", async () => {
+  const calls = [];
+  const appLike = {
+    config: {},
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          getRuntimeParamsForWorkspace(bindingKey, workspaceRoot) {
+            calls.push(["params", bindingKey, workspaceRoot]);
+            return { model: "claude-opus-4-6" };
+          },
+        };
+      },
+      async compactThread(payload) {
+        calls.push(["compact", payload.threadId, payload.workspaceRoot, payload.model]);
+        return { threadId: payload.threadId, turnId: "compact-turn-1" };
+      },
+    },
+    turnGateStore: {
+      isPending() {
+        return false;
+      },
+    },
+    requestAutoCompact: CyberbossApp.prototype.requestAutoCompact,
+    hasPendingInboundMessage() {
+      return false;
+    },
+    runtimeContextUsageStore: {
+      recordAutoCompact(event) {
+        calls.push(["record", event.threadId, event.reason]);
+      },
+    },
+    streamDelivery: {
+      suppressNextRunForThread(threadId) {
+        calls.push(["suppress", threadId]);
+      },
+    },
+    pendingAutoCompactByThreadId: new Map([
+      ["thread-1", {
+        shouldCompact: true,
+        reason: "context_threshold",
+        currentTokens: 81000,
+        compactThresholdTokens: 80000,
+      }],
+    ]),
+    pendingOperationByRunKey: new Map(),
+    lastAutoCompactAtByThreadId: new Map(),
+  };
+
+  await CyberbossApp.prototype.maybeAutoCompactAfterTurn.call(appLike, {
+    event: {
+      type: "runtime.turn.completed",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+    },
+    linked: {
+      bindingKey: "binding-1",
+      workspaceRoot: "/workspace",
+    },
+    pendingOperation: null,
+  });
+
+  assert.deepEqual(calls, [
+    ["params", "binding-1", "/workspace"],
+    ["record", "thread-1", "context_threshold"],
+    ["suppress", "thread-1"],
+    ["compact", "thread-1", "/workspace", "claude-opus-4-6"],
+  ]);
+  assert.equal(appLike.pendingAutoCompactByThreadId.has("thread-1"), false);
+  assert.deepEqual(appLike.pendingOperationByRunKey.get("thread-1:compact-turn-1"), {
+    kind: "compact",
+    auto: true,
+    notify: false,
+    reason: "context_threshold",
+  });
+});
+
 test("handleStatusCommand asks to reduce claudecode max output tokens when reserve exceeds window", async () => {
   const sent = [];
   const appLike = {
