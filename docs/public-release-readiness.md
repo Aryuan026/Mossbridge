@@ -173,7 +173,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 ### 文档与朋友部署
 
 - 写 `docs/quickstart.md`。
-- 写 `.env.example`。
+- 完善 `.env.example`，并在新机器上验证。
 - 写 “第一次扫码登录” 指南。
 - 写 “如何绑定 workspace” 指南。
 - 写 “如何切换 Claude 模型” 指南。

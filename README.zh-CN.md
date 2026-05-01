@@ -148,6 +148,7 @@ Mossbridge 的目标是让代码和私人数据可分割。
 ## 文档
 
 - [docs/memory-storage.md](./docs/memory-storage.md)
+- [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
 - [docs/public-release-readiness.md](./docs/public-release-readiness.md)
 

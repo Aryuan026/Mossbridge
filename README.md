@@ -174,6 +174,7 @@ Before making this repository public, do a final naming and privacy pass:
 
 - [docs/commands.md](./docs/commands.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
+- [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
 - [docs/public-release-readiness.md](./docs/public-release-readiness.md)
 

@@ -42,6 +42,8 @@ class AsherieMemoryService {
       this.config.asherieDataRoot || path.join(this.config.stateDir || process.cwd(), "asherie_gateway"),
       {
         truthLayerDirOverride: this.config.asherieTruthLayerDir,
+        memoryTreeDirOverride: this.config.asherieMemoryTreeDir,
+        caseIndexDirOverride: this.config.asherieCaseIndexDir,
         warmMemoryDirOverride: this.config.asherieWarmMemoryDir,
         memoryVersionBankDirOverride: this.config.asherieMemoryVersionBankDir,
       },

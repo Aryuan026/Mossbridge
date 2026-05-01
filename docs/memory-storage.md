@@ -107,6 +107,20 @@ ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传
 
 其中 `case_updates` 可以被索引成 case-like 记录，但它还不是一套独立、清晰的案例仓产品层。后续如果做 `case_index/`，可以把这里当作导入来源或兼容来源。
 
+### `storage/memory_tree/`
+
+Bridge 自己的轻量关系树预留位。
+
+它不是 Home 冷树的完整复制，也不要求第一阶段就变成图数据库。它的目标是让独立部署的 Mossbridge 也能保存少量明确关系：
+
+- 哪两张温卡应该一起出现
+- 某个人物属于哪个关系分支
+- 某个象征物和哪段关系/事件有关
+- 某个 case 和哪些文件、决定、后续问题有关
+- 这条边来自哪些证据卡，可信度是什么
+
+第一阶段可以用 JSON 文件保存 node / edge / evidence。等召回链路稳定后，再考虑索引和自动生成。
+
 ### `storage/truth_layer/`
 
 冷层或真值树。这个目录可以接 Home 的 `knowledge_tree/data/truth_layer`，也可以留给 bridge 自己。
@@ -329,3 +343,5 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / case_index
 - 用户图片、附件、办公文件
 
 Bridge 可以越长越像独立产品，但它必须有一条很清楚的脊椎：代码可分享，记忆归用户。
+
+新部署给 Codex 的具体施工说明见 [docs/codex-memory-setup.md](./codex-memory-setup.md)。

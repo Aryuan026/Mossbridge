@@ -81,6 +81,8 @@ function readConfig() {
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBridgeBoolEnv("ENABLE_CHECKIN"),
     asherieDataRoot: readTextEnv("ASHERIEBRIDGE_DATA_ROOT") || path.join(stateDir, "asherie_gateway"),
     asherieTruthLayerDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR"),
+    asherieMemoryTreeDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_MEMORY_TREE_DIR"),
+    asherieCaseIndexDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_CASE_INDEX_DIR"),
     asherieWarmMemoryDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR"),
     asherieMemoryVersionBankDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR"),
     asherieContextCacheLimit: readBridgeIntEnv("ASHERIE_CONTEXT_CACHE_LIMIT") || 50,
