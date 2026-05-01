@@ -482,7 +482,7 @@ class CyberbossApp {
         threadId: turn.threadId,
         openingTurn: Boolean(turn?.openingTurn),
       });
-      this.scheduleRunningTurnWatchdog({
+      this.scheduleRunningTurnWatchdog?.({
         bindingKey,
         workspaceRoot,
         normalized: prepared,
@@ -1672,7 +1672,7 @@ class CyberbossApp {
       const sessionStore = this.runtimeAdapter.getSessionStore();
       sessionStore.clearApprovalPrompt(event.payload.threadId);
       const linked = this.runtimeAdapter.getSessionStore().findBindingForThreadId(event.payload.threadId);
-      const wasWatchdogCancelled = this.watchdogCancelledRunKeys.delete(completedRunKey);
+      const wasWatchdogCancelled = Boolean(this.watchdogCancelledRunKeys?.delete?.(completedRunKey));
       if (
         event.type === "runtime.turn.failed"
         && !wasWatchdogCancelled

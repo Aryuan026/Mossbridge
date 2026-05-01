@@ -114,6 +114,35 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
   assert.equal(cacheFiles.some((name) => name.startsWith(`${SINGLE_USER_ID}__`)), true);
 });
 
+test("asherie memory service honors configured recent context cache limit by default", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-cache-limit-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asherieContextCacheLimit: 3,
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  for (let index = 0; index < 5; index += 1) {
+    await service.writebackTurn({
+      query: `recent message ${index}`,
+      assistantTextFinal: `recent reply ${index}`,
+      sourceClient: "asheriebridge_wechat",
+      tsUtc: new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString(),
+    });
+  }
+
+  const packet = await service.captureContextPacket({
+    query: "recent message",
+    sourceClient: "asheriebridge_wechat",
+  });
+
+  assert.equal(packet.conversation_cache.stats.returned_records, 3);
+  assert.match(packet.runtime_prelude, /recent-thread/);
+});
+
 test("asherie memory runtime prelude redacts private identity seed paths", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-"));
   const service = new AsherieMemoryService({

@@ -1212,7 +1212,7 @@ function isUsefulReplyContext(text) {
 }
 
 function resolveContextCacheLimit({ requested, recallMode = "", config = {} } = {}) {
-  const explicit = resolvePositiveInt(requested, 0);
+  const explicit = resolveOptionalPositiveInt(requested);
   if (explicit > 0) {
     return explicit;
   }
@@ -1223,7 +1223,7 @@ function resolveContextCacheLimit({ requested, recallMode = "", config = {} } = 
 }
 
 function resolveResidentWarmLimit({ requested, recallMode = "", config = {} } = {}) {
-  const explicit = resolvePositiveInt(requested, 0);
+  const explicit = resolveOptionalPositiveInt(requested);
   if (explicit > 0) {
     return explicit;
   }
@@ -1234,6 +1234,11 @@ function resolveResidentWarmLimit({ requested, recallMode = "", config = {} } = 
     );
   }
   return resolvePositiveInt(config.asheriePreludeResidentWarmLimit, 4);
+}
+
+function resolveOptionalPositiveInt(value) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function resolveRecentSourceFilter({ requested, recallMode = "" } = {}) {
