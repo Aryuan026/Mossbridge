@@ -67,6 +67,7 @@ Driftstone bundle -> memory_tree
 - `cache/app_daily_captures/`（如果来源是外部 app 抓取）
 - `storage/warm_memory/`
 - `storage/ongoing_tracks.json`
+- `storage/observation_journal/`
 - `storage/memory_tree/`
 - `storage/case_index/`
 
@@ -98,6 +99,7 @@ MossbridgeData/
       import_journal.jsonl
       conflicts/
     warm_memory/
+    observation_journal/
     memory_tree/
     case_index/
   cache/
@@ -112,7 +114,7 @@ MossbridgeData/
 
 `cache/app_daily_captures/` 是每日对话抓取层。
 
-不要把 daily captures 直接当稳定记忆。它们应该先进入沉淀池，再由 dreaming 或人工审核整理成 warm memory / ongoing / case / memory tree。
+不要把 daily captures 直接当稳定记忆。它们应该先进入沉淀池，再由 dreaming 或人工审核整理成 warm memory / observation journal / ongoing / case / memory tree。
 
 ## Driftstone Notion Bundle 对齐
 

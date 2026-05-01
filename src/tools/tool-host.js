@@ -749,6 +749,136 @@ const PROJECT_TOOLS = [
     },
   },
   {
+    name: "asheriebridge_memory_observation_append",
+    description: "Append a revisable user observation note. When you believe a soft pattern would help future continuity, write it proactively and silently during natural conversation; do not wait for an explicit user request and do not ask for permission every time. Use it for recent state, life rhythm, habits, boundaries, preferences, or interaction默契; it is not a durable fact card or a rule that controls front-stage wording.",
+    shortHint: "Store a tentative observation that can be corrected later.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["observation"],
+      properties: {
+        observation: { type: "string", description: "The soft observation. Phrase as revisable, not a fixed label." },
+        kind: { type: "string", description: "life_rhythm, recent_state, habit, boundary, preference, work_style, relationship, or another broad kind." },
+        status: { type: "string", description: "active or tentative; use rejected/stale/corrected only when revising." },
+        confidence: { type: "number", description: "0-1 confidence. Prefer low/medium for inferred observations." },
+        period: { type: "string", description: "Optional time range such as today, this week, or 2026-05." },
+        observed_at_utc: { type: "string", description: "Optional observation timestamp." },
+        evidence: { type: "array", items: { type: "string" }, description: "Short evidence snippets or references." },
+        source_refs: { type: "array", items: { type: "string" }, description: "Optional source ids, note paths, or cache refs." },
+        inference: { type: "string", description: "Optional separate inference. Keep uncertainty visible." },
+        suggested_use: { type: "string", description: "Optional guidance for future replies or wakeups." },
+        tags: { type: "array", items: { type: "string" } },
+        entities: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.appendObservation({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Observation stored: ${result?.record?.observation_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "asheriebridge_memory_observation_search",
+    description: "Search revisable user observation notes. Use this when current state, habits, boundaries, or life-rhythm默契 would help but should not be treated as fixed memory.",
+    shortHint: "Search soft observation notes.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        limit: { type: "integer" },
+        kinds: { type: "array", items: { type: "string" } },
+        statuses: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+        includeInactive: { type: "boolean", description: "Include rejected/stale/corrected notes when auditing or correcting." },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.searchObservations({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Observation search returned ${Number(result?.count) || 0} hits.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "asheriebridge_memory_observation_read",
+    description: "Read one exact user observation note before correcting or rejecting it.",
+    shortHint: "Read one observation note.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["observation_id"],
+      properties: {
+        observation_id: { type: "string" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.readObservation({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: result?.ok
+          ? `Observation loaded: ${result?.record?.observation_id || args.observation_id}`
+          : `Observation not found: ${args.observation_id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "asheriebridge_memory_observation_update",
+    description: "Correct, lower confidence, reject, or promote one exact user observation note. Use this immediately if the user says an observation is wrong, uncomfortable, or makes her angry.",
+    shortHint: "Correct or reject one observation note.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["observation_id"],
+      properties: {
+        observation_id: { type: "string" },
+        observation: { type: "string" },
+        kind: { type: "string" },
+        status: { type: "string", description: "active, tentative, corrected, rejected, stale, or promoted." },
+        confidence: { type: "number" },
+        period: { type: "string" },
+        evidence: { type: "array", items: { type: "string" } },
+        source_refs: { type: "array", items: { type: "string" } },
+        inference: { type: "string" },
+        suggested_use: { type: "string" },
+        correction_note: { type: "string", description: "Why the observation changed, especially if user corrected it." },
+        tags: { type: "array", items: { type: "string" } },
+        entities: { type: "array", items: { type: "string" } },
+        promoted_to: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.updateObservation({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Observation updated: ${result?.record?.observation_id || args.observation_id}`,
+        data: result,
+      };
+    },
+  },
+  {
     name: "asheriebridge_memory_cold_versions",
     description: "List the current cold-memory versions for the bound user. Use this to inspect the active version before replacing it.",
     shortHint: "List cold-memory versions and the active label.",

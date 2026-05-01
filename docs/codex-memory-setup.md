@@ -79,6 +79,7 @@ MossbridgeData/
     truth_layer/
     memory_tree/
     case_index/
+    observation_journal/
     notion_sync/
     raw_transcript_archive/
     dreaming_mutation_log/
@@ -111,6 +112,8 @@ MossbridgeData/
   日常最重要的记忆卡。偏好、关系锚点、象征物、稳定印象都优先写这里。
 - `storage/ongoing_tracks.json`
   近中期仍在发生的事，例如身体追踪、稿子、家族事件、购买决策、系统 bug。
+- `storage/observation_journal/`
+  可修正的观察日记。保存近期状态、生活节律、边界和相处默契，默认不是长期事实。
 - `cache/conversation_cache/`
   最近对话沉淀池。它不是永久记忆，但会喂给 recall 和 dreaming。
 - `storage/memory_tree/`
@@ -172,7 +175,12 @@ MossbridgeData/
 只有在用户明确说“我要共享旧记忆”时，才配置这些路径：
 
 ```dotenv
+# 如果 Home 是中央大脑，优先直接让 Mossbridge 使用 Home 的 data root。
+ASHERIEBRIDGE_DATA_ROOT=/path/to/AsherieHome/data
+
+# 如果只迁移或共享部分仓位，再使用下面这些精确覆盖。
 ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/path/to/existing/warm_memory
+ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/path/to/existing/observation_journal
 ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/path/to/existing/truth_layer
 ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/path/to/existing/memory_versions
 ```
@@ -180,6 +188,7 @@ ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/path/to/existing/memory_versions
 接旧仓前先确认写入权威：
 
 - 如果 Home 是中央大脑，Mossbridge 不要复制一份继续双写。
+- 用户印象/观察簿也遵守同一规则：Bridge 应该写入 Home 的 `storage/observation_journal/` 母库，而不是另起一套 Bridge 版用户印象。
 - 如果 Mossbridge 要独立分享，把旧卡导入为一次快照，并保留 `source_system`、`source_card_id`、`import_batch`。
 - 不要让两个系统同时维护两份看似相同但会分叉的温记忆。
 

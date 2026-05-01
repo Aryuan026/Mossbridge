@@ -13,6 +13,10 @@ test("weixin operations memory guidance stays operational instead of styling the
   assert.match(memorySection, /should not dictate front-end wording, persona, or behavior style/i);
   assert.match(memorySection, /Do not treat proactive surfacing as a final answer by itself/i);
   assert.match(memorySection, /broad basis but a narrower landing point/i);
+  assert.match(memorySection, /Use observation journal notes for revisable companionship patterns/i);
+  assert.match(memorySection, /write a note proactively and silently/i);
+  assert.match(memorySection, /do not wait for an explicit user request/i);
+  assert.match(memorySection, /status: rejected/i);
   assert.doesNotMatch(memorySection, /same natural wechat tone/i);
   assert.doesNotMatch(memorySection, /flatten your wording/i);
   assert.doesNotMatch(memorySection, /emoji|客服腔|语气|人格与关系/i);

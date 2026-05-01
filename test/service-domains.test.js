@@ -65,6 +65,22 @@ test("service domains expose gateway-shaped wrappers over the existing services"
         calls.push(["memory.closeOngoingTrack", args]);
         return { ok: true };
       },
+      async appendObservation(args) {
+        calls.push(["memory.appendObservation", args]);
+        return { ok: true };
+      },
+      async searchObservations(args) {
+        calls.push(["memory.searchObservations", args]);
+        return { hits: [] };
+      },
+      async readObservation(args) {
+        calls.push(["memory.readObservation", args]);
+        return { ok: true };
+      },
+      async updateObservation(args) {
+        calls.push(["memory.updateObservation", args]);
+        return { ok: true };
+      },
       async listColdVersions(args) {
         calls.push(["memory.listColdVersions", args]);
         return { versions: [] };
@@ -166,6 +182,10 @@ test("service domains expose gateway-shaped wrappers over the existing services"
   await domains.memory.readOngoingTrack({ track_id: "track-1" });
   await domains.memory.listOngoingTracks({ statuses: ["active"] });
   await domains.memory.closeOngoingTrack({ track_id: "track-1", closure_summary: "阶段完成" });
+  await domains.memory.appendObservation({ observation: "早上适合轻一点的唤醒。" });
+  await domains.memory.searchObservations({ query: "早上" });
+  await domains.memory.readObservation({ observation_id: "obs-1" });
+  await domains.memory.updateObservation({ observation_id: "obs-1", status: "rejected" });
   await domains.memory.listColdVersions({});
   await domains.memory.readColdVersion({ version: "v1" });
   await domains.memory.searchColdRoots({ query: "timezone" });
@@ -185,6 +205,7 @@ test("service domains expose gateway-shaped wrappers over the existing services"
   await domains.presence.startWhereaboutsServer({ onAccepted() {} });
   await domains.presence.closeWhereaboutsServer();
 
+  const startServerCall = calls.find((entry) => entry[0] === "presence.startServer");
   assert.deepEqual(calls, [
     ["memory.appendDiary", { text: "hello" }],
     ["memory.captureContextPacket", { query: "coffee" }],
@@ -199,6 +220,10 @@ test("service domains expose gateway-shaped wrappers over the existing services"
     ["memory.readOngoingTrack", { track_id: "track-1" }],
     ["memory.listOngoingTracks", { statuses: ["active"] }],
     ["memory.closeOngoingTrack", { track_id: "track-1", closure_summary: "阶段完成" }],
+    ["memory.appendObservation", { observation: "早上适合轻一点的唤醒。" }],
+    ["memory.searchObservations", { query: "早上" }],
+    ["memory.readObservation", { observation_id: "obs-1" }],
+    ["memory.updateObservation", { observation_id: "obs-1", status: "rejected" }],
     ["memory.listColdVersions", {}],
     ["memory.readColdVersion", { version: "v1" }],
     ["memory.searchColdRoots", { query: "timezone" }],
@@ -215,7 +240,7 @@ test("service domains expose gateway-shaped wrappers over the existing services"
     ["transport.pickSticker", { tag: "开心" }],
     ["transport.sendSticker", { stickerId: "stk_001" }, { senderId: "user-1" }],
     ["transport.saveSticker", { items: [] }, { senderId: "user-1" }],
-    ["presence.startServer", { onAccepted: calls[29][1].onAccepted }],
+    ["presence.startServer", { onAccepted: startServerCall[1].onAccepted }],
     ["presence.closeServer"],
   ]);
   assert.equal(domains.presence.getWhereaboutsServer(), whereaboutsService.server);

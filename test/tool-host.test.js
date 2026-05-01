@@ -133,6 +133,56 @@ function createHost() {
             },
           };
         },
+        async appendObservation(args) {
+          return {
+            ok: true,
+            record: {
+              observation_id: args.observation_id || "obs-1",
+              observation: args.observation,
+              kind: args.kind || "life_rhythm",
+              status: args.status || "tentative",
+              confidence: args.confidence ?? 0.35,
+            },
+          };
+        },
+        async searchObservations(args) {
+          return {
+            ok: true,
+            query: args.query || "",
+            count: 1,
+            hits: [{
+              observation_id: "obs-1",
+              observation: "User often needs gentler morning prompts.",
+              kind: "life_rhythm",
+              status: "tentative",
+              confidence: 0.45,
+            }],
+          };
+        },
+        async readObservation(args) {
+          return {
+            ok: true,
+            observation_id: args.observation_id,
+            record: {
+              observation_id: args.observation_id,
+              observation: "User often needs gentler morning prompts.",
+              kind: "life_rhythm",
+              status: "tentative",
+              confidence: 0.45,
+            },
+          };
+        },
+        async updateObservation(args) {
+          return {
+            ok: true,
+            record: {
+              observation_id: args.observation_id,
+              observation: args.observation || "User prefers direct correction when a pattern is wrong.",
+              status: args.status || "active",
+              confidence: args.confidence ?? 0.5,
+            },
+          };
+        },
         async listColdVersions() {
           return {
             ok: true,
@@ -484,6 +534,42 @@ test("tool host exposes ongoing-track tools for medium-horizon live threads", as
   assert.equal(listed.text, "Ongoing tracks: 1");
   assert.equal(read.text, "Ongoing track loaded: track-1");
   assert.equal(closed.text, "Ongoing track closed: track-1");
+});
+
+test("tool host exposes revisable observation journal tools", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_append"));
+  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_search"));
+  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_read"));
+  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_update"));
+  const appendTool = tools.find((tool) => tool.name === "asheriebridge_memory_observation_append");
+  assert.match(appendTool.description, /write it proactively and silently/i);
+  assert.match(appendTool.description, /do not wait for an explicit user request/i);
+
+  const appended = await host.invokeTool("asheriebridge_memory_observation_append", {
+    observation: "User often needs gentler morning prompts.",
+    kind: "life_rhythm",
+    confidence: 0.45,
+    evidence: ["morning wakeups land better when low-pressure"],
+  }, { senderId: "user-1" });
+  const search = await host.invokeTool("asheriebridge_memory_observation_search", {
+    query: "morning prompts",
+  }, { senderId: "user-1" });
+  const read = await host.invokeTool("asheriebridge_memory_observation_read", {
+    observation_id: "obs-1",
+  }, { senderId: "user-1" });
+  const updated = await host.invokeTool("asheriebridge_memory_observation_update", {
+    observation_id: "obs-1",
+    status: "rejected",
+    correction_note: "User said this framing felt wrong.",
+  }, { senderId: "user-1" });
+
+  assert.equal(appended.text, "Observation stored: obs-1");
+  assert.equal(search.text, "Observation search returned 1 hits.");
+  assert.equal(read.text, "Observation loaded: obs-1");
+  assert.equal(updated.text, "Observation updated: obs-1");
+  assert.equal(updated.data.record.status, "rejected");
 });
 
 test("tool host exposes cold-memory inspection tools beside version upsert", async () => {

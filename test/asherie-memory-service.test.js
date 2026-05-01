@@ -100,6 +100,16 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
   );
   assert.equal(wakeupRows[0].scoped_user_id, SINGLE_USER_ID);
 
+  const observation = await service.appendObservation({
+    observation: "User tends to prefer gentle, low-pressure morning continuity over abrupt task pressure.",
+    kind: "life_rhythm",
+    confidence: 0.45,
+    evidence: ["Morning wakeup replies landed better when framed gently."],
+    suggested_use: "For morning wakeups, keep the first line soft and concrete.",
+  });
+  assert.equal(observation.ok, true);
+  assert.match(observation.record.observation_id, /^obs_/);
+
   const recalled = await service.captureContextPacket({
     userId: "another-wechat-user",
     ownerId: "still-wrong-owner",
@@ -107,9 +117,21 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
     query: "coffee morning",
   });
   assert.equal(recalled.warm_memory_packet.hit_count, 1);
+  assert.equal(recalled.observation_journal_packet.hit_count || recalled.observation_journal_packet.count, 1);
   assert.equal(recalled.cold_memory.active_version, coldWrite.version);
   assert.equal(recalled.conversation_cache.stats.returned_records, 1);
   assert.match(recalled.runtime_prelude, /AsherieBridge memory context/);
+  assert.match(recalled.runtime_prelude, /observation:/);
+
+  const corrected = await service.updateObservation({
+    observation_id: observation.record.observation_id,
+    status: "rejected",
+    confidence: 0.05,
+    correction_note: "User said this observation felt wrong.",
+  });
+  assert.equal(corrected.record.status, "rejected");
+  const activeObservationSearch = await service.searchObservations({ query: "morning" });
+  assert.equal(activeObservationSearch.count, 0);
   const cacheFiles = fs.readdirSync(path.join(tempRoot, "gateway-data", "cache", "conversation_cache"));
   assert.equal(cacheFiles.some((name) => name.startsWith(`${SINGLE_USER_ID}__`)), true);
 });
@@ -141,6 +163,30 @@ test("asherie memory service honors configured recent context cache limit by def
 
   assert.equal(packet.conversation_cache.stats.returned_records, 3);
   assert.match(packet.runtime_prelude, /recent-thread/);
+});
+
+test("asherie observation journal search requires intent or lexical activation", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-observation-filter-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.appendObservation({
+    observation: "用户出行前收行李常常先拖延，最后一晚再快速推进。",
+    kind: "life_rhythm",
+    confidence: 0.95,
+  });
+
+  const unrelated = await service.searchObservations({ query: "HTTP 500 怎么排查" });
+  const matching = await service.searchObservations({ query: "行李" });
+  const intent = await service.searchObservations({ query: "根据你对我的印象，适合什么美甲" });
+
+  assert.equal(unrelated.count, 0);
+  assert.equal(matching.count, 1);
+  assert.equal(intent.count, 1);
 });
 
 test("asherie memory runtime prelude redacts private identity seed paths", async () => {

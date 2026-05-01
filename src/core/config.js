@@ -88,6 +88,7 @@ function readConfig() {
     asherieTruthLayerDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR"),
     asherieMemoryTreeDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_MEMORY_TREE_DIR"),
     asherieCaseIndexDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_CASE_INDEX_DIR"),
+    asherieObservationJournalDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR"),
     asherieNotionSyncDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_NOTION_SYNC_DIR"),
     asherieAppDailyCaptureDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_APP_DAILY_CAPTURE_DIR"),
     asherieWarmMemoryDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR"),
@@ -99,6 +100,7 @@ function readConfig() {
     asheriePreludeResidentWarmLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RESIDENT_WARM_LIMIT") || 5,
     asheriePreludeOngoingLimit: readBridgeIntEnv("ASHERIE_PRELUDE_ONGOING_LIMIT") || 5,
     asheriePreludeOngoingShadowLimit: readBridgeIntEnv("ASHERIE_PRELUDE_ONGOING_SHADOW_LIMIT") || 6,
+    asheriePreludeObservationLimit: readBridgeIntEnv("ASHERIE_PRELUDE_OBSERVATION_LIMIT") || 4,
     asheriePreludeRecentSnippetLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RECENT_SNIPPET_LIMIT") || 8,
     asheriePreludeRecentThreadLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RECENT_THREAD_LIMIT") || 8,
   };

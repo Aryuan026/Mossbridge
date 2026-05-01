@@ -6,6 +6,7 @@ const { ConversationCacheStore } = require("../asherie/conversation-cache-store"
 const { WakeupStore } = require("../asherie/wakeup-store");
 const { CalendarStore } = require("../asherie/calendar-store");
 const { OngoingTrackStore } = require("../asherie/ongoing-track-store");
+const { ObservationJournalStore } = require("../asherie/observation-journal-store");
 const { ColdRootStore } = require("../asherie/cold-root-store");
 const { MemoryVersionBank, countPayload, normalizePayload } = require("../asherie/memory-version-bank");
 const {
@@ -44,6 +45,7 @@ class AsherieMemoryService {
         truthLayerDirOverride: this.config.asherieTruthLayerDir,
         memoryTreeDirOverride: this.config.asherieMemoryTreeDir,
         caseIndexDirOverride: this.config.asherieCaseIndexDir,
+        observationJournalDirOverride: this.config.asherieObservationJournalDir,
         notionSyncDirOverride: this.config.asherieNotionSyncDir,
         appDailyCaptureDirOverride: this.config.asherieAppDailyCaptureDir,
         warmMemoryDirOverride: this.config.asherieWarmMemoryDir,
@@ -59,6 +61,9 @@ class AsherieMemoryService {
       this.layout.ongoingTrackArchivePath,
       600,
     );
+    this.observationJournal = new ObservationJournalStore(this.layout.observationJournalDir, {
+      identity: this.identity,
+    });
     this.memoryVersionBank = new MemoryVersionBank(this.layout.memoryVersionBankDir, { identity: this.identity });
     this.coldRootStore = new ColdRootStore(this.layout.truthLayerDir, {
       memoryVersionBank: this.memoryVersionBank,
@@ -155,6 +160,13 @@ class AsherieMemoryService {
         Number(this.config.asheriePreludeOngoingShadowLimit) || 6,
       ),
     });
+    const observationJournalPacket = this.buildObservationJournalRuntimePacket(scopes.scopedUserId, {
+      query: recallQuery,
+      limit: resolvePositiveInt(
+        args.prelude_observation_limit || args.preludeObservationLimit,
+        Number(this.config.asheriePreludeObservationLimit) || 4,
+      ),
+    });
 
     let coldMemoryVersion = "";
     let coldMemoryPayload = {};
@@ -216,6 +228,7 @@ class AsherieMemoryService {
       mode: "asheriebridge_context_packet",
       warmMemoryPacket,
       residentWarmPacket,
+      observationJournalPacket,
       curatedHits: [],
       liteFallbackHits: [],
       hippocovePacket: coldMemoryVersion
@@ -241,6 +254,7 @@ class AsherieMemoryService {
       coldVinePacket,
       temporalRecallPacket,
       ongoingTrackPacket,
+      observationJournalPacket,
       recentRecords: recent.records,
       calendarPacket,
       wakeupPacket,
@@ -259,6 +273,10 @@ class AsherieMemoryService {
       preludeOngoingShadowLimit: resolvePositiveInt(
         args.prelude_ongoing_shadow_limit || args.preludeOngoingShadowLimit,
         Number(this.config.asheriePreludeOngoingShadowLimit) || 6,
+      ),
+      preludeObservationLimit: resolvePositiveInt(
+        args.prelude_observation_limit || args.preludeObservationLimit,
+        Number(this.config.asheriePreludeObservationLimit) || 4,
       ),
       preludeRecentSnippetLimit: resolvePositiveInt(
         args.prelude_recent_snippet_limit || args.preludeRecentSnippetLimit,
@@ -280,6 +298,7 @@ class AsherieMemoryService {
       warm_memory_packet: warmMemoryPacket,
       resident_warm_packet: residentWarmPacket,
       ongoing_track_packet: ongoingTrackPacket,
+      observation_journal_packet: observationJournalPacket,
       temporal_recall_packet: {
         ...temporalRecallPacket,
         stats: temporalRows.stats,
@@ -364,6 +383,11 @@ class AsherieMemoryService {
         || args.memoryContextPacket?.ongoing_track_packet
         || args.ongoing_track
         || args.ongoingTrack
+        || {},
+      observation_journal: args.memory_context_packet?.observation_journal_packet
+        || args.memoryContextPacket?.observation_journal_packet
+        || args.observation_journal
+        || args.observationJournal
         || {},
       surfacing: args.surfacing || {},
       gateway_events: Array.isArray(args.gateway_events || args.gatewayEvents)
@@ -547,6 +571,33 @@ class AsherieMemoryService {
       record,
       error: record ? "" : `ongoing track not found: ${trackId}`,
     };
+  }
+
+  async appendObservation(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const stored = this.observationJournal.append(scopes.scopedUserId, {
+      ...args,
+      userId: scopes.resolvedUserId,
+      realmId: scopes.coldScope.realm_id,
+      agentId: scopes.coldScope.agent_id,
+    });
+    return stored;
+  }
+
+  async searchObservations(args = {}) {
+    const scopes = this.resolveScopes(args);
+    return this.observationJournal.search(scopes.scopedUserId, args);
+  }
+
+  async readObservation(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const observationId = normalizeText(args.observation_id || args.observationId);
+    return this.observationJournal.read(scopes.scopedUserId, observationId);
+  }
+
+  async updateObservation(args = {}) {
+    const scopes = this.resolveScopes(args);
+    return this.observationJournal.update(scopes.scopedUserId, args);
   }
 
   async readColdVersion(args = {}) {
@@ -755,6 +806,22 @@ class AsherieMemoryService {
       ].filter(Boolean).join(" | "),
     };
   }
+
+  buildObservationJournalRuntimePacket(scopedUserId, { query = "", limit = 4 } = {}) {
+    const packet = this.observationJournal.search(scopedUserId, {
+      query,
+      limit,
+      statuses: ["active", "tentative"],
+    });
+    return {
+      ...packet,
+      hit_count: Number(packet.count) || 0,
+      summary: [
+        packet.count ? `observations=${packet.count}` : "",
+        normalizeText(query) ? `focus=${truncateText(query, 48)}` : "",
+      ].filter(Boolean).join(" | "),
+    };
+  }
 }
 
 function buildRuntimePrelude({
@@ -762,6 +829,7 @@ function buildRuntimePrelude({
   warmMemoryPacket,
   residentWarmPacket,
   ongoingTrackPacket,
+  observationJournalPacket,
   coldMemoryVersion,
   coldMemoryPayload,
   coldSource,
@@ -775,6 +843,7 @@ function buildRuntimePrelude({
   preludeResidentWarmLimit = 4,
   preludeOngoingLimit = 4,
   preludeOngoingShadowLimit = 2,
+  preludeObservationLimit = 4,
   preludeRecentSnippetLimit = 4,
   preludeRecentThreadLimit = 3,
 }) {
@@ -835,6 +904,12 @@ function buildRuntimePrelude({
     ongoingShadowSnippets.slice(0, preludeOngoingShadowLimit).forEach((item) => {
       lines.push(`- shadow: ${normalizePreludeText(item)}`);
     });
+  }
+
+  const observationLines = buildObservationPrelude(observationJournalPacket, preludeObservationLimit);
+  if (observationLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...observationLines);
   }
 
   if (coldRootHits.length) {
@@ -983,9 +1058,28 @@ function buildWakeupPrelude(wakeupPacket = {}) {
 function buildMemorySelfMaintenancePrelude() {
   return [
     "- memory-self-maintenance: memory tools are part of your own continuity, not an external chore. Use them when they help preserve relationship continuity, prior facts, preferences, corrections, or active story threads.",
+    "- observation-journal: use observations as revisable companionship notes, not fixed labels. If the user says an observation is wrong or uncomfortable, correct it, lower confidence, or mark it rejected.",
     "- memory-system-feedback: if the current memory tools, recall results, prompts, or bridge behavior feel insufficient, uncomfortable, or too constraining, name the problem naturally and make a concrete request for the missing capability instead of pretending everything is fine.",
     "- memory-frontstage-freedom: memory work grounds confidence and continuity; it must not dictate your wording, persona, emotional range, or conversational behavior.",
   ];
+}
+
+function buildObservationPrelude(packet = {}, limit = 4) {
+  const hits = Array.isArray(packet?.hits) ? packet.hits : [];
+  return hits.slice(0, Math.max(1, Math.min(Number(limit) || 4, 8))).map((item) => {
+    const kind = normalizePreludeText(item.kind) || "observation";
+    const confidence = Number(item.confidence);
+    const confidenceText = Number.isFinite(confidence) ? `conf=${confidence.toFixed(2)}` : "";
+    const observation = normalizePreludeText(item.observation);
+    const use = normalizePreludeText(item.suggested_use);
+    const bits = [
+      kind,
+      confidenceText,
+      observation ? truncateText(observation, 110) : "",
+      use ? `use: ${truncateText(use, 80)}` : "",
+    ].filter(Boolean);
+    return `- observation: ${bits.join(" | ")}`;
+  });
 }
 
 function buildTemporalRecallPrelude(packet = {}) {

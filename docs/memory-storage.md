@@ -31,6 +31,7 @@ ASHERIEBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
 
 ```dotenv
 ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
+ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/absolute/path/to/observation_journal
 ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
 ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
 ```
@@ -85,6 +86,45 @@ ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
 - `last_touched_at`: 最近一次被真正触碰的时间
 
 ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传文件方便才换到另一个窗口，事件本身不应该被拆开。
+
+### `storage/observation_journal/`
+
+观察日记。它是 `timeline` / `diary` 和 `warm_memory` 中间的一层，用来保存“相处中形成的默契”，而不是给用户贴死标签。
+
+如果 Bridge 和 Home 共用同一个 `ASHERIEBRIDGE_DATA_ROOT`，这里就是 Home 的观察簿母库；微信、Home 前台、邮件、后台唤醒和 dreaming 都应该把观察投到这一层，而不是各自养一套“用户印象”。Bridge 独立部署时也可以使用同一套目录结构，只是母库从 Home 换成自己的 `MossbridgeData`。
+
+适合放：
+
+- 最近状态和生活节律，例如“早上刚醒时更适合轻一点的唤醒”
+- 反复出现但还不够稳定的习惯
+- 用户明确表达过的不舒服边界
+- 图片、行程、上下文尾巴中推出来的轻量观察
+- 未来回复或主动唤醒可参考的相处方式
+
+前台模型不需要等用户点名才写观察。只要它认为某个轻量模式会帮助未来连续性，就可以静默写入；但每条都必须保留证据、置信度和可纠正状态，不能变成“用户就是这样”的定论。
+
+不适合放：
+
+- 医疗、心理、性格定论
+- 没有证据的强判断
+- 已经被用户否定但还继续影响回复的旧印象
+- 应该写进 `ongoing_tracks` 的具体任务进度
+- 已经稳定到应成为长期事实的温记忆卡
+
+一条 observation 应该保留：
+
+- `observation`: 当前观察本身
+- `kind`: `life_rhythm`、`recent_state`、`habit`、`boundary`、`preference`、`work_style` 等宽分类
+- `confidence`: 0 到 1，默认应该偏低
+- `evidence`: 简短证据或来源描述
+- `inference`: 从证据推出来的部分，必须和事实分开
+- `suggested_use`: 未来回复、唤醒或生活建议中怎么温柔地使用
+- `status`: `active`、`tentative`、`corrected`、`rejected`、`stale`、`promoted`
+- `corrections`: 用户纠正或系统修正的记录
+
+如果用户说“你不要这样我生气了”“这个观察不对”，对应 observation 必须被修正、降置信度或标成 `rejected`。观察日记允许错，但不允许错了还偷偷继续控制前台回复。
+
+它的召回权重应该低于明确温卡和 active ongoing，但高于纯原始流水。它解决的是省上下文架构里“默契不容易自然积累”的问题。
 
 ### `cache/conversation_cache/`
 
@@ -333,6 +373,7 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / case_index
 
 - 对话里的稳定关系、偏好、象征物，进入温层。
 - 短中期活跃事件，进入 ongoing。
+- 近期状态、日常节律和相处默契，先进入 observation journal。
 - 已完成的工程、文件工作、调试结论，进入 case index。
 - 官方 app / ChatGPT web 的每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
 - 跨端固有记忆通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。

@@ -50,6 +50,8 @@ const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
 const OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS = 90_000;
 const RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 90_000;
 const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
+const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
+const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -921,6 +923,14 @@ class CyberbossApp {
       clearTimeout(existing.noticeTimer);
       clearTimeout(existing.recoveryTimer);
     }
+    const runtimeName = this.runtimeAdapter.describe().id || "runtime";
+    const isClaudeCode = runtimeName === "claudecode";
+    const noticeTimeoutMs = isClaudeCode
+      ? CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS
+      : RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS;
+    const recoveryTimeoutMs = isClaudeCode
+      ? CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS
+      : RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS;
 
     const noticeTimer = setTimeout(async () => {
       const watchdog = this.runningTurnWatchdogs.get(runKey);
@@ -937,13 +947,13 @@ class CyberbossApp {
         contextToken: normalized.contextToken,
         preserveBlock: true,
         text: [
-          "⏳ 这轮我已经收到，但前台 ClaudeCode 开始后一直没有吐出正文。",
-          "我会继续等一小会儿；如果它还是不动，会自动释放这轮，避免微信一直卡在正在输入。",
+          "⏳ 这轮我已经收到，ClaudeCode 也已经开始处理，只是正文出来得比较慢。",
+          "这是一条慢回提示，不是失败通知；如果后面正文自己回来，可以直接忽略这一条。",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
         ].join("\n"),
       }).catch(() => {});
-    }, RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS);
+    }, noticeTimeoutMs);
 
     const recoveryTimer = setTimeout(async () => {
       const watchdog = this.runningTurnWatchdogs.get(runKey);
@@ -962,7 +972,7 @@ class CyberbossApp {
         contextToken: normalized.contextToken,
         preserveBlock: true,
         text: [
-          "⚠️ 这轮 ClaudeCode 超过 4 分钟没有完成，我先把卡住的运行释放掉。",
+          `⚠️ 这轮 ClaudeCode 超过 ${Math.round(recoveryTimeoutMs / 60_000)} 分钟没有完成，我先把卡住的运行释放掉。`,
           "刚才那句话可能需要你重新发一次；后续消息不会继续堵在这轮后面。",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
@@ -977,7 +987,7 @@ class CyberbossApp {
       });
       this.turnGateStore.releaseThread(normalizedThreadId);
       await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true }).catch(() => {});
-    }, RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS);
+    }, recoveryTimeoutMs);
 
     this.runningTurnWatchdogs.set(runKey, {
       bindingKey,

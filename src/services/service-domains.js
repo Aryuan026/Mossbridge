@@ -100,6 +100,18 @@ function createServiceDomains(services = {}) {
     async closeOngoingTrack(args = {}) {
       return await requireService(asherieMemory, "memory.closeOngoingTrack").closeOngoingTrack(args);
     },
+    async appendObservation(args = {}) {
+      return await requireService(asherieMemory, "memory.appendObservation").appendObservation(args);
+    },
+    async searchObservations(args = {}) {
+      return await requireService(asherieMemory, "memory.searchObservations").searchObservations(args);
+    },
+    async readObservation(args = {}) {
+      return await requireService(asherieMemory, "memory.readObservation").readObservation(args);
+    },
+    async updateObservation(args = {}) {
+      return await requireService(asherieMemory, "memory.updateObservation").updateObservation(args);
+    },
     async listColdVersions(args = {}) {
       return await requireService(asherieMemory, "memory.listColdVersions").listColdVersions(args);
     },
