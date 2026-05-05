@@ -284,7 +284,7 @@ class ClaudeCodeProcessClient {
     }
     const payload = JSON.stringify({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content: sanitizeTextForClaudeJson(text) },
     });
     this.stdin.write(payload + "\n");
     this.emit({
@@ -450,7 +450,31 @@ function appendTextTail(existing, next, maxLength = 2000) {
   return joined.slice(joined.length - maxLength);
 }
 
-module.exports = { ClaudeCodeProcessClient, buildArgs };
+function sanitizeTextForClaudeJson(value) {
+  const text = String(value || "");
+  let out = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        out += text[index] + text[index + 1];
+        index += 1;
+      } else {
+        out += "\uFFFD";
+      }
+      continue;
+    }
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+      out += "\uFFFD";
+      continue;
+    }
+    out += text[index];
+  }
+  return out;
+}
+
+module.exports = { ClaudeCodeProcessClient, buildArgs, sanitizeTextForClaudeJson };
 
 function isPendingThreadId(threadId) {
   return /^pending-\d+$/u.test(String(threadId || "").trim());

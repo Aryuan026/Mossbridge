@@ -58,6 +58,8 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
 
 test("queued system messages attach fresh memory before runtime dispatch", async () => {
   const dispatched = [];
+  const clearedThreads = [];
+  const updatedBindings = [];
   const dispatcher = new SystemMessageDispatcher({
     queueStore: { hasPendingForAccount() { return false; }, drainForAccount() { return []; }, enqueue() {} },
     config: {
@@ -76,10 +78,23 @@ test("queued system messages attach fresh memory before runtime dispatch", async
     runtimeAdapter: {
       getSessionStore() {
         return {
-          buildBindingKey() {
-            return "binding-1";
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
           },
-          getThreadIdForWorkspace() {
+          getThreadIdForWorkspace(bindingKey) {
+            return String(bindingKey).includes("#asherie-system") ? "" : "user-thread";
+          },
+          getRuntimeParamsForWorkspace() {
+            return { model: "claude-opus-4-6" };
+          },
+          setRuntimeParamsForWorkspace() {},
+          updateBinding(bindingKey, value) {
+            updatedBindings.push([bindingKey, value]);
+          },
+          clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            clearedThreads.push([bindingKey, workspaceRoot]);
+          },
+          clearPendingThreadIdForWorkspace() {
             return "";
           },
         };
@@ -100,6 +115,7 @@ test("queued system messages attach fresh memory before runtime dispatch", async
       return "/workspace";
     },
     isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
+    prepareSystemRuntimeBinding: CyberbossApp.prototype.prepareSystemRuntimeBinding,
     async attachMemoryContextToPreparedText(normalized, runtimeText, workspaceRoot) {
       assert.equal(normalized.provider, "system");
       assert.equal(workspaceRoot, "/workspace");
@@ -136,6 +152,9 @@ test("queued system messages attach fresh memory before runtime dispatch", async
 
   assert.equal(ok, true);
   assert.equal(dispatched.length, 1);
+  assert.equal(dispatched[0].bindingKey, "binding:user-1#asherie-system");
+  assert.deepEqual(clearedThreads, [["binding:user-1#asherie-system", "/workspace"]]);
+  assert.equal(updatedBindings[0][1].replySenderId, "user-1");
   assert.match(dispatched[0].prepared.text, /ongoing: 起床提醒/);
   assert.match(dispatched[0].prepared.text, /Trigger kind: reminder_due/);
   assert.deepEqual(dispatched[0].prepared.memoryContextPacket?.retrieval?.route, ["warm_memory", "resident_warm"]);

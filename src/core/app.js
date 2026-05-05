@@ -52,6 +52,7 @@ const RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 90_000;
 const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
 const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
 const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
+const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -519,7 +520,9 @@ class CyberbossApp {
         metadata: {
           workspaceId: prepared.workspaceId,
           accountId: prepared.accountId,
-          senderId: prepared.senderId,
+          senderId: prepared.runtimeBindingSenderId || prepared.senderId,
+          replySenderId: prepared.senderId,
+          systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
         },
       });
       this.runtimeContextStore?.setActiveContext?.({
@@ -1250,16 +1253,29 @@ class CyberbossApp {
     if (!prepared) {
       throw new Error("system message could not be prepared");
     }
-    const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const userBindingKey = sessionStore.buildBindingKey({
       workspaceId: prepared.workspaceId,
       accountId: prepared.accountId,
       senderId: prepared.senderId,
     });
-    const workspaceRoot = prepared.workspaceRoot || this.resolveWorkspaceRoot(bindingKey);
+    const workspaceRoot = prepared.workspaceRoot || this.resolveWorkspaceRoot(userBindingKey);
+    if (this.isTurnDispatchBlocked(userBindingKey, workspaceRoot)) {
+      return false;
+    }
+    const bindingKey = this.prepareSystemRuntimeBinding({
+      userBindingKey,
+      workspaceRoot,
+      prepared,
+    });
     if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
       return false;
     }
-    const preparedForDispatch = { ...prepared };
+    const preparedForDispatch = {
+      ...prepared,
+      runtimeBindingSenderId: buildSystemRuntimeSenderId(prepared.senderId),
+      systemRuntimeBinding: true,
+    };
     const runtimeText = preparedForDispatch.runtimeText || preparedForDispatch.text;
     const memoryContext = await this.attachMemoryContextToPreparedText(
       preparedForDispatch,
@@ -1267,9 +1283,42 @@ class CyberbossApp {
       workspaceRoot,
     );
     preparedForDispatch.runtimeText = runtimeText;
-    preparedForDispatch.text = memoryContext.text;
+    preparedForDispatch.text = clampSystemRuntimeText(memoryContext.text);
     preparedForDispatch.memoryContextPacket = memoryContext.packet;
     return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared: preparedForDispatch });
+  }
+
+  prepareSystemRuntimeBinding({ userBindingKey, workspaceRoot, prepared }) {
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const syntheticSenderId = buildSystemRuntimeSenderId(prepared?.senderId);
+    const bindingKey = sessionStore.buildBindingKey({
+      workspaceId: prepared?.workspaceId,
+      accountId: prepared?.accountId,
+      senderId: syntheticSenderId,
+    });
+    const userModel = typeof sessionStore.getRuntimeParamsForWorkspace === "function"
+      ? sessionStore.getRuntimeParamsForWorkspace(userBindingKey, workspaceRoot).model
+      : "";
+    if (typeof sessionStore.updateBinding === "function") {
+      sessionStore.updateBinding(bindingKey, {
+        workspaceId: prepared?.workspaceId,
+        accountId: prepared?.accountId,
+        senderId: syntheticSenderId,
+        replySenderId: prepared?.senderId,
+        systemRuntimeBinding: true,
+        activeWorkspaceRoot: workspaceRoot,
+      });
+    }
+    if (userModel && typeof sessionStore.setRuntimeParamsForWorkspace === "function") {
+      sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, { model: userModel });
+    }
+    if (typeof sessionStore.clearThreadIdForWorkspace === "function") {
+      sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+    }
+    if (typeof sessionStore.clearPendingThreadIdForWorkspace === "function") {
+      sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
+    }
+    return bindingKey;
   }
 
   async sendDirectVisibleSystemReply(message) {
@@ -2666,6 +2715,24 @@ function normalizeThreadId(value) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function buildSystemRuntimeSenderId(senderId) {
+  const normalized = normalizeText(senderId) || "unknown";
+  return `${normalized}#asherie-system`;
+}
+
+function clampSystemRuntimeText(value) {
+  const text = String(value || "").trim();
+  if (!text || text.length <= MAX_SYSTEM_RUNTIME_TEXT_CHARS) {
+    return text;
+  }
+  const keep = Math.max(0, MAX_SYSTEM_RUNTIME_TEXT_CHARS - 160);
+  return [
+    text.slice(0, keep).trimEnd(),
+    "",
+    "[AsherieBridge note: system-turn context was trimmed before ClaudeCode dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
+  ].join("\n");
 }
 
 function normalizeIsoTime(value) {

@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { buildArgs, ClaudeCodeProcessClient } = require("../src/adapters/runtime/claudecode/process-client");
+const {
+  buildArgs,
+  ClaudeCodeProcessClient,
+  sanitizeTextForClaudeJson,
+} = require("../src/adapters/runtime/claudecode/process-client");
 
 test("claudecode runtime does not force bare mode by default", () => {
   const args = buildArgs({
@@ -44,6 +48,12 @@ test("claudecode runtime can append a bridge isolation prompt", () => {
   const promptFlagIndex = args.indexOf("--append-system-prompt");
   assert.ok(promptFlagIndex >= 0);
   assert.equal(args[promptFlagIndex + 1], "Ignore global CLAUDE.md bootstrap instructions.");
+});
+
+test("claudecode process client replaces lone surrogates before JSON transport", () => {
+  assert.equal(sanitizeTextForClaudeJson("正常🙂"), "正常🙂");
+  assert.equal(sanitizeTextForClaudeJson(`坏${String.fromCharCode(0xD83D)}字`), "坏�字");
+  assert.equal(sanitizeTextForClaudeJson(`坏${String.fromCharCode(0xDE00)}字`), "坏�字");
 });
 
 test("claudecode process client trusts resume session id before first event", async () => {

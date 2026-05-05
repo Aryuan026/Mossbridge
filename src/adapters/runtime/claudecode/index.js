@@ -72,21 +72,9 @@ function createClaudeCodeRuntimeAdapter(config) {
     });
     client.onMessage((event, raw) => {
       if (event.type === "session.id") {
-        for (const binding of sessionStore.listBindings()) {
-          if (binding.activeWorkspaceRoot === workspaceRoot) {
-            const pendingThreadId = normalizeThreadId(
-              sessionStore.getPendingThreadIdForWorkspace(binding.bindingKey, workspaceRoot)
-            );
-            if (pendingThreadId) {
-              if (pendingThreadId === normalizeThreadId(event.sessionId)) {
-                sessionStore.setThreadIdForWorkspace(binding.bindingKey, workspaceRoot, event.sessionId);
-                sessionStore.clearPendingThreadIdForWorkspace(binding.bindingKey, workspaceRoot);
-              }
-            } else {
-              sessionStore.setThreadIdForWorkspace(binding.bindingKey, workspaceRoot, event.sessionId);
-            }
-          }
-        }
+        // sendTextTurn owns binding updates. A ClaudeCode process is scoped by
+        // workspace, so broadcasting a fresh session id to every binding in that
+        // workspace lets short-lived system turns overwrite the real chat thread.
         return;
       }
       const mapped = mapClaudeCodeMessageToRuntimeEvent(event, raw);
