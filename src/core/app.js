@@ -54,6 +54,8 @@ const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
 const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
 const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
+const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
+const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -86,6 +88,7 @@ class CyberbossApp {
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
+    this.pendingImageInboundByScope = new Map();
     this.turnBoundaryScopeKeys = new Set();
     this.turnWritebackContextByRunKey = new Map();
     this.pendingTurnWritebackByThreadId = new Map();
@@ -173,6 +176,7 @@ class CyberbossApp {
     }
 
     const shutdown = createShutdownController(async () => {
+      this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     });
@@ -224,6 +228,7 @@ class CyberbossApp {
       }
     } finally {
       shutdown.dispose();
+      this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     }
@@ -483,12 +488,27 @@ class CyberbossApp {
       return;
     }
 
-    if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
-      this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
+    if (shouldBatchImageOnlyInbound(prepared)) {
+      this.enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared });
       return;
     }
 
-    await this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared });
+    if (this.hasPendingImageInbound(bindingKey, workspaceRoot) && isPlainTextPreparedMessage(prepared)) {
+      const merged = await this.flushPendingImageInboundBatch({
+        bindingKey,
+        workspaceRoot,
+        trailingPrepared: prepared,
+      });
+      if (merged) {
+        return;
+      }
+    }
+
+    if (this.hasPendingImageInbound(bindingKey, workspaceRoot)) {
+      await this.flushPendingImageInboundBatch({ bindingKey, workspaceRoot });
+    }
+
+    await this.routePreparedInbound({ bindingKey, workspaceRoot, prepared });
   }
 
   isTurnDispatchBlocked(bindingKey, workspaceRoot, { ignoreBoundary = false } = {}) {
@@ -576,6 +596,133 @@ class CyberbossApp {
       }).catch(() => {});
       return false;
     }
+  }
+
+  async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
+    if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
+      this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
+      return false;
+    }
+    return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared });
+  }
+
+  hasPendingImageInbound(bindingKey, workspaceRoot) {
+    return this.pendingImageInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
+  }
+
+  enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared }) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey || !prepared) {
+      return;
+    }
+
+    const current = this.pendingImageInboundByScope.get(scopeKey) || {
+      bindingKey,
+      workspaceRoot,
+      messages: [],
+      timer: null,
+    };
+    current.messages.push(clonePreparedInboundMessage(prepared));
+    this.pendingImageInboundByScope.set(scopeKey, current);
+    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot);
+    void this.channelAdapter.sendTyping({
+      userId: prepared.senderId,
+      status: 1,
+      contextToken: prepared.contextToken,
+    }).catch(() => {});
+  }
+
+  schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS) {
+    const draft = this.pendingImageInboundByScope.get(scopeKey);
+    if (!draft) {
+      return;
+    }
+    if (draft.timer) {
+      clearTimeout(draft.timer);
+    }
+    draft.timer = setTimeout(() => {
+      void this.flushPendingImageInboundBatch({ bindingKey, workspaceRoot }).catch((error) => {
+        const message = error instanceof Error ? error.stack || error.message : String(error);
+        console.error(`[asheriebridge] image inbound debounce flush failed ${message}`);
+      });
+    }, Math.max(0, Number(delayMs) || 0));
+    this.pendingImageInboundByScope.set(scopeKey, draft);
+  }
+
+  clearPendingImageInboundTimer(scopeKey) {
+    const draft = this.pendingImageInboundByScope.get(scopeKey);
+    if (!draft?.timer) {
+      return;
+    }
+    clearTimeout(draft.timer);
+    draft.timer = null;
+  }
+
+  clearPendingImageInboundTimers() {
+    for (const [scopeKey] of this.pendingImageInboundByScope.entries()) {
+      this.clearPendingImageInboundTimer(scopeKey);
+    }
+  }
+
+  async flushPendingImageInboundBatch({ bindingKey = "", workspaceRoot = "", trailingPrepared = null } = {}) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    const draft = scopeKey ? this.pendingImageInboundByScope.get(scopeKey) || null : null;
+    if (!draft?.bindingKey || !draft?.workspaceRoot) {
+      if (scopeKey) {
+        this.pendingImageInboundByScope.delete(scopeKey);
+      }
+      return false;
+    }
+
+    this.clearPendingImageInboundTimer(scopeKey);
+    this.pendingImageInboundByScope.delete(scopeKey);
+
+    const queued = Array.isArray(draft.messages)
+      ? draft.messages
+        .filter((message) => message && typeof message === "object")
+        .slice()
+        .sort(comparePendingInboundMessages)
+      : [];
+    if (!queued.length) {
+      return false;
+    }
+
+    const { batchMessages, remainingMessages } = takeImageOnlyBatchMessages(queued, MAX_INBOUND_STICKER_IMAGE_BATCH);
+    if (!batchMessages.length) {
+      return false;
+    }
+
+    if (remainingMessages.length) {
+      this.pendingImageInboundByScope.set(scopeKey, {
+        bindingKey: draft.bindingKey,
+        workspaceRoot: draft.workspaceRoot,
+        messages: remainingMessages,
+        timer: null,
+      });
+    }
+
+    const prepared = buildMergedInboundPrepared({
+      bindingKey: draft.bindingKey,
+      workspaceRoot: draft.workspaceRoot,
+      messages: batchMessages,
+      trailingPrepared,
+      config: this.config,
+      runtimeId: this.runtimeAdapter?.describe?.().id || "",
+    });
+    await this.routePreparedInbound({
+      bindingKey: draft.bindingKey,
+      workspaceRoot: draft.workspaceRoot,
+      prepared,
+    });
+
+    if (remainingMessages.length) {
+      await this.flushPendingImageInboundBatch({
+        bindingKey: draft.bindingKey,
+        workspaceRoot: draft.workspaceRoot,
+      });
+    }
+
+    return true;
   }
 
   bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared }) {
@@ -3056,6 +3203,8 @@ function mergePendingInboundDraft(draft) {
     "",
     runtimeBlocks.join("\n\n"),
   ].join("\n").trim();
+  const attachments = queued.flatMap((message) => Array.isArray(message.attachments) ? message.attachments : []);
+  const attachmentFailures = queued.flatMap((message) => Array.isArray(message.attachmentFailures) ? message.attachmentFailures : []);
 
   return {
     bindingKey: draft.bindingKey,
@@ -3064,6 +3213,8 @@ function mergePendingInboundDraft(draft) {
     originalText: originalBlocks.join("\n\n"),
     runtimeText,
     text: runtimeText,
+    attachments,
+    attachmentFailures,
   };
 }
 
@@ -3133,6 +3284,121 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
 
 function runtimeUsesReadForImages(runtimeId) {
   return runtimeId === "claudecode";
+}
+
+function buildMergedInboundPrepared({
+  bindingKey,
+  workspaceRoot,
+  messages = [],
+  trailingPrepared = null,
+  config = {},
+  runtimeId = "",
+}) {
+  const queued = Array.isArray(messages) ? messages.filter((message) => message && typeof message === "object") : [];
+  const latest = trailingPrepared || queued[queued.length - 1] || {};
+  const originalTexts = queued
+    .map((message) => normalizeText(message.originalText))
+    .filter(Boolean);
+  const trailingText = normalizeText(trailingPrepared?.originalText);
+  if (trailingText) {
+    originalTexts.push(trailingText);
+  }
+  const attachments = queued.flatMap((message) => Array.isArray(message.attachments) ? message.attachments : []);
+  const attachmentFailures = queued.flatMap((message) => Array.isArray(message.attachmentFailures) ? message.attachmentFailures : []);
+  const originalText = originalTexts.join("\n\n");
+  const runtimeText = buildInboundText({
+    ...latest,
+    text: originalText,
+    receivedAt: latest.receivedAt,
+  }, {
+    saved: attachments,
+    failed: attachmentFailures,
+  }, config, {
+    runtimeId,
+    workspaceRoot,
+  });
+
+  return {
+    bindingKey,
+    workspaceRoot,
+    ...latest,
+    originalText,
+    runtimeText,
+    text: runtimeText,
+    attachments,
+    attachmentFailures,
+  };
+}
+
+function shouldBatchImageOnlyInbound(message) {
+  const originalText = normalizeText(message?.originalText);
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const attachmentFailures = Array.isArray(message?.attachmentFailures) ? message.attachmentFailures : [];
+  return !originalText
+    && attachments.length > 0
+    && attachments.every((item) => isImageAttachmentItem(item))
+    && attachmentFailures.length === 0;
+}
+
+function takeImageOnlyBatchMessages(messages, maxAttachments) {
+  const batchMessages = [];
+  const remainingMessages = [];
+  let remainingCapacity = Math.max(1, Number(maxAttachments) || 1);
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (!attachments.length) {
+      continue;
+    }
+    if (remainingCapacity <= 0) {
+      remainingMessages.push(message);
+      continue;
+    }
+    if (attachments.length <= remainingCapacity) {
+      batchMessages.push(message);
+      remainingCapacity -= attachments.length;
+      continue;
+    }
+    batchMessages.push({
+      ...message,
+      attachments: attachments.slice(0, remainingCapacity),
+    });
+    remainingMessages.push({
+      ...message,
+      attachments: attachments.slice(remainingCapacity),
+    });
+    remainingCapacity = 0;
+  }
+
+  return {
+    batchMessages,
+    remainingMessages,
+  };
+}
+
+function clonePreparedInboundMessage(prepared) {
+  return {
+    workspaceId: prepared.workspaceId,
+    accountId: prepared.accountId,
+    senderId: prepared.senderId,
+    messageId: prepared.messageId,
+    contextToken: prepared.contextToken,
+    provider: prepared.provider,
+    originalText: prepared.originalText,
+    runtimeText: prepared.runtimeText,
+    text: prepared.text,
+    attachments: Array.isArray(prepared.attachments) ? prepared.attachments : [],
+    attachmentFailures: Array.isArray(prepared.attachmentFailures) ? prepared.attachmentFailures : [],
+    receivedAt: prepared.receivedAt,
+    memoryContextPacket: prepared.memoryContextPacket || null,
+  };
+}
+
+function isPlainTextPreparedMessage(prepared) {
+  const originalText = normalizeText(prepared?.originalText);
+  const attachments = Array.isArray(prepared?.attachments) ? prepared.attachments : [];
+  const attachmentFailures = Array.isArray(prepared?.attachmentFailures) ? prepared.attachmentFailures : [];
+  return Boolean(originalText) && attachments.length === 0 && attachmentFailures.length === 0;
 }
 
 function isImageAttachmentItem(item) {
