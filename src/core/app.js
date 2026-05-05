@@ -56,6 +56,7 @@ const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
 const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
+const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 3_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -488,20 +489,19 @@ class CyberbossApp {
       return;
     }
 
-    if (shouldBatchImageOnlyInbound(prepared)) {
+    if (shouldBatchImageContextInbound(prepared)) {
       this.enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared });
       return;
     }
 
     if (this.hasPendingImageInbound(bindingKey, workspaceRoot) && isPlainTextPreparedMessage(prepared)) {
-      const merged = await this.flushPendingImageInboundBatch({
+      this.enqueuePendingImageInbound({
         bindingKey,
         workspaceRoot,
-        trailingPrepared: prepared,
+        prepared,
+        delayMs: INBOUND_IMAGE_TEXT_BATCH_IDLE_MS,
       });
-      if (merged) {
-        return;
-      }
+      return;
     }
 
     if (this.hasPendingImageInbound(bindingKey, workspaceRoot)) {
@@ -610,7 +610,7 @@ class CyberbossApp {
     return this.pendingImageInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
   }
 
-  enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared }) {
+  enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS }) {
     const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
     if (!scopeKey || !prepared) {
       return;
@@ -624,7 +624,7 @@ class CyberbossApp {
     };
     current.messages.push(clonePreparedInboundMessage(prepared));
     this.pendingImageInboundByScope.set(scopeKey, current);
-    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot);
+    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs);
     void this.channelAdapter.sendTyping({
       userId: prepared.senderId,
       status: 1,
@@ -687,7 +687,7 @@ class CyberbossApp {
       return false;
     }
 
-    const { batchMessages, remainingMessages } = takeImageOnlyBatchMessages(queued, MAX_INBOUND_STICKER_IMAGE_BATCH);
+    const { batchMessages, remainingMessages } = takeImageContextBatchMessages(queued, MAX_INBOUND_STICKER_IMAGE_BATCH);
     if (!batchMessages.length) {
       return false;
     }
@@ -709,6 +709,15 @@ class CyberbossApp {
       config: this.config,
       runtimeId: this.runtimeAdapter?.describe?.().id || "",
     });
+    if (typeof this.attachMemoryContextToPreparedText === "function") {
+      const memoryContext = await this.attachMemoryContextToPreparedText(
+        prepared,
+        prepared.runtimeText || prepared.text,
+        prepared.workspaceRoot || draft.workspaceRoot,
+      );
+      prepared.text = memoryContext.text;
+      prepared.memoryContextPacket = memoryContext.packet;
+    }
     await this.routePreparedInbound({
       bindingKey: draft.bindingKey,
       workspaceRoot: draft.workspaceRoot,
@@ -3330,24 +3339,28 @@ function buildMergedInboundPrepared({
   };
 }
 
-function shouldBatchImageOnlyInbound(message) {
-  const originalText = normalizeText(message?.originalText);
+function shouldBatchImageContextInbound(message) {
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const attachmentFailures = Array.isArray(message?.attachmentFailures) ? message.attachmentFailures : [];
-  return !originalText
-    && attachments.length > 0
+  return attachments.length > 0
     && attachments.every((item) => isImageAttachmentItem(item))
     && attachmentFailures.length === 0;
 }
 
-function takeImageOnlyBatchMessages(messages, maxAttachments) {
+function takeImageContextBatchMessages(messages, maxAttachments) {
   const batchMessages = [];
   const remainingMessages = [];
   let remainingCapacity = Math.max(1, Number(maxAttachments) || 1);
+  let hasImageInBatch = false;
 
   for (const message of Array.isArray(messages) ? messages : []) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (!attachments.length && isPlainTextPreparedMessage(message) && hasImageInBatch) {
+      batchMessages.push(message);
+      continue;
+    }
     if (!attachments.length) {
+      remainingMessages.push(message);
       continue;
     }
     if (remainingCapacity <= 0) {
@@ -3357,12 +3370,14 @@ function takeImageOnlyBatchMessages(messages, maxAttachments) {
     if (attachments.length <= remainingCapacity) {
       batchMessages.push(message);
       remainingCapacity -= attachments.length;
+      hasImageInBatch = true;
       continue;
     }
     batchMessages.push({
       ...message,
       attachments: attachments.slice(0, remainingCapacity),
     });
+    hasImageInBatch = true;
     remainingMessages.push({
       ...message,
       attachments: attachments.slice(remainingCapacity),

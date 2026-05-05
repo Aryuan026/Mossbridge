@@ -373,6 +373,12 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
       routed.push(payload);
       return true;
     },
+    async attachMemoryContextToPreparedText(normalized, runtimeText) {
+      return {
+        text: `[memory]\n${runtimeText}`,
+        packet: { hit_count: 1 },
+      };
+    },
     schedulePendingImageInboundFlush: CyberbossApp.prototype.schedulePendingImageInboundFlush,
     clearPendingImageInboundTimer: CyberbossApp.prototype.clearPendingImageInboundTimer,
     flushPendingImageInboundBatch: CyberbossApp.prototype.flushPendingImageInboundBatch,
@@ -443,6 +449,8 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
   assert.match(routed[0].prepared.text, /photo-1\.jpg/);
   assert.match(routed[0].prepared.text, /photo-2\.jpg/);
   assert.match(routed[0].prepared.text, /For images, use `Read` on the saved local image file/);
+  assert.match(routed[0].prepared.text, /^\[memory\]/);
+  assert.deepEqual(routed[0].prepared.memoryContextPacket, { hit_count: 1 });
 });
 
 test("image batch can merge with a trailing plain-text caption", async () => {
@@ -496,11 +504,10 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-
-  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
-    trailingPrepared: {
+    prepared: {
       workspaceId: "default",
       accountId: "wx-account",
       senderId: "user-1",
@@ -514,6 +521,12 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       attachmentFailures: [],
       receivedAt: "2026-05-05T10:00:03.000Z",
     },
+    delayMs: 3000,
+  });
+
+  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey,
+    workspaceRoot,
   });
 
   assert.equal(flushed, true);
@@ -522,6 +535,129 @@ test("image batch can merge with a trailing plain-text caption", async () => {
   assert.equal(routed[0].prepared.attachments.length, 1);
   assert.match(routed[0].prepared.text, /这个能不能当表情包/);
   assert.match(routed[0].prepared.text, /sticker-candidate\.jpg/);
+});
+
+test("caption after a pending image waits so the next short text can join", async () => {
+  const routed = [];
+  const scheduledDelays = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingImageInboundByScope: new Map(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text || "image payload",
+        text: normalized.text || "image payload",
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+        attachmentFailures: [],
+      };
+    },
+    async routePreparedInbound(payload) {
+      routed.push(payload);
+      return true;
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
+      scheduledDelays.push(delayMs);
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingImageInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingImageInboundTimer: CyberbossApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: CyberbossApp.prototype.flushPendingImageInboundBatch,
+    hasPendingImageInbound: CyberbossApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: CyberbossApp.prototype.enqueuePendingImageInbound,
+  };
+
+  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [{
+      kind: "image",
+      absolutePath: "/workspace/inbox/photo.jpg",
+      sourceFileName: "photo.jpg",
+      contentType: "image/jpeg",
+      isImage: true,
+    }],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "先看这个图",
+    attachments: [],
+    receivedAt: "2026-05-05T10:00:03.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.deepEqual(scheduledDelays, [1500, 3000]);
+  const pending = [...appLike.pendingImageInboundByScope.values()][0];
+  assert.equal(pending.messages.length, 2);
+
+  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+    prepared: {
+      workspaceId: "default",
+      accountId: "wx-account",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      originalText: "第二句补充说明",
+      runtimeText: "第二句补充说明",
+      text: "第二句补充说明",
+      attachments: [],
+      attachmentFailures: [],
+      receivedAt: "2026-05-05T10:00:05.000Z",
+    },
+    delayMs: 3000,
+  });
+
+  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, true);
+  assert.equal(routed.length, 1);
+  assert.match(routed[0].prepared.originalText, /先看这个图/);
+  assert.match(routed[0].prepared.originalText, /第二句补充说明/);
+  assert.equal(routed[0].prepared.attachments.length, 1);
 });
 
 test("location arrive_home trigger enqueues a system action message", () => {
