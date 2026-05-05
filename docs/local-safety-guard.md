@@ -30,6 +30,13 @@ Logs:
 
 ## Daily Commands
 
+Double-clickable helpers are also available at the project root:
+
+```text
+Mossbridge Start.command
+Mossbridge Status.command
+```
+
 ```sh
 npm run service:status:claudecode
 npm run service:restart:claudecode
