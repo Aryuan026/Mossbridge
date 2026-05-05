@@ -53,6 +53,7 @@ const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
 const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
 const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
+const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -100,6 +101,7 @@ class CyberbossApp {
     this.pendingAutoCompactByThreadId = new Map();
     this.lastAutoCompactAtByThreadId = new Map();
     this.pendingOperationByRunKey = new Map();
+    this.lastSystemFailureNoticeAtByKey = new Map();
     this.runtimeEventChain = Promise.resolve();
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
@@ -2072,7 +2074,16 @@ class CyberbossApp {
     if (!target) {
       return;
     }
-    const runtimeNotice = shieldRuntimeNoticeForDelivery(text, { provider: target.provider });
+    const rawText = normalizeText(text) || "❌ Execution failed";
+    if (target.provider === "system" && isClaudeRuntimeFailureText(rawText)) {
+      const key = `${target.userId}:${classifyRuntimeFailureKind(rawText)}`;
+      const lastAt = Number(this.lastSystemFailureNoticeAtByKey.get(key)) || 0;
+      if (lastAt && Date.now() - lastAt < SYSTEM_FAILURE_NOTICE_THROTTLE_MS) {
+        return;
+      }
+      this.lastSystemFailureNoticeAtByKey.set(key, Date.now());
+    }
+    const runtimeNotice = shieldRuntimeNoticeForDelivery(rawText, { provider: target.provider });
     if (runtimeNotice.shielded && runtimeNotice.action === "silent") {
       return;
     }
@@ -2080,7 +2091,7 @@ class CyberbossApp {
       userId: target.userId,
       text: runtimeNotice.shielded
         ? runtimeNotice.text
-        : (normalizeText(text) || "❌ Execution failed"),
+        : formatRuntimeFailureForUser(rawText, { provider: target.provider }),
       contextToken: target.contextToken,
     }).catch(() => {});
   }
@@ -2733,6 +2744,66 @@ function clampSystemRuntimeText(value) {
     "",
     "[AsherieBridge note: system-turn context was trimmed before ClaudeCode dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
   ].join("\n");
+}
+
+function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
+  const normalized = normalizeText(text) || "❌ Execution failed";
+  const kind = classifyRuntimeFailureKind(normalized);
+  if (kind === "prompt_too_long") {
+    return [
+      "⚠️ ClaudeCode 这轮上下文太长，桥已经把这条运行线程标记为失败并释放。",
+      provider === "system"
+        ? "这是后台唤醒失败提示，不是你说错了什么；我会避免继续把同一条坏线程反复塞满。"
+        : "刚才那句话可能需要你重新发一次；下一轮会尝试从干净线程继续。",
+    ].join("\n");
+  }
+  if (kind === "bad_json") {
+    return [
+      "⚠️ ClaudeCode 拒绝了这轮请求体，桥已经把坏请求隔离掉。",
+      "常见原因是表情/特殊字符或内部 JSON 被运行时判成非法。下一轮会重新开干净路径，不会继续卡在这条坏消息后面。",
+    ].join("\n");
+  }
+  if (kind === "api_error") {
+    return [
+      "⚠️ ClaudeCode 这轮返回了 API 错误，桥已经释放当前运行线程。",
+      "这条不会进入记忆；如果你刚才是在等正文，可以把那句话重新发一次。",
+      `detail: ${truncateForStatus(normalized, 260)}`,
+    ].join("\n");
+  }
+  return normalized;
+}
+
+function isClaudeRuntimeFailureText(text) {
+  return classifyRuntimeFailureKind(text) !== "";
+}
+
+function classifyRuntimeFailureKind(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) {
+    return "";
+  }
+  if (/^prompt is too long\b/i.test(normalized) || /\bprompt is too long\b/i.test(normalized)) {
+    return "prompt_too_long";
+  }
+  if (
+    /\brequest body is not valid json\b/i.test(normalized)
+    || /\bno low surrogate\b/i.test(normalized)
+    || /\blone surrogate\b/i.test(normalized)
+  ) {
+    return "bad_json";
+  }
+  if (/^api error:\s*(?:4\d\d|5\d\d)\b/i.test(normalized) || /\binvalid_request_error\b/i.test(normalized)) {
+    return "api_error";
+  }
+  return "";
+}
+
+function truncateForStatus(text, limit = 260) {
+  const normalized = normalizeText(text);
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
 }
 
 function normalizeIsoTime(value) {

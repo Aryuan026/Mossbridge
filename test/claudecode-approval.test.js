@@ -151,6 +151,24 @@ test("claudecode assistant events map usage into context snapshots", () => {
   assert.equal(event.payload.currentTokens, 27201);
 });
 
+test("claudecode turn.failed events map into runtime failures", () => {
+  const event = mapClaudeCodeMessageToRuntimeEvent({
+    type: "turn.failed",
+    sessionId: "thread-1",
+    turnId: "turn-1",
+    text: "Prompt is too long",
+    reason: "prompt_too_long",
+  });
+
+  assert.equal(event.type, "runtime.turn.failed");
+  assert.deepEqual(event.payload, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    text: "Prompt is too long",
+    reason: "prompt_too_long",
+  });
+});
+
 test("claudecode process close only fails an active turn", () => {
   const activeClose = mapClaudeCodeMessageToRuntimeEvent({
     type: "process.close",

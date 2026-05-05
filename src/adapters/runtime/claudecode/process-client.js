@@ -244,11 +244,26 @@ class ClaudeCodeProcessClient {
       this.sessionId = raw.session_id;
       this.resumeSessionId = "";
     }
+    const resultText = typeof raw.result === "string" ? raw.result.trim() : "";
+    const failure = classifyClaudeCodeRuntimeFailure(resultText);
+    if (failure) {
+      this.emit({
+        type: "turn.failed",
+        turnId: this.pendingTurnId,
+        sessionId: this.activeThreadId || this.sessionId,
+        text: failure.text,
+        reason: failure.reason,
+      }, raw);
+      this.pendingTurnId = "";
+      this.activeThreadId = "";
+      this.assistantItemSequence = 0;
+      return;
+    }
     this.emit({
       type: "turn.completed",
       turnId: this.pendingTurnId,
       sessionId: this.activeThreadId || this.sessionId,
-      text: typeof raw.result === "string" ? raw.result.trim() : "",
+      text: resultText,
     }, raw);
     this.pendingTurnId = "";
     this.activeThreadId = "";
@@ -474,7 +489,35 @@ function sanitizeTextForClaudeJson(value) {
   return out;
 }
 
-module.exports = { ClaudeCodeProcessClient, buildArgs, sanitizeTextForClaudeJson };
+function classifyClaudeCodeRuntimeFailure(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+  if (/^prompt is too long\b/i.test(text) || /\bprompt is too long\b/i.test(text)) {
+    return { reason: "prompt_too_long", text };
+  }
+  if (/^api error:\s*(?:4\d\d|5\d\d)\b/i.test(text)) {
+    return { reason: "api_error", text };
+  }
+  if (/\binvalid_request_error\b/i.test(text)) {
+    return { reason: "invalid_request_error", text };
+  }
+  if (/\brequest body is not valid json\b/i.test(text)) {
+    return { reason: "invalid_json", text };
+  }
+  if (/\bno low surrogate\b/i.test(text) || /\blone surrogate\b/i.test(text)) {
+    return { reason: "invalid_surrogate", text };
+  }
+  return null;
+}
+
+module.exports = {
+  ClaudeCodeProcessClient,
+  buildArgs,
+  sanitizeTextForClaudeJson,
+  classifyClaudeCodeRuntimeFailure,
+};
 
 function isPendingThreadId(threadId) {
   return /^pending-\d+$/u.test(String(threadId || "").trim());

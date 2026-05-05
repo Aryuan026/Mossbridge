@@ -11,7 +11,13 @@ const {
 
 async function main() {
   const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
+  const supervise = process.env.ASHERIEBRIDGE_SHARED_SUPERVISE !== "0";
+  let shuttingDown = false;
+  let restartCount = 0;
   console.log(`starting shared bridge runtime=${runtime}`);
+  if (supervise) {
+    console.log("shared bridge supervisor=enabled");
+  }
   const appServer = await ensureSharedAppServer();
   const appServerPidLabel = appServer.pid ? ` pid=${appServer.pid}` : "";
   if (appServer.status === "skipped") {
@@ -32,30 +38,55 @@ async function main() {
     childEnv.ASHERIEBRIDGE_CODEX_ENDPOINT = listenUrl;
   }
 
-  const child = spawn(process.execPath, ["./bin/asheriebridge.js", "start", "--checkin"], {
-    cwd: rootDir,
-    env: childEnv,
-    stdio: "inherit",
-  });
+  let child = null;
 
-  writePidFile(bridgePidFile, child.pid);
-  const cleanup = () => removePidFileIfMatches(bridgePidFile, child.pid);
-  process.on("exit", cleanup);
-  process.on("SIGINT", () => {
-    child.kill("SIGINT");
-  });
-  process.on("SIGTERM", () => {
-    child.kill("SIGTERM");
-  });
+  const startChild = () => {
+    child = spawn(process.execPath, ["./bin/asheriebridge.js", "start", "--checkin"], {
+      cwd: rootDir,
+      env: childEnv,
+      stdio: "inherit",
+    });
+    writePidFile(bridgePidFile, child.pid);
 
-  child.on("exit", (code, signal) => {
-    cleanup();
-    if (signal) {
-      process.kill(process.pid, signal);
-      return;
+    child.on("exit", (code, signal) => {
+      removePidFileIfMatches(bridgePidFile, child.pid);
+      if (shuttingDown || signal) {
+        if (signal && !shuttingDown) {
+          process.kill(process.pid, signal);
+          return;
+        }
+        process.exit(code ?? 0);
+        return;
+      }
+      if (!supervise) {
+        process.exit(code ?? 0);
+        return;
+      }
+      restartCount += 1;
+      const delayMs = Math.min(30_000, 1_000 * restartCount);
+      console.error(
+        `shared asheriebridge exited code=${code ?? "unknown"}; restarting in ${Math.round(delayMs / 1000)}s`
+      );
+      setTimeout(startChild, delayMs);
+    });
+  };
+
+  const stop = (signal) => {
+    shuttingDown = true;
+    if (child && !child.killed) {
+      child.kill(signal);
     }
-    process.exit(code ?? 0);
+  };
+
+  process.on("exit", () => {
+    if (child?.pid) {
+      removePidFileIfMatches(bridgePidFile, child.pid);
+    }
   });
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
+
+  startChild();
 }
 
 main().catch((error) => {

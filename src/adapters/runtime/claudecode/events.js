@@ -40,6 +40,16 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
           text: typeof message.text === "string" ? message.text : "",
         },
       };
+    case "turn.failed":
+      return {
+        type: "runtime.turn.failed",
+        payload: {
+          threadId: message.sessionId,
+          turnId: message.turnId,
+          text: typeof message.text === "string" ? message.text : "❌ ClaudeCode request failed",
+          reason: normalizeString(message.reason),
+        },
+      };
     case "approval.requested":
       const readableToolName = formatReadableToolName(message.toolName);
       return {
