@@ -4,10 +4,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { finalizeAttachmentNotes } = require("../src/adapters/channel/weixin/media-receive");
+const {
+  finalizeAttachmentNotes,
+  persistIncomingWeixinAttachments,
+} = require("../src/adapters/channel/weixin/media-receive");
 
 test("finalizeAttachmentNotes fills pending attachment note from same-turn assistant reply", async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-attachment-note-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-attachment-note-"));
   const notePath = path.join(tmpDir, "attachment.md");
   fs.writeFileSync(notePath, [
     "# Attachment Note",
@@ -56,7 +59,7 @@ test("finalizeAttachmentNotes fills pending attachment note from same-turn assis
 });
 
 test("finalizeAttachmentNotes does not overwrite manually edited note sections", async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-attachment-note-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-attachment-note-"));
   const notePath = path.join(tmpDir, "attachment.md");
   fs.writeFileSync(notePath, [
     "# Attachment Note",
@@ -77,4 +80,59 @@ test("finalizeAttachmentNotes does not overwrite manually edited note sections",
   const updated = fs.readFileSync(notePath, "utf8");
   assert.match(updated, /Manual summary stays\./);
   assert.match(updated, /Auto explanation\./);
+});
+
+test("persistIncomingWeixinAttachments retries transient fetch failures", async () => {
+  const originalFetch = global.fetch;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-attachment-retry-"));
+  const workspaceRoot = path.join(tmpDir, "workspace");
+  const stateDir = path.join(tmpDir, "state");
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("fetch failed");
+    }
+    const body = Buffer.from("JPEGDATA");
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get(name) {
+          return String(name || "").toLowerCase() === "content-type" ? "image/jpeg" : "";
+        },
+      },
+      async arrayBuffer() {
+        return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+      },
+    };
+  };
+
+  try {
+    const result = await persistIncomingWeixinAttachments({
+      attachments: [{
+        kind: "image",
+        fileName: "photo.jpg",
+        directUrls: ["https://example.invalid/photo.jpg"],
+      }],
+      config: {
+        stateDir,
+        workspaceRoot,
+        workspaceInboxDir: path.join("wechat", "inbox"),
+        workspaceAttachmentNotesDir: path.join("context", "attachment-notes"),
+        workspaceAttachmentJournalFile: path.join("context", "attachment-journal.jsonl"),
+      },
+      workspaceRoot,
+      stateDir,
+      receivedAt: "2026-05-08T08:00:00.000Z",
+      messageId: "msg-1",
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.failed.length, 0);
+    assert.equal(result.saved.length, 1);
+    assert.equal(fs.existsSync(result.saved[0].absolutePath), true);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

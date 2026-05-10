@@ -1,17 +1,19 @@
 # Bridge Memory Storage
 
-这份文档说明 bridge 自己的记忆仓应该怎么摆放、怎么和 AsherieHome 共用或拆开，以及哪些层适合日常对话，哪些层只适合做长期归档。
+这份文档说明 bridge 自己的记忆仓应该怎么摆放、怎么和既有本地记忆仓共用或拆开，以及哪些层适合日常对话，哪些层只适合做长期归档。
 
 它的目标不是规定模型怎么说话，而是把数据边界讲清楚：代码本体、用户数据、测试数据、共享数据、可迁移数据必须能分开。
 
 ## 核心判断
 
-Bridge 可以作为独立产品运行，不应该默认依赖 Home 的冷层树才能完成日常陪伴。
+Bridge 可以作为独立产品运行，不应该默认依赖私人外部冷层树才能完成日常陪伴。
 
 当前推荐：
 
 - 日常关系、口吻、偏好、象征物、用户固定印象、近期待办，优先进入 `warm_memory/` 和 `ongoing_tracks.json`。
-- Home 的冷层树可以继续作为兼容层、深层归档、关系拓扑和时间拓扑，但不作为 WeChat 日常人格连续性的主要文本召回层。
+- 既有私人冷层树可以作为迁移/兼容来源、深层归档、关系拓扑和时间拓扑参考，但不作为 WeChat 日常人格连续性的主要文本召回层。
+- Mossbridge 不提供私人外部执行器接口：不桥接不可公开的外部执行器。公开线需要的简单能力应成为 Mossbridge 本体能力或清晰的可选 adapter。
+- 未来的主要公开路径是 `ChatGPT 网页/app 日常对话 -> daily capture -> conversation_cache -> warm/ongoing/episode/case 沉淀 -> Codex/Claude Code runtime -> WeChat 延续`。
 - Bridge 的冷层不应该只是另一套温卡检索器。它更适合保存“卡与卡之间为什么连在一起”：家族分支、关系网、跨时间因果、证据来源，以及 case/file-work provenance。
 - 231 张来自旧冷层、实际语义更像温卡的内容，迁入 bridge 时应作为温层材料处理。
 
@@ -22,7 +24,7 @@ Bridge 可以作为独立产品运行，不应该默认依赖 Home 的冷层树�
 默认数据根由环境变量控制：
 
 ```dotenv
-ASHERIEBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
+MOSSBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
 ```
 
 如果不设置，bridge 会落在本地状态目录下的 `asherie_gateway/`。
@@ -30,13 +32,14 @@ ASHERIEBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
 常用可覆盖路径：
 
 ```dotenv
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
-ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/absolute/path/to/observation_journal
-ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
-ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
+MOSSBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/absolute/path/to/observation_journal
+MOSSBRIDGE_ASHERIE_EPISODE_JOURNAL_DIR=/absolute/path/to/episode_journal
+MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
+MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
 ```
 
-这些覆盖项用于兼容 Home 或迁移旧数据。新部署优先只设置 `ASHERIEBRIDGE_DATA_ROOT`，让 bridge 自己生成清晰的数据仓。
+这些覆盖项用于兼容既有本地记忆仓或迁移旧数据。新部署优先只设置 `MOSSBRIDGE_DATA_ROOT`，让 bridge 自己生成清晰的数据仓。
 
 ## 分层地图
 
@@ -87,11 +90,35 @@ ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
 
 ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传文件方便才换到另一个窗口，事件本身不应该被拆开。
 
+### `storage/solitude_journal/`
+
+AI 的独处日志。它不是给用户贴标签，也不是普通聊天记录，而是给后台唤醒、维护窗口、dreaming 后检查和 case 复盘留下“我刚刚想明白了什么”的可回看摘要。
+
+适合放：
+
+- 随机唤醒后没有必要打扰用户，但值得未来自己记住的判断
+- 某次维护、失败、卡顿、上下文过载之后形成的经验
+- 对下一步系统演化的候选想法，例如“需要更好的图片批处理等待”
+- 需要未来开 case 或联系用户讨论的能力缺口
+- 选择沉默的具体理由，而不是空白消失
+
+不适合放：
+
+- 原始隐藏思维链或逐 token 推理
+- 账号、密钥、权限、登录态等敏感信息
+- 运行报错的噪声全文；报错应进诊断日志，solitude 只留经验摘要
+- 用户固定印象；那应写进 `observation_journal`
+- 真实工作产物和 artifact；那应写进 `case_index`
+
+一条 solitude entry 应该保留 `summary`、`reasoning_summary`、`evidence`、`lesson`、`next_actions`、`proposed_changes`、`contact_user`、`related_case_ids` 和 `confidence`。如果 AI 认为某个思考需要跟用户展开，可以把 `contact_user` 标成 `wechat`、`later` 或 `ask_user`，但发送本身仍要走 Mossbridge 已安装的本体渠道并遵守用户可见回执。
+
+solitude 不会默认塞进每轮自然聊天。Bridge 会在后台唤醒、维护窗口、或用户明确询问独处笔记/后台经验时构造轻量 `solitude-digest`：近期经验影响“要不要打扰、是否先维护、是否需要联系用户/开 case”，重复出现的 `lesson/tags/next_actions` 会形成后台经验权重；只有被反复验证且与用户长期偏好有关的内容，才应该由 dreaming 或前台工具晋升到 `observation_journal` / `warm_memory` / `case_index`。
+
 ### `storage/observation_journal/`
 
 观察日记。它是 `timeline` / `diary` 和 `warm_memory` 中间的一层，用来保存“相处中形成的默契”，而不是给用户贴死标签。
 
-如果 Bridge 和 Home 共用同一个 `ASHERIEBRIDGE_DATA_ROOT`，这里就是 Home 的观察簿母库；微信、Home 前台、邮件、后台唤醒和 dreaming 都应该把观察投到这一层，而不是各自养一套“用户印象”。Bridge 独立部署时也可以使用同一套目录结构，只是母库从 Home 换成自己的 `MossbridgeData`。
+如果 Bridge 和另一个本地前台共用同一个 `MOSSBRIDGE_DATA_ROOT`，这里就是共享观察簿；微信、其他前台、后台唤醒和 dreaming 都应该把观察投到这一层，而不是各自养一套“用户印象”。Bridge 独立部署时也可以使用同一套目录结构，只是共享仓换成自己的 `MossbridgeData`。
 
 适合放：
 
@@ -126,9 +153,53 @@ ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传
 
 它的召回权重应该低于明确温卡和 active ongoing，但高于纯原始流水。它解决的是省上下文架构里“默契不容易自然积累”的问题。
 
+### `storage/episode_journal/`
+
+事件簿。它是给“有起止、适合回头整理成人类小记录”的内容准备的相册盒子，例如一次旅行、一个周末、一段照片分享、一次小任务、一次装修看图、一次亲友聚会。
+
+它不是永久事实卡，也不是普通 ongoing。ongoing 负责“这件事还活着，要继续挂着”；episode journal 负责“这段已经或即将形成一个可回看的故事”。
+
+适合放：
+
+- 旅行三天的每日尾巴和照片说明
+- 一组微信照片、附件路径和 paired attachment note
+- 顺利/不顺利、快乐/麻烦、场景变化、当时情绪
+- 批量导入的 RikkaHub / app 对话尾巴后处理摘要
+- 最终可导出为日记、周记、相册文案或 Obsidian 页面的小记录
+
+目录形态：
+
+```text
+storage/episode_journal/<scoped_user_id>/<episode_id>/
+  episode.json
+  entries.jsonl
+  episode.md
+```
+
+`episode.md` 是人类可读导出层。UI 可以直接渲染 JSON，也可以把 Markdown 作为 Obsidian 对接的第一版。
+
+运行时如果当前轮带有图片/附件，或者检索命中了活动中的 episode，Bridge 会递送一条轻量 `episode-attention` 提示。它只提醒前台模型“旁边有这个盒子”，不替前台模型强制写入。如果前台从 episode 中沉淀出一张长期可复用的温记忆卡，温卡应写入 `episode_refs` 指向对应 `episode_id`，像 case refs 一样保留回看路径。
+
+Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是直接写冷事实：
+
+```json
+{
+  "people": ["同行的人"],
+  "places": ["河南", "洛阳"],
+  "activities": ["看打铁花", "拍照"],
+  "objects": ["某个象征物"],
+  "themes": ["旅行节奏", "拍照偏好"],
+  "relationship_roots": ["person::... 或 branch::..."],
+  "warm_refs": ["warm-card-id"],
+  "case_refs": ["case-id"]
+}
+```
+
+这条链路的边界是：episode 保存故事盒子，`topology_refs` 只保存已知结构；冷层后续可以审查这些 candidate edge，但不要把“旅行全文”直接推进冷树。
+
 ### `cache/conversation_cache/`
 
-近期对话沉淀池。WeChat、终端、Home 前端或其他窗口都可以把上文写进这里，供 dreaming 和后续抽取使用。
+近期对话沉淀池。WeChat、终端、ChatGPT 网页/app daily capture 或其他 chatbox 都可以把上文写进这里，供 dreaming 和后续抽取使用。
 
 它不是每轮都要完整塞给前台模型的全文聊天记录。运行时应该从这里整理出可读工作包，而不是盲目复读。
 
@@ -159,7 +230,7 @@ ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传
 
 Bridge 自己的轻量关系树预留位。
 
-它不是 Home 冷树的完整复制，也不要求第一阶段就变成图数据库。它的目标是让独立部署的 Mossbridge 也能保存少量明确关系：
+它不是私人外部冷树的完整复制，也不要求第一阶段就变成图数据库。它的目标是让独立部署的 Mossbridge 也能保存少量明确关系：
 
 - 哪两张温卡应该一起出现
 - 某个人物属于哪个关系分支
@@ -171,7 +242,7 @@ Bridge 自己的轻量关系树预留位。
 
 ### `storage/truth_layer/`
 
-冷层或真值树。这个目录可以接 Home 的 `knowledge_tree/data/truth_layer`，也可以留给 bridge 自己。
+冷层或真值树。这个目录可以接迁移来的旧 `truth_layer`，也可以留给 bridge 自己。
 
 当前 bridge 的推荐使用方式：
 
@@ -218,7 +289,7 @@ Bridge 自己的轻量关系树预留位。
   "kind": "system_architecture",
   "status": "active",
   "summary": "Clarified that bridge should use warm memory for daily continuity and reserve cold/case space for work provenance.",
-  "user_goal": "Make bridge deployable without confusing Home cold-layer experiments.",
+  "user_goal": "Make bridge deployable without confusing private cold-layer experiments.",
   "actions": [],
   "artifacts": [],
   "changed_files": [],
@@ -234,6 +305,16 @@ Bridge 自己的轻量关系树预留位。
 ```
 
 Case index 不应该在每轮亲密闲聊里强行注入。它更适合在用户问“你之前怎么修的”“那个项目在哪”“我们做过哪些 case”时被召回。
+
+如果某张温卡是从一个 case 中沉淀出来的长期经验、偏好或系统结论，应在温卡上写 `case_refs`。如果这张温卡后续进入冷层，promotion 必须保留 `case_refs`，让冷根能回看对应 case，而不是把工程细节复制进冷树。
+
+#### 终稿与云端归档边界
+
+Case 可以有很多中间产物，但 AI 不负责判定哪一版是终稿。`artifact.status` 可以区分 `scratch` / `working` / `candidate` / `user_approved_final` / `discarded`；只有用户明确确认或重新发回的文件，才可以标成 `user_approved_final`。
+
+当 case 准备结束时，前台或 worker 应提醒用户：请把认可的终稿发回，或明确说哪一个 artifact 是终稿。Bridge 只记录这个终稿的本地路径、hash/大小/时间、`final_artifact_id` 和人类可读储存编号；Notion、iMa、Obsidian、网盘等云端归档由用户手动上传，系统不要自动同步“疑似终稿”。
+
+中间临时文件默认只是工作区草稿。只有在用户确认终稿已收齐、可清理后，系统才可以进入清理流程；清理前应保留 case ledger、事件摘要、正式产物引用、必要测试/决策，以及指向冷记忆树或 warm card 的 `case_refs`。冷树挂载的是终稿编号、case 摘要和结构关系，不是 worker 的全过程草稿。
 
 ### `storage/notion_sync/`
 
@@ -311,7 +392,7 @@ Bridge 当前消费契约：
 - `sql_vines/latest.json` 或 `sql_vines/runtime/latest.json` 用于从候选根扩一跳关系。
 - `by_root` 形状和 `edges` 形状都应该能被读取。
 - 注入给前台时只给紧凑的 `cold-vine` 行，不把整张图谱塞进上下文。
-- 如果某个关系分支没有被扩出来，先检查 Home 的 vine 里是否真的存在对应边，而不是只调大 bridge 注入量。
+- 如果某个关系分支没有被扩出来，先检查外部冷层 vine 里是否真的存在对应边，而不是只调大 bridge 注入量。
 
 ## 231 张旧冷层温卡怎么迁
 
@@ -327,7 +408,7 @@ Bridge 当前消费契约：
 
 ```json
 {
-  "source_system": "asheriehome",
+  "source_system": "legacy_memory_system",
   "source_layer": "truth_layer",
   "source_card_id": "original-id",
   "import_batch": "2026-05-bridge-warm-import",
@@ -337,25 +418,25 @@ Bridge 当前消费契约：
 }
 ```
 
-导入后，bridge 的温层就是 bridge 自己的源头。Home 后续怎么优化冷层，不会自动覆盖 bridge。
+导入后，bridge 的温层就是 bridge 自己的源头。外部系统后续怎么优化冷层，不会自动覆盖 bridge。
 
-### 共享 Home 记忆模式
+### 共享记忆模式
 
-如果目标是 WeChat、Home 前端、终端和第三方 chatbox 共享同一个大脑，就不要复制两份温卡。
+如果目标是 WeChat、ChatGPT 网页/app、终端和第三方 chatbox 共享同一个大脑，就不要复制两份温卡。
 
 做法是让 bridge 直接读取同一份温层目录：
 
 ```dotenv
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/Users/mac/Documents/Codex/AsherieHome/data/storage/warm_memory
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/shared-data/storage/warm_memory
 ```
 
-这时写入权威也要明确。推荐让所有窗口共同写同一个 Home-compatible 温层仓，而不是 bridge 写自己的副本、Home 又写另一份副本。
+这时写入权威也要明确。推荐让所有窗口共同写同一个 Mossbridge-compatible 温层仓，而不是 bridge 写自己的副本、另一个前端又写另一份副本。
 
 ### 不推荐的状态
 
 不推荐：
 
-- Home 有一份温卡，bridge 又复制一份，双方都继续写。
+- 另一个前台有一份温卡，bridge 又复制一份，双方都继续写。
 - 冷层里放温卡，温层里也放同一张卡，但没有 `source_card_id` 或同步记录。
 - 测试数据和真实使用数据混在同一个 owner/agent 作用域里。
 
@@ -366,13 +447,14 @@ ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/Users/mac/Documents/Codex/AsherieHome/dat
 推荐链路：
 
 ```text
-conversation_cache -> dreaming -> warm_memory / ongoing_tracks / case_index
+conversation_cache -> dreaming -> warm_memory / ongoing_tracks / episode_journal / case_index
 ```
 
 默认规则：
 
 - 对话里的稳定关系、偏好、象征物，进入温层。
 - 短中期活跃事件，进入 ongoing。
+- 有起止、适合整理成人类小记录的旅行/照片/小任务，进入 episode journal。
 - 近期状态、日常节律和相处默契，先进入 observation journal。
 - 已完成的工程、文件工作、调试结论，进入 case index。
 - 官方 app / ChatGPT web 的每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
@@ -380,7 +462,13 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / case_index
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
 - 不要把短期事件默认推进冷层。
 
-如果 bridge 和 Home 共用 `conversation_cache`，dreaming 应该按事件和时间窗口整理，而不是按“来自微信/来自 Home 前端”切开。
+如果 bridge 和另一个本地前台共用 `conversation_cache`，dreaming 应该按事件和时间窗口整理，而不是按“来自微信/来自某个前端”切开。
+
+输入契约：
+
+- `conversation_cache` 是 dreaming 的主水管；`hot_context_projection` / cross-window tail 只能做兜底，避免前端刚聊过但 canonical cache 漏写时整晚看不见。
+- `focus_record_refs` 必须来自本轮真实递送过的 record id。模型输出的 `cap_...` 需要后台校验，差一位可纠偏，校不回来的要丢掉，不能写进 mutation log 或温卡。
+- 外部工具错误、授权报错、广告通知这类 transport noise 不应该进入 warm card，只能留在诊断日志。
 
 ## Agent 与 owner
 

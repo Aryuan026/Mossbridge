@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 
 test("claudecode runtime adapter applies model overrides and recreates the client when the model changes", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-claudecode-model-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-claudecode-model-"));
   const workspaceRoot = path.join(tempRoot, "workspace");
   fs.mkdirSync(workspaceRoot, { recursive: true });
 

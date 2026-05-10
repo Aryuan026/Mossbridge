@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-function ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome = "" } = {}) {
+function ensureClaudeProjectMcpConfig({ workspaceRoot, mossbridgeHome = "" } = {}) {
   const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
   if (!normalizedWorkspaceRoot) {
     throw new Error("workspaceRoot is required to configure Claude project tools.");
@@ -13,9 +13,9 @@ function ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome = "" } 
     ...current,
     mcpServers: {
       ...(current.mcpServers && typeof current.mcpServers === "object" ? current.mcpServers : {}),
-      asheriebridge_tools: buildClaudeProjectMcpServerConfig({
+      mossbridge_tools: buildClaudeProjectMcpServerConfig({
         workspaceRoot: normalizedWorkspaceRoot,
-        asheriebridgeHome,
+        mossbridgeHome,
       }),
     },
   };
@@ -26,19 +26,19 @@ function ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome = "" } 
 
   return {
     configPath,
-    serverName: "asheriebridge_tools",
+    serverName: "mossbridge_tools",
     config: next,
   };
 }
 
-function buildClaudeProjectMcpServerConfig({ workspaceRoot, asheriebridgeHome = "" } = {}) {
+function buildClaudeProjectMcpServerConfig({ workspaceRoot, mossbridgeHome = "" } = {}) {
   const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
-  const home = normalizeText(asheriebridgeHome)
-    || process.env.ASHERIEBRIDGE_HOME
+  const home = normalizeText(mossbridgeHome)
+    || process.env.MOSSBRIDGE_HOME
     || path.resolve(__dirname, "..", "..", "..", "..");
-  const scriptPath = path.join(home, "bin", "asheriebridge.js");
+  const scriptPath = path.join(home, "bin", "mossbridge.js");
   if (!fs.existsSync(scriptPath)) {
-    throw new Error(`AsherieBridge MCP entrypoint not found: ${scriptPath}`);
+    throw new Error(`Mossbridge MCP entrypoint not found: ${scriptPath}`);
   }
   return {
     command: process.execPath,

@@ -116,11 +116,11 @@ function canonicalizeCommandTokens(tokens) {
     const binPath = normalizeString(normalized[1]);
     const binBase = baseName(binPath);
     if (
-      (binPath === "./bin/asheriebridge.js"
-        || /\/bin\/asheriebridge\.js$/u.test(binPath))
+      (binPath === "./bin/mossbridge.js"
+        || /\/bin\/mossbridge\.js$/u.test(binPath))
       && normalized.length >= 4
     ) {
-      return ["asheriebridge", normalizeString(normalized[2]), normalizeString(normalized[3])].filter(Boolean);
+      return ["mossbridge", normalizeString(normalized[2]), normalizeString(normalized[3])].filter(Boolean);
     }
     if (binBase) {
       return [executable, binBase];
@@ -128,10 +128,10 @@ function canonicalizeCommandTokens(tokens) {
   }
 
   if (
-    executable === "asheriebridge"
-      || executable === "asheriebridge.js"
+    executable === "mossbridge"
+      || executable === "mossbridge.js"
   ) {
-    return ["asheriebridge", normalizeString(normalized[1]), normalizeString(normalized[2])].filter(Boolean);
+    return ["mossbridge", normalizeString(normalized[1]), normalizeString(normalized[2])].filter(Boolean);
   }
 
   return normalized;

@@ -2,14 +2,16 @@
 
 这份文档是给“拿到 Mossbridge 的另一个 Codex”看的施工说明。
 
-Mossbridge 不是 AsherieHome 网关。它可以接 Home 的大脑，但不能默认依赖 Home。一个新部署应该先能拥有自己的轻量记忆仓：空仓可启动、日常可写入、测试可清理、未来可迁移。
+Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地记忆仓，但不能默认依赖它。一个新部署应该先能拥有自己的轻量记忆仓：空仓可启动、日常可写入、测试可清理、未来可迁移。
+
+注意：这里的 Codex 是“帮助用户施工的助手”。Mossbridge 自身仍然支持 `codex` 和 `claudecode` 两种 runtime；公开前的验收要覆盖两边，不能把 Codex 只当安装工。
 
 ## 给 Codex 的一句话任务
 
 如果你在一台新机器上帮助用户部署 Mossbridge，可以先按这句话理解任务：
 
 ```text
-请为 Mossbridge 准备一个独立的本地数据仓，把运行态、稳定记忆、测试数据和工作文件分开；优先只配置 ASHERIEBRIDGE_DATA_ROOT，不要接入任何私人 Home 路径，除非用户明确要求迁移或共享旧记忆。
+请为 Mossbridge 准备一个独立的本地数据仓，把运行态、稳定记忆、测试数据和工作文件分开；优先只配置 MOSSBRIDGE_DATA_ROOT，不要接入任何私人旧仓路径，除非用户明确要求迁移或共享旧记忆。
 ```
 
 ## 推荐的本地目录
@@ -36,32 +38,40 @@ cp .env.example .env
 最少填这些：
 
 ```dotenv
-ASHERIEBRIDGE_RUNTIME=claudecode
-ASHERIEBRIDGE_CLAUDE_MODEL=claude-opus-4-6
-ASHERIEBRIDGE_WORKSPACE_ROOT=/Users/you/Documents/MossbridgeWorkspace
-ASHERIEBRIDGE_ALLOWED_USER_IDS=your_wechat_user_id
-ASHERIEBRIDGE_STATE_DIR=/Users/you/Documents/MossbridgeState
-ASHERIEBRIDGE_DATA_ROOT=/Users/you/Documents/MossbridgeData
-ASHERIEBRIDGE_IDENTITY_USER_ID=owner
-ASHERIEBRIDGE_IDENTITY_REALM_ID=default
-ASHERIEBRIDGE_IDENTITY_AGENT_ID=aji
+MOSSBRIDGE_RUNTIME=codex
+MOSSBRIDGE_WORKSPACE_ROOT=/Users/you/Documents/MossbridgeWorkspace
+MOSSBRIDGE_ALLOWED_USER_IDS=your_wechat_user_id
+MOSSBRIDGE_STATE_DIR=/Users/you/Documents/MossbridgeState
+MOSSBRIDGE_DATA_ROOT=/Users/you/Documents/MossbridgeData
+MOSSBRIDGE_IDENTITY_USER_ID=owner
+MOSSBRIDGE_IDENTITY_REALM_ID=default
+MOSSBRIDGE_IDENTITY_AGENT_ID=aji
+```
+
+如果用户选择 Claude Code runtime，再改成：
+
+```dotenv
+MOSSBRIDGE_RUNTIME=claudecode
+MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
 ```
 
 新部署不要先设置这些 override：
 
 ```dotenv
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=
-ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=
-ASHERIEBRIDGE_ASHERIE_MEMORY_TREE_DIR=
-ASHERIEBRIDGE_ASHERIE_CASE_INDEX_DIR=
-ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=
+MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=
+MOSSBRIDGE_ASHERIE_MEMORY_TREE_DIR=
+MOSSBRIDGE_ASHERIE_CASE_INDEX_DIR=
+MOSSBRIDGE_ASHERIE_EPISODE_JOURNAL_DIR=
+MOSSBRIDGE_ASHERIE_SOLITUDE_JOURNAL_DIR=
+MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=
 ```
 
-这些只适合迁移旧数据、共享 Home 记忆仓，或做高级调试。
+这些只适合迁移旧数据、共享旧记忆仓，或做高级调试。
 
 ## MossbridgeData 的文件夹层级
 
-第一次启动时，代码会按 `ASHERIEBRIDGE_DATA_ROOT` 自动创建主要目录。预期形状如下：
+第一次启动时，代码会按 `MOSSBRIDGE_DATA_ROOT` 自动创建主要目录。预期形状如下：
 
 ```text
 MossbridgeData/
@@ -170,25 +180,28 @@ MossbridgeData/
 
 如果测试时污染了记忆仓，优先清理测试 scope，不要手动删除用户稳定记忆。
 
-## 什么时候接 Home 或旧仓
+## 什么时候接旧仓或共享仓
 
 只有在用户明确说“我要共享旧记忆”时，才配置这些路径：
 
 ```dotenv
-# 如果 Home 是中央大脑，优先直接让 Mossbridge 使用 Home 的 data root。
-ASHERIEBRIDGE_DATA_ROOT=/path/to/AsherieHome/data
+# 如果另一个本地系统是中央大脑，优先直接让 Mossbridge 使用它的 data root。
+MOSSBRIDGE_DATA_ROOT=/path/to/shared-memory-data
 
 # 如果只迁移或共享部分仓位，再使用下面这些精确覆盖。
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/path/to/existing/warm_memory
-ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/path/to/existing/observation_journal
-ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/path/to/existing/truth_layer
-ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/path/to/existing/memory_versions
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/path/to/existing/warm_memory
+MOSSBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/path/to/existing/observation_journal
+MOSSBRIDGE_ASHERIE_EPISODE_JOURNAL_DIR=/path/to/existing/episode_journal
+MOSSBRIDGE_ASHERIE_SOLITUDE_JOURNAL_DIR=/path/to/existing/solitude_journal
+MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/path/to/existing/truth_layer
+MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/path/to/existing/memory_versions
 ```
 
 接旧仓前先确认写入权威：
 
-- 如果 Home 是中央大脑，Mossbridge 不要复制一份继续双写。
-- 用户印象/观察簿也遵守同一规则：Bridge 应该写入 Home 的 `storage/observation_journal/` 母库，而不是另起一套 Bridge 版用户印象。
+- 如果另一个本地系统是中央记忆仓，Mossbridge 不要复制一份继续双写。
+- 用户印象/观察簿也遵守同一规则：Bridge 应该写入共享的 `storage/observation_journal/`，而不是另起一套 Bridge 版用户印象。
+- 旅行、小任务、照片分享这类有起止的事件簿也遵守同一规则：Bridge 应写入共享的 `storage/episode_journal/`，并保留可导出到 Obsidian 的 Markdown。
 - 如果 Mossbridge 要独立分享，把旧卡导入为一次快照，并保留 `source_system`、`source_card_id`、`import_batch`。
 - 不要让两个系统同时维护两份看似相同但会分叉的温记忆。
 
@@ -209,7 +222,8 @@ Codex 调试时要确认：
 
 - `npm install` 成功。
 - `.env` 指向空的 `MossbridgeState` 和 `MossbridgeData`。
-- `npm run shared:start:claudecode` 能启动。
+- `npm run shared:start` 能以 Codex runtime 启动。
+- `npm run shared:start:claudecode` 能以 Claude Code runtime 启动。
 - `MossbridgeData/storage/warm_memory` 自动创建。
 - `MossbridgeData/storage/memory_tree` 自动创建。
 - `MossbridgeData/storage/case_index` 自动创建。
@@ -219,6 +233,10 @@ Codex 调试时要确认：
 - 添加一个 ongoing track 后，主动唤醒能携带它。
 
 如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。后面再逐步补 dreaming、树边生成、case index 检索和公开版 rename。
+
+独立发布口径：Bridge 不能假设某个私人外部 scheduler 一直开着。公开版要补 Bridge 自己的静默窗口 dreaming 入口；Codex / Claude Code 只负责执行同一份整理 prompt 和 JSON 契约，触发、日志、失败回执、写入目录都应归 Bridge 本体管理。
+
+调试 dreaming 时，Codex 还要确认两件小事：第一，整理结果里的 `memory_metabolism`、warm write、cold promotion、cold patch 等字段能被日志或回执看见；第二，整理 prompt 不应该把前台模型的自然表达磨成冷淡工程口吻，也不应该写成关键词式行为限制。
 
 ## 官方 app 与 Notion 互通
 

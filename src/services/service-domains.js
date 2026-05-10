@@ -100,6 +100,45 @@ function createServiceDomains(services = {}) {
     async closeOngoingTrack(args = {}) {
       return await requireService(asherieMemory, "memory.closeOngoingTrack").closeOngoingTrack(args);
     },
+    async upsertEpisode(args = {}) {
+      return await requireService(asherieMemory, "memory.upsertEpisode").upsertEpisode(args);
+    },
+    async appendEpisodeEntry(args = {}) {
+      return await requireService(asherieMemory, "memory.appendEpisodeEntry").appendEpisodeEntry(args);
+    },
+    async listEpisodes(args = {}) {
+      return await requireService(asherieMemory, "memory.listEpisodes").listEpisodes(args);
+    },
+    async readEpisode(args = {}) {
+      return await requireService(asherieMemory, "memory.readEpisode").readEpisode(args);
+    },
+    async upsertCase(args = {}) {
+      return await requireService(asherieMemory, "memory.upsertCase").upsertCase(args);
+    },
+    async appendSolitudeEntry(args = {}) {
+      return await requireService(asherieMemory, "memory.appendSolitudeEntry").appendSolitudeEntry(args);
+    },
+    async searchSolitudeEntries(args = {}) {
+      return await requireService(asherieMemory, "memory.searchSolitudeEntries").searchSolitudeEntries(args);
+    },
+    async appendCaseEvent(args = {}) {
+      return await requireService(asherieMemory, "memory.appendCaseEvent").appendCaseEvent(args);
+    },
+    async linkCaseArtifact(args = {}) {
+      return await requireService(asherieMemory, "memory.linkCaseArtifact").linkCaseArtifact(args);
+    },
+    async closeCase(args = {}) {
+      return await requireService(asherieMemory, "memory.closeCase").closeCase(args);
+    },
+    async searchCases(args = {}) {
+      return await requireService(asherieMemory, "memory.searchCases").searchCases(args);
+    },
+    async readCase(args = {}) {
+      return await requireService(asherieMemory, "memory.readCase").readCase(args);
+    },
+    async exportCaseMarkdown(args = {}) {
+      return await requireService(asherieMemory, "memory.exportCaseMarkdown").exportCaseMarkdown(args);
+    },
     async appendObservation(args = {}) {
       return await requireService(asherieMemory, "memory.appendObservation").appendObservation(args);
     },
@@ -146,6 +185,9 @@ function createServiceDomains(services = {}) {
     },
     async pickSticker(args = {}) {
       return await requireService(sticker, "transport.sticker").pick(args);
+    },
+    async searchStickers(args = {}) {
+      return await requireService(sticker, "transport.sticker").search(args);
     },
     async sendStickerToCurrentChat(args = {}, context = {}) {
       return await requireService(sticker, "transport.sticker").sendToCurrentChat(args, context);

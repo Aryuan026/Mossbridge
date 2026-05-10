@@ -15,6 +15,13 @@ function createHost() {
         async create(args) {
           return { id: "reminder-1", ...args };
         },
+        list() {
+          return [{
+            id: "reminder-1",
+            dueAt: "2026-05-09T12:00:00.000Z",
+            text: "Check whether the morning bridge is healthy.",
+          }];
+        },
       },
       system: {
         queueMessage(args) {
@@ -131,6 +138,133 @@ function createHost() {
               status: args.status || "done",
               closure_summary: args.closure_summary || "阶段完成",
             },
+          };
+        },
+        async upsertCase(args) {
+          return {
+            ok: true,
+            record: {
+              case_id: args.case_id || "case-1",
+              title: args.title || "Bridge stability pass",
+              status: args.status || "active",
+            },
+          };
+        },
+        async appendSolitudeEntry(args) {
+          return {
+            ok: true,
+            solitude_id: "solitude-1",
+            record: {
+              solitude_id: "solitude-1",
+              summary: args.summary,
+              reasoning_summary: args.reasoning_summary || "",
+              entry_type: args.entry_type || "reflection",
+            },
+          };
+        },
+        async searchSolitudeEntries() {
+          return {
+            ok: true,
+            count: 1,
+            hits: [{
+              solitude_id: "solitude-1",
+              summary: "Checkin found a repeated context issue.",
+              entry_type: "experience",
+            }],
+          };
+        },
+        async appendWakeupDecision(args) {
+          return {
+            ok: true,
+            record: {
+              record_id: "wake-1",
+              decision: args.decision || "silent",
+              wake_motive: args.wake_motive || "random_checkin",
+              intent_summary: args.intent_summary || "Checked status and stayed quiet.",
+              actions_taken: args.actions_taken || [],
+              next_actions: args.next_actions || [],
+            },
+          };
+        },
+        async listWakeupDecisions() {
+          return {
+            ok: true,
+            count: 1,
+            latest: {
+              record_id: "wake-1",
+              decision: "maintenance",
+              intent_summary: "Checked bridge status.",
+            },
+            pending_next_actions: [{
+              from_record_id: "wake-1",
+              action: "Check dreaming after the user is quiet.",
+            }],
+            records: [{
+              record_id: "wake-1",
+              decision: "maintenance",
+              intent_summary: "Checked bridge status.",
+            }],
+          };
+        },
+        async appendCaseEvent(args) {
+          return {
+            ok: true,
+            case_id: args.case_id,
+            event: {
+              event_id: "event-1",
+              case_id: args.case_id,
+              summary: args.summary || "Ran checks.",
+            },
+          };
+        },
+        async linkCaseArtifact(args) {
+          return {
+            ok: true,
+            artifact: {
+              ...args,
+              title: args.title || "diagnostic",
+              path: args.path || "/tmp/diag.json",
+            },
+          };
+        },
+        async searchCases() {
+          return {
+            ok: true,
+            count: 1,
+            items: [{
+              case_id: "case-1",
+              title: "Bridge stability pass",
+              status: "active",
+            }],
+          };
+        },
+        async readCase(args) {
+          return {
+            ok: true,
+            case_id: args.case_id,
+            record: {
+              case_id: args.case_id,
+              title: "Bridge stability pass",
+              status: "active",
+              events: [],
+            },
+          };
+        },
+        async closeCase(args) {
+          return {
+            ok: true,
+            record: {
+              case_id: args.case_id,
+              status: args.status || "completed",
+              closure_summary: args.closure_summary || "Completed.",
+            },
+          };
+        },
+        async exportCaseMarkdown(args) {
+          return {
+            ok: true,
+            case_id: args.case_id,
+            path: `/tmp/${args.case_id}.md`,
           };
         },
         async appendObservation(args) {
@@ -275,6 +409,12 @@ function createHost() {
             candidates: [{ stickerId: "stk_001", desc: "开心小狗摇尾巴" }],
           };
         },
+        async search(args) {
+          return {
+            query: args.query,
+            candidates: [{ stickerId: "stk_001", desc: "开心小狗摇尾巴" }],
+          };
+        },
         async list() {
           return {
             count: 1,
@@ -398,7 +538,7 @@ function createHost() {
 test("tool host rejects legacy timeline write CLI-shaped fields", async () => {
   const host = createHost();
   await assert.rejects(async () => {
-    await host.invokeTool("asheriebridge_timeline_write", {
+    await host.invokeTool("mossbridge_timeline_write", {
       date: "2026-04-21",
       events: [],
       eventsJson: "{\"events\":[]}",
@@ -406,13 +546,108 @@ test("tool host rejects legacy timeline write CLI-shaped fields", async () => {
   }, /input\.eventsJson is not allowed/);
 });
 
+test("tool host exposes a read-only bridge status tool for heartbeat maintenance", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  const statusTool = tools.find((tool) => tool.name === "mossbridge_bridge_status");
+
+  assert.ok(statusTool);
+  assert.match(statusTool.description, /read-only/i);
+
+  const result = await host.invokeTool("mossbridge_bridge_status", {}, {
+    runtimeId: "claudecode",
+    workspaceRoot: "/workspace",
+    senderId: "user-1",
+  });
+
+  assert.match(result.text, /Mossbridge status/);
+  assert.match(result.text, /policy=read_only_report/);
+  assert.equal(result.data.runtime_id, "claudecode");
+  assert.equal(result.data.maintenance.profile, "safe_self_check");
+  assert.equal(result.data.maintenance.self_repair_allowed, false);
+  assert.equal(result.data.maintenance.action_level, "read_only_report");
+  assert.equal(result.data.recommendations[0].code, "no_immediate_action");
+  assert.equal(result.data.queues.system_pending, 0);
+  assert.equal(result.data.reminders.pending_count, 1);
+  assert.equal(result.data.reminders.next_due_at, "2026-05-09T12:00:00.000Z");
+});
+
+test("tool host exposes solitude journal tools for wakeup self-review", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  const writeTool = tools.find((tool) => tool.name === "mossbridge_solitude_journal_write");
+  const searchTool = tools.find((tool) => tool.name === "mossbridge_solitude_journal_search");
+
+  assert.ok(writeTool);
+  assert.ok(searchTool);
+  assert.match(writeTool.description, /Do not store raw hidden chain-of-thought/i);
+
+  const written = await host.invokeTool("mossbridge_solitude_journal_write", {
+    summary: "Checkin should leave a useful internal note when silence is chosen.",
+    entry_type: "experience",
+    wake_context: "random_checkin",
+    reasoning_summary: "The useful action is to remember the lesson, not message immediately.",
+    evidence: ["recent random checkins were too binary"],
+    next_actions: ["prefer solitude journal when no user-facing message is needed"],
+  }, { senderId: "user-1" });
+  const searched = await host.invokeTool("mossbridge_solitude_journal_search", {
+    query: "context issue",
+  }, { senderId: "user-1" });
+
+  assert.equal(written.text, "Solitude journal entry stored: solitude-1");
+  assert.equal(written.data.record.entry_type, "experience");
+  assert.equal(searched.text, "Solitude journal entries found: 1");
+});
+
+test("tool host exposes wakeup agenda tools for heartbeat continuity", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  const readTool = tools.find((tool) => tool.name === "mossbridge_wakeup_agenda_read");
+  const writeTool = tools.find((tool) => tool.name === "mossbridge_wakeup_decision_write");
+
+  assert.ok(readTool);
+  assert.ok(writeTool);
+  assert.match(writeTool.description, /final outcome/i);
+  assert.match(writeTool.description, /never raw hidden chain-of-thought/i);
+
+  const read = await host.invokeTool("mossbridge_wakeup_agenda_read", {
+    limit: 3,
+  }, { senderId: "user-1" });
+  const written = await host.invokeTool("mossbridge_wakeup_decision_write", {
+    decision: "maintenance",
+    wake_motive: "random_checkin",
+    intent_summary: "Checked status and left a next-action handle instead of messaging.",
+    actions_taken: ["read bridge status"],
+    next_actions: ["recheck dreaming after quiet time"],
+    contact_channel: "none",
+  }, { senderId: "user-1" });
+
+  assert.equal(read.text, "Wakeup agenda loaded: 1 records, 1 pending actions.");
+  assert.equal(written.text, "Wakeup decision stored: wake-1");
+  assert.equal(written.data.record.decision, "maintenance");
+});
+
+test("tool host does not expose private external executors", () => {
+  const host = createHost();
+  const publicTools = host.listTools()
+    .filter((tool) => tool.name.startsWith("mossbridge_"));
+  const forbiddenNames = /home|miot|email|gmail|permission/i;
+  const forbiddenDescriptions = /home|miot|email|gmail|permission-management|permission manager/i;
+
+  assert.ok(publicTools.length > 0);
+  for (const tool of publicTools) {
+    assert.doesNotMatch(tool.name, forbiddenNames);
+    assert.doesNotMatch(tool.description || "", forbiddenDescriptions);
+  }
+});
+
 test("tool host exposes structured timeline read tools", async () => {
   const host = createHost();
-  const readResult = await host.invokeTool("asheriebridge_timeline_read", {
+  const readResult = await host.invokeTool("mossbridge_timeline_read", {
     date: "2026-04-21",
   }, {});
-  const categoriesResult = await host.invokeTool("asheriebridge_timeline_categories", {}, {});
-  const proposalsResult = await host.invokeTool("asheriebridge_timeline_proposals", {
+  const categoriesResult = await host.invokeTool("mossbridge_timeline_categories", {}, {});
+  const proposalsResult = await host.invokeTool("mossbridge_timeline_proposals", {
     date: "2026-04-21",
   }, {});
 
@@ -424,7 +659,7 @@ test("tool host exposes structured timeline read tools", async () => {
 test("tool host validates structured reminder input types", async () => {
   const host = createHost();
   await assert.rejects(async () => {
-    await host.invokeTool("asheriebridge_reminder_create", {
+    await host.invokeTool("mossbridge_reminder_create", {
       text: "ping me",
       delayMinutes: "30",
     }, {});
@@ -433,7 +668,7 @@ test("tool host validates structured reminder input types", async () => {
 
 test("tool host accepts structured timeline screenshot input", async () => {
   const host = createHost();
-  const result = await host.invokeTool("asheriebridge_timeline_screenshot", {
+  const result = await host.invokeTool("mossbridge_timeline_screenshot", {
     selector: "timeline",
     range: "day",
     date: "2026-04-21",
@@ -446,17 +681,19 @@ test("tool host accepts structured timeline screenshot input", async () => {
 test("tool host exposes sticker tools", async () => {
   const host = createHost();
   const tools = host.listTools();
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_sticker_tags"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_sticker_pick"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_sticker_list"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_sticker_send"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_sticker_save_from_inbox"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_tags"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_pick"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_list"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_send"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_sticker_save_from_inbox"));
 
-  const tags = await host.invokeTool("asheriebridge_sticker_tags", {}, {});
-  const picked = await host.invokeTool("asheriebridge_sticker_pick", { tag: "开心" }, {});
-  const listed = await host.invokeTool("asheriebridge_sticker_list", { tag: "开心" }, {});
-  const sent = await host.invokeTool("asheriebridge_sticker_send", { stickerId: "stk_001" }, {});
-  const saved = await host.invokeTool("asheriebridge_sticker_save_from_inbox", {
+  const tags = await host.invokeTool("mossbridge_sticker_tags", {}, {});
+  const searched = await host.invokeTool("mossbridge_sticker_search", { query: "happy dog" }, {});
+  const picked = await host.invokeTool("mossbridge_sticker_pick", { tag: "开心" }, {});
+  const listed = await host.invokeTool("mossbridge_sticker_list", { tag: "开心" }, {});
+  const sent = await host.invokeTool("mossbridge_sticker_send", { stickerId: "stk_001" }, {});
+  const saved = await host.invokeTool("mossbridge_sticker_save_from_inbox", {
     items: [{
       filePath: "/tmp/input.gif",
       tags: ["开心"],
@@ -465,6 +702,7 @@ test("tool host exposes sticker tools", async () => {
   }, {});
 
   assert.equal(tags.text, "Sticker tags loaded: 2");
+  assert.equal(searched.text, "Sticker search for happy dog: 1");
   assert.equal(picked.text, "Sticker candidates for 开心: 1");
   assert.equal(listed.text, "Sticker inventory: 1");
   assert.equal(sent.text, "Sticker sent: stk_001");
@@ -473,7 +711,7 @@ test("tool host exposes sticker tools", async () => {
 
 test("tool host descriptions include schema summary for models that only surface descriptions", () => {
   const host = createHost();
-  const timelineWrite = host.listTools().find((tool) => tool.name === "asheriebridge_timeline_write");
+  const timelineWrite = host.listTools().find((tool) => tool.name === "mossbridge_timeline_write");
   assert.match(timelineWrite.description, /Input:/);
   assert.match(timelineWrite.description, /date: string/);
   assert.match(timelineWrite.description, /events: \{/);
@@ -482,22 +720,22 @@ test("tool host descriptions include schema summary for models that only surface
 test("tool host exposes structured warm-memory lookup and exact-card mutation tools", async () => {
   const host = createHost();
   const tools = host.listTools();
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_warm_search"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_warm_read"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_warm_update"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_warm_delete"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_read"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_update"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_delete"));
 
-  const search = await host.invokeTool("asheriebridge_memory_warm_search", {
+  const search = await host.invokeTool("mossbridge_memory_warm_search", {
     query: "coffee",
   }, { senderId: "user-1" });
-  const read = await host.invokeTool("asheriebridge_memory_warm_read", {
+  const read = await host.invokeTool("mossbridge_memory_warm_read", {
     material_id: "memo-1",
   }, { senderId: "user-1" });
-  const update = await host.invokeTool("asheriebridge_memory_warm_update", {
+  const update = await host.invokeTool("mossbridge_memory_warm_update", {
     material_id: "memo-1",
     body_markdown: "User switched to hand-brew at home.",
   }, { senderId: "user-1" });
-  const removal = await host.invokeTool("asheriebridge_memory_warm_delete", {
+  const removal = await host.invokeTool("mossbridge_memory_warm_delete", {
     material_id: "memo-1",
   }, { senderId: "user-1" });
 
@@ -512,20 +750,20 @@ test("tool host exposes structured warm-memory lookup and exact-card mutation to
 test("tool host exposes ongoing-track tools for medium-horizon live threads", async () => {
   const host = createHost();
   const tools = host.listTools();
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_ongoing_upsert"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_ongoing_list"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_ongoing_read"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_ongoing_close"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_ongoing_upsert"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_ongoing_list"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_ongoing_read"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_ongoing_close"));
 
-  const created = await host.invokeTool("asheriebridge_memory_ongoing_upsert", {
+  const created = await host.invokeTool("mossbridge_memory_ongoing_upsert", {
     title: "减重",
     summary: "最近在减重。",
   }, { senderId: "user-1" });
-  const listed = await host.invokeTool("asheriebridge_memory_ongoing_list", {}, { senderId: "user-1" });
-  const read = await host.invokeTool("asheriebridge_memory_ongoing_read", {
+  const listed = await host.invokeTool("mossbridge_memory_ongoing_list", {}, { senderId: "user-1" });
+  const read = await host.invokeTool("mossbridge_memory_ongoing_read", {
     track_id: "track-1",
   }, { senderId: "user-1" });
-  const closed = await host.invokeTool("asheriebridge_memory_ongoing_close", {
+  const closed = await host.invokeTool("mossbridge_memory_ongoing_close", {
     track_id: "track-1",
     closure_summary: "阶段完成",
   }, { senderId: "user-1" });
@@ -536,30 +774,97 @@ test("tool host exposes ongoing-track tools for medium-horizon live threads", as
   assert.equal(closed.text, "Ongoing track closed: track-1");
 });
 
+test("tool host exposes quiet work-provenance case tools", async () => {
+  const host = createHost();
+  const tools = host.listTools();
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_upsert"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_append"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_read"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_close"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_case_export"));
+  const upsertTool = tools.find((tool) => tool.name === "mossbridge_memory_case_upsert");
+  const artifactTool = tools.find((tool) => tool.name === "mossbridge_memory_case_artifact");
+  const closeTool = tools.find((tool) => tool.name === "mossbridge_memory_case_close");
+  assert.match(upsertTool.description, /Do not use it for ordinary intimate chat/i);
+  assert.match(artifactTool.description, /human-approved final/i);
+  assert.match(artifactTool.description, /cloud services/i);
+  assert.ok(artifactTool.inputSchema.properties.status);
+  assert.ok(artifactTool.inputSchema.properties.final_artifact_id);
+  assert.ok(artifactTool.inputSchema.properties.storage_id);
+  assert.match(closeTool.description, /Closing does not make any artifact final/i);
+  assert.match(closeTool.description, /cleanup confirmation/i);
+
+  const saved = await host.invokeTool("mossbridge_memory_case_upsert", {
+    title: "Bridge stability pass",
+    summary: "Added guardrails.",
+  }, { senderId: "user-1" });
+  const event = await host.invokeTool("mossbridge_memory_case_append", {
+    case_id: "case-1",
+    summary: "Ran npm check.",
+    tests: [{ command: "npm run check", status: "passed" }],
+  }, { senderId: "user-1" });
+  const artifact = await host.invokeTool("mossbridge_memory_case_artifact", {
+    case_id: "case-1",
+    title: "diagnostic",
+    path: "/tmp/diag.json",
+    status: "user_approved_final",
+    final_artifact_id: "final-001",
+    storage_id: "CASE-20260509-001",
+    checksum: "sha256:abc",
+    size_bytes: 128,
+  }, { senderId: "user-1" });
+  const search = await host.invokeTool("mossbridge_memory_case_search", {
+    query: "stability",
+  }, { senderId: "user-1" });
+  const read = await host.invokeTool("mossbridge_memory_case_read", {
+    case_id: "case-1",
+  }, { senderId: "user-1" });
+  const exported = await host.invokeTool("mossbridge_memory_case_export", {
+    case_id: "case-1",
+  }, { senderId: "user-1" });
+  const closed = await host.invokeTool("mossbridge_memory_case_close", {
+    case_id: "case-1",
+    closure_summary: "Ready.",
+  }, { senderId: "user-1" });
+
+  assert.equal(saved.text, "Case saved: case-1");
+  assert.equal(event.text, "Case event appended: event-1");
+  assert.equal(artifact.text, "Case artifact linked: diagnostic");
+  assert.equal(artifact.data.artifact.status, "user_approved_final");
+  assert.equal(artifact.data.artifact.final_artifact_id, "final-001");
+  assert.equal(artifact.data.artifact.storage_id, "CASE-20260509-001");
+  assert.equal(artifact.data.artifact.size_bytes, 128);
+  assert.equal(search.text, "Cases found: 1");
+  assert.equal(read.text, "Case loaded: case-1");
+  assert.equal(exported.text, "Case markdown exported: /tmp/case-1.md");
+  assert.equal(closed.text, "Case closed: case-1");
+});
+
 test("tool host exposes revisable observation journal tools", async () => {
   const host = createHost();
   const tools = host.listTools();
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_append"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_search"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_read"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_observation_update"));
-  const appendTool = tools.find((tool) => tool.name === "asheriebridge_memory_observation_append");
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_observation_append"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_observation_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_observation_read"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_observation_update"));
+  const appendTool = tools.find((tool) => tool.name === "mossbridge_memory_observation_append");
   assert.match(appendTool.description, /write it proactively and silently/i);
   assert.match(appendTool.description, /do not wait for an explicit user request/i);
 
-  const appended = await host.invokeTool("asheriebridge_memory_observation_append", {
+  const appended = await host.invokeTool("mossbridge_memory_observation_append", {
     observation: "User often needs gentler morning prompts.",
     kind: "life_rhythm",
     confidence: 0.45,
     evidence: ["morning wakeups land better when low-pressure"],
   }, { senderId: "user-1" });
-  const search = await host.invokeTool("asheriebridge_memory_observation_search", {
+  const search = await host.invokeTool("mossbridge_memory_observation_search", {
     query: "morning prompts",
   }, { senderId: "user-1" });
-  const read = await host.invokeTool("asheriebridge_memory_observation_read", {
+  const read = await host.invokeTool("mossbridge_memory_observation_read", {
     observation_id: "obs-1",
   }, { senderId: "user-1" });
-  const updated = await host.invokeTool("asheriebridge_memory_observation_update", {
+  const updated = await host.invokeTool("mossbridge_memory_observation_update", {
     observation_id: "obs-1",
     status: "rejected",
     correction_note: "User said this framing felt wrong.",
@@ -574,8 +879,8 @@ test("tool host exposes revisable observation journal tools", async () => {
 
 test("tool host exposes cold-memory inspection tools beside version upsert", async () => {
   const host = createHost();
-  const versions = await host.invokeTool("asheriebridge_memory_cold_versions", {}, { senderId: "user-1" });
-  const active = await host.invokeTool("asheriebridge_memory_cold_read", {}, { senderId: "user-1" });
+  const versions = await host.invokeTool("mossbridge_memory_cold_versions", {}, { senderId: "user-1" });
+  const active = await host.invokeTool("mossbridge_memory_cold_read", {}, { senderId: "user-1" });
 
   assert.equal(versions.text, "Cold memory versions: 2 (active=v2).");
   assert.equal(active.text, "Cold memory loaded: v2");
@@ -585,23 +890,23 @@ test("tool host exposes cold-memory inspection tools beside version upsert", asy
 test("tool host exposes cold root search, read, and exact patch tools", async () => {
   const host = createHost();
   const tools = host.listTools();
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_cold_search"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_cold_root_read"));
-  assert.ok(tools.find((tool) => tool.name === "asheriebridge_memory_cold_patch"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_root_read"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_patch"));
 
-  const search = await host.invokeTool("asheriebridge_memory_cold_search", {
+  const search = await host.invokeTool("mossbridge_memory_cold_search", {
     query: "Shanghai",
   }, { senderId: "user-1" });
-  const read = await host.invokeTool("asheriebridge_memory_cold_root_read", {
+  const read = await host.invokeTool("mossbridge_memory_cold_root_read", {
     root_key: "hard_fact:f1",
   }, { senderId: "user-1" });
-  const patch = await host.invokeTool("asheriebridge_memory_cold_patch", {
+  const patch = await host.invokeTool("mossbridge_memory_cold_patch", {
     root_key: "hard_fact:f1",
     changes: {
       fact_value: "Hangzhou",
     },
   }, { senderId: "user-1" });
-  const deletion = await host.invokeTool("asheriebridge_memory_cold_patch", {
+  const deletion = await host.invokeTool("mossbridge_memory_cold_patch", {
     root_key: "hard_fact:f1",
     mode: "delete",
   }, { senderId: "user-1" });
@@ -617,7 +922,7 @@ test("tool host exposes cold root search, read, and exact patch tools", async ()
 test("tool host rejects cold root patch without changes unless mode is delete", async () => {
   const host = createHost();
   await assert.rejects(async () => {
-    await host.invokeTool("asheriebridge_memory_cold_patch", {
+    await host.invokeTool("mossbridge_memory_cold_patch", {
       root_key: "hard_fact:f1",
     }, { senderId: "user-1" });
   }, /input\.changes is required unless input\.mode is delete/);
@@ -648,7 +953,7 @@ test("tool host exposes whereabouts tools from the external dependency", async (
 test("tool host rejects timeline events without title or eventNodeId", async () => {
   const host = createHost();
   await assert.rejects(async () => {
-    await host.invokeTool("asheriebridge_timeline_write", {
+    await host.invokeTool("mossbridge_timeline_write", {
       date: "2026-04-22",
       events: [
         {

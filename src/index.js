@@ -5,7 +5,7 @@ const dotenv = require("dotenv");
 
 const { readConfig } = require("./core/config");
 const { renderInstructionTemplate } = require("./core/instructions-template");
-const { CyberbossApp } = require("./core/app");
+const { MossbridgeApp } = require("./core/app");
 const { runSystemCheckinPoller } = require("./app/system-checkin-poller");
 const { buildTerminalHelpText } = require("./core/command-registry");
 const { createProjectTooling } = require("./tools/create-project-tooling");
@@ -13,7 +13,7 @@ const { runToolMcpServer } = require("./tools/mcp-stdio-server");
 const { ensureStickerCatalogFilesSync } = require("./services/sticker-service");
 
 function resolvePreferredStateDirectory() {
-  return process.env.ASHERIEBRIDGE_STATE_DIR || path.join(os.homedir(), ".asheriebridge");
+  return process.env.MOSSBRIDGE_STATE_DIR || path.join(os.homedir(), ".mossbridge");
 }
 
 function ensureStateDirectory(stateDir) {
@@ -29,7 +29,7 @@ function loadEnv() {
   const candidates = [
     path.join(process.cwd(), ".env"),
     path.join(stateDir, ".env"),
-    path.join(os.homedir(), ".asheriebridge", ".env"),
+    path.join(os.homedir(), ".mossbridge", ".env"),
   ];
   for (const envPath of candidates) {
     if (!fs.existsSync(envPath)) {
@@ -43,8 +43,8 @@ function loadEnv() {
 
 function ensureRuntimeEnv() {
   const home = path.resolve(__dirname, "..");
-  if (!process.env.ASHERIEBRIDGE_HOME) {
-    process.env.ASHERIEBRIDGE_HOME = home;
+  if (!process.env.MOSSBRIDGE_HOME) {
+    process.env.MOSSBRIDGE_HOME = home;
   }
 }
 
@@ -92,12 +92,12 @@ function installRuntimeErrorHooks() {
 
   process.on("unhandledRejection", (reason) => {
     const message = reason instanceof Error ? reason.stack || reason.message : String(reason);
-    console.error(`[asheriebridge] unhandled rejection ${message}`);
+    console.error(`[mossbridge] unhandled rejection ${message}`);
   });
 
   process.on("uncaughtException", (error) => {
     const message = error instanceof Error ? error.stack || error.message : String(error);
-    console.error(`[asheriebridge] uncaught exception ${message}`);
+    console.error(`[mossbridge] uncaught exception ${message}`);
     process.exitCode = 1;
   });
 }
@@ -116,7 +116,7 @@ async function main() {
   let app = null;
   const getApp = () => {
     if (!app) {
-      app = new CyberbossApp(config);
+      app = new MossbridgeApp(config);
     }
     return app;
   };

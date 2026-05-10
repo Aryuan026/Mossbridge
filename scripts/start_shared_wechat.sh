@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${ASHERIEBRIDGE_SHARED_PORT:-8765}"
-STATE_DIR="${ASHERIEBRIDGE_STATE_DIR:-$HOME/.asheriebridge}"
+PORT="${MOSSBRIDGE_SHARED_PORT:-8765}"
+STATE_DIR="${MOSSBRIDGE_STATE_DIR:-$HOME/.mossbridge}"
 LOG_DIR="${STATE_DIR}/logs"
 PID_FILE="${LOG_DIR}/shared-wechat.pid"
 
@@ -13,7 +13,7 @@ function resolve_pid_cwd() {
 }
 
 function list_bridge_processes() {
-  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/asheriebridge\.js start --checkin/ { print }'
+  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start --checkin/ { print }'
 }
 
 function find_bridge_child_pid() {
@@ -83,7 +83,7 @@ mkdir -p "${LOG_DIR}"
 EXISTING_PID="$(find_existing_bridge_pid || true)"
 if [[ -n "${EXISTING_PID}" ]]; then
   echo "${EXISTING_PID}" > "${PID_FILE}"
-  echo "shared asheriebridge already running pid=${EXISTING_PID}"
+  echo "shared mossbridge already running pid=${EXISTING_PID}"
   exit 0
 fi
 
@@ -97,8 +97,8 @@ function shutdown_bridge() {
 
 trap shutdown_bridge EXIT INT TERM
 cd "${ROOT_DIR}"
-export ASHERIEBRIDGE_CODEX_ENDPOINT="ws://127.0.0.1:${PORT}"
-node ./bin/asheriebridge.js start --checkin &
+export MOSSBRIDGE_CODEX_ENDPOINT="ws://127.0.0.1:${PORT}"
+node ./bin/mossbridge.js start --checkin &
 BRIDGE_PID="$!"
 echo "${BRIDGE_PID}" > "${PID_FILE}"
 wait "${BRIDGE_PID}"

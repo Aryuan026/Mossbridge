@@ -38,7 +38,7 @@ test("timeline integration does not write child output to process stdio", async 
 
   try {
     const { createTimelineIntegration } = require(integrationPath);
-    const integration = createTimelineIntegration({ stateDir: "/tmp/cyberboss-state" });
+    const integration = createTimelineIntegration({ stateDir: "/tmp/mossbridge-state" });
     const result = await integration.runSubcommand("build", []);
     assert.match(result.stdout, /timeline build ok/);
     assert.match(result.stderr, /warning line/);
@@ -60,8 +60,8 @@ test("timeline failure message prefers the root error over stack tail", () => {
     code: 1,
     stderr: [
       "Error: Invalid timeline event at index 1: title is missing and eventNodeId cannot backfill it",
-      "    at /Users/tingyiwen/Dev/cyberboss/node_modules/timeline-for-agent/src/infra/timeline/timeline-store.js:356:13",
-      "    at withTimelineWriteLock (/Users/tingyiwen/Dev/cyberboss/node_modules/timeline-for-agent/src/application/timeline/shared.js:64:18)",
+      "    at /tmp/mossbridge/node_modules/timeline-for-agent/src/infra/timeline/timeline-store.js:356:13",
+      "    at withTimelineWriteLock (/tmp/mossbridge/node_modules/timeline-for-agent/src/application/timeline/shared.js:64:18)",
     ].join("\n"),
   });
   assert.match(message, /Invalid timeline event at index 1: title is missing and eventNodeId cannot backfill it/);

@@ -20,13 +20,13 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
   随机 check-in 和定时 reminder 都被当作“模型醒来后的系统轮次”，而不是普通闹钟。唤醒时可以携带近期上下文、温记忆和 ongoing 信息，避免主动消息像固定日历一样干瘪。
 
 - **多窗口记忆姿态**
-  WeChat、终端、Home 前端或第三方 chatbox 可以被视为不同窗口。它们未来可以写入同一个记忆沉淀区，同时仍然保持各自的通道身份。
+  WeChat、终端、ChatGPT 网页/app 抓取或第三方 chatbox 可以被视为不同窗口。它们未来可以写入同一个记忆沉淀区，同时仍然保持各自的通道身份。Mossbridge 接这些来源时应该把它们当作数据入口，而不是桥接到私人外部执行器。
 
 - **近中期追踪层**
   减重、写稿、家族八卦、购买决策、系统 bug、咨询进展这类“这阵子还活着的事”，可以挂在 ongoing tracks，而不是太早冻结成永久冷记忆。
 
 - **可选冷树兼容**
-  Mossbridge 可以通过配置读取或修补冷层结构，但目前不建议让 WeChat 端日常陪伴强依赖私人 Home 冷树。温层负责日常连续性，冷层更适合做深层归档、关系拓扑和时间拓扑。
+  Mossbridge 可以通过配置读取或修补冷层结构，但目前不建议让 WeChat 端日常陪伴强依赖私人外部冷树。温层负责日常连续性，冷层更适合做深层归档、关系拓扑和时间拓扑。
 
 - **表情包与附件工作流**
   微信图片和文件可以落入 inbox，被总结进上下文；适合作为表情包的图片可以登记到本地 sticker catalog，让模型用工具发真实表情包，而不是输出 `[微笑]` 这种文字替代。
@@ -37,20 +37,19 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 - **Codex / Claude Code 双 runtime**
   支持 Codex 和 Claude Code。日常推荐 shared mode，让微信端和终端端挂在同一条线程上，也支持在 Claude Code runtime 下查看和切换模型。
 
-## 当前命名状态
+## 公开命名与 runtime 姿态
 
-仓库名已经是 `Mossbridge`，但内部入口仍然保留工作名 `asheriebridge`。
+公开入口已经统一到 Mossbridge：
 
-这是有意保留的稳定状态。命令名、MCP 工具名、环境变量、测试夹具、本地状态目录彼此相连，应该在公开发布前做一次统一清洗，而不是在真机测试过程中硬改。
+- package / CLI：`mossbridge`
+- 环境变量前缀：`MOSSBRIDGE_*`
+- 默认状态目录：`${HOME}/.mossbridge`
+- launchd label：`com.mossbridge.bridge`
+- MCP 命名空间：`mossbridge_tools` / `mossbridge_*`
 
-目前仍会看到：
+Codex 和 Claude Code 都是一等 runtime。微信收发、记忆仓、wakeups、附件、故障提示这些共享能力优先放在 bridge core；只有 Codex RPC/session、Claude Code process/session/model 这类协议差异才放进各自 adapter。
 
-- 命令：`asheriebridge`
-- 环境变量前缀：`ASHERIEBRIDGE_*`
-- 默认状态目录：`${HOME}/.asheriebridge`
-- MCP 命名空间：`asheriebridge_tools` / `asheriebridge_*`
-
-公开前需要把 CLI、package、MCP、文档和本地状态目录统一改成 `mossbridge` 或提供兼容别名。
+代码里仍有少量历史的 Asherie 记忆域命名，除致谢、来源说明、迁移说明或记忆域词汇外，都应该视为公开前清理债。
 
 ## 安装
 
@@ -60,33 +59,49 @@ cd Mossbridge
 npm install
 ```
 
+第一次扫码登录、`/bind` 和空仓首轮回复的完整路径见 [docs/quickstart.md](./docs/quickstart.md)。
+
 ## 最小配置
 
 在项目目录创建本地 `.env`。`.env`、账号状态和私人记忆数据不应该进入 git。
 
 ```dotenv
-ASHERIEBRIDGE_USER_NAME=YourName
-ASHERIEBRIDGE_ALLOWED_USER_IDS=your_wechat_user_id
-ASHERIEBRIDGE_WORKSPACE_ROOT=/absolute/path/to/your/workspace
-ASHERIEBRIDGE_RUNTIME=claudecode
-ASHERIEBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+MOSSBRIDGE_RUNTIME=codex
+MOSSBRIDGE_WORKSPACE_ROOT=/absolute/path/to/your/workspace
+MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
+MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
+MOSSBRIDGE_ALLOWED_USER_IDS=
 ```
 
-可选记忆仓配置：
+如果使用 Claude Code，只额外改：
 
 ```dotenv
-ASHERIEBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
-ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
-ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+MOSSBRIDGE_RUNTIME=claudecode
+MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
 ```
 
-新部署优先只设置 `ASHERIEBRIDGE_DATA_ROOT`。更细的路径主要用于兼容旧数据仓或接入 AsherieHome。
+可选的旧记忆仓迁移配置：
+
+```dotenv
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
+MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
+MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+```
+
+新部署优先只设置 `MOSSBRIDGE_DATA_ROOT`。更细的路径只用于有意识地迁移或共享既有记忆仓。
 
 ## 常用命令
 
 ```bash
 npm run login
+npm run shared:start
+npm run shared:open
+npm run shared:status
+```
+
+Claude Code 对应命令：
+
+```bash
 npm run shared:start:claudecode
 npm run shared:open:claudecode
 npm run shared:status:claudecode
@@ -114,8 +129,8 @@ npm run shared:status:claudecode
 Mossbridge 的目标是让代码和私人数据可分割。
 
 - git 里只放源码、模板、测试和文档。
-- 微信账号状态留在 `${HOME}/.asheriebridge` 或其他被忽略的状态目录。
-- 私人记忆留在 `ASHERIEBRIDGE_DATA_ROOT` 或显式配置的记忆仓。
+- 微信账号状态留在 `${HOME}/.mossbridge` 或其他被忽略的状态目录。
+- 私人记忆留在 `MOSSBRIDGE_DATA_ROOT` 或显式配置的记忆仓。
 - 测试数据应该可以删除，而不影响稳定记忆。
 - 公开发布前不能包含私人记忆卡、账号 token、本地日志、二维码数据或个人 workspace 绑定。
 
@@ -138,17 +153,19 @@ Mossbridge 的目标是让代码和私人数据可分割。
 
 ## 公开前清洗清单
 
-- 把 CLI/package/MCP 命名空间从 `asheriebridge` 改成 `mossbridge`
-- 处理 `ASHERIEBRIDGE_*` 环境变量，是改名还是保留兼容别名
-- 决定 `${HOME}/.asheriebridge` 是否作为旧数据迁移别名保留
+- 确保历史 `ASHERIEBRIDGE_*` 和 Cyberboss 名称不再作为运行入口，只在迁移说明或上游来源说明里出现
+- 决定旧 state dir 别名是支持迁移还是明确不支持
 - 全仓扫描私人路径、私人名字、测试账号、截图和记忆样例
 - 确认空记忆仓也能跑起来
 - 写清楚哪些功能内置，哪些需要用户自己的记忆仓提供
 
 ## 文档
 
+- [docs/commands.md](./docs/commands.md)
+- [docs/quickstart.md](./docs/quickstart.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
+- [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
 - [docs/notion-memory-interop.md](./docs/notion-memory-interop.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
 - [docs/public-release-readiness.md](./docs/public-release-readiness.md)

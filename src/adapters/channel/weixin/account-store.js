@@ -85,10 +85,16 @@ function listWeixinAccounts(config) {
   ensureAccountsDir(config);
   const files = fs.readdirSync(config.accountsDir, { withFileTypes: true });
   return files
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && !entry.name.endsWith(".context-tokens.json"))
+    .filter((entry) => entry.isFile() && isWeixinAccountFileName(entry.name))
     .map((entry) => loadWeixinAccount(config, entry.name.slice(0, -5)))
     .filter(Boolean)
     .sort((left, right) => String(right.savedAt || "").localeCompare(String(left.savedAt || "")));
+}
+
+function isWeixinAccountFileName(name) {
+  return String(name || "").endsWith(".json")
+    && !String(name || "").endsWith(".context-tokens.json")
+    && !String(name || "").endsWith(".context-token-meta.json");
 }
 
 function resolveSelectedAccount(config) {
@@ -108,7 +114,7 @@ function resolveSelectedAccount(config) {
   }
   if (accounts.length > 1) {
     const accountIds = accounts.map((account) => account.accountId).join(", ");
-    throw new Error(`Multiple WeChat accounts were detected. Set ASHERIEBRIDGE_ACCOUNT_ID. Available values: ${accountIds}`);
+    throw new Error(`Multiple WeChat accounts were detected. Set MOSSBRIDGE_ACCOUNT_ID. Available values: ${accountIds}`);
   }
   if (!accounts[0].token) {
     throw new Error(`WeChat account is missing a token: ${accounts[0].accountId}. Run login again.`);
@@ -118,6 +124,7 @@ function resolveSelectedAccount(config) {
 
 module.exports = {
   deleteWeixinAccount,
+  isWeixinAccountFileName,
   listWeixinAccounts,
   loadWeixinAccount,
   normalizeAccountId,

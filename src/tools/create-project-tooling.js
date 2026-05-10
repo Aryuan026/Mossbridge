@@ -25,6 +25,7 @@ function createProjectTooling(config, options = {}) {
   });
   const channelFileService = new ChannelFileService({ config, channelAdapter, sessionStore });
   const services = {
+    config,
     asherieMemory: new AsherieMemoryService({ config }),
     diary: new DiaryService({ config }),
     reminder: new ReminderService({ config, sessionStore }),

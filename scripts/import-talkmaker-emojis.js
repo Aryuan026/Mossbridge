@@ -16,7 +16,7 @@ const {
 } = require("../src/services/sticker-service");
 
 const SERIES_TAG = "小萝卜";
-const DEFAULT_STATE_DIR = path.join(os.homedir(), ".asheriebridge");
+const DEFAULT_STATE_DIR = path.join(os.homedir(), ".mossbridge");
 const DEFAULT_IMPORT_STATUS = "archive";
 const IMPORT_STATUS_VALUES = ["active", "archive"];
 
@@ -25,7 +25,9 @@ async function main() {
   const manifestPath = readFlag(args, "--manifest");
   const metadataPath = readFlag(args, "--metadata") || readFlag(args, "--talkmaker-metadata");
   const imagesDir = readFlag(args, "--images");
-  const stateDir = readFlag(args, "--state-dir") || process.env.ASHERIEBRIDGE_STATE_DIR || DEFAULT_STATE_DIR;
+  const stateDir = readFlag(args, "--state-dir") || process.env.MOSSBRIDGE_STATE_DIR || DEFAULT_STATE_DIR;
+  const dataRoot = readFlag(args, "--data-root") || process.env.MOSSBRIDGE_DATA_ROOT || "";
+  const stickersDir = readFlag(args, "--stickers-dir") || process.env.MOSSBRIDGE_STICKERS_DIR || "";
   const pack = readFlag(args, "--pack") || (metadataPath ? SERIES_TAG : "");
   const statusFlag = readFlag(args, "--status");
   const status = statusFlag ? normalizeImportStatus(statusFlag) : "";
@@ -36,7 +38,7 @@ async function main() {
     throw new Error("Usage: import-talkmaker-emojis.js (--manifest <stickers.json> [--images <dir>] | --metadata <emojis_metadata.json> --images <dir>) [--pack <name>] [--status active|archive] [--state-dir <dir>] [--dry-run]");
   }
 
-  const config = buildConfig({ stateDir });
+  const config = buildConfig({ stateDir, dataRoot, stickersDir });
   const entries = manifestPath
     ? loadStickerManifest({ manifestPath, imagesDir, defaultPack: pack, defaultStatus: status, defaultSource: source })
     : loadTalkmakerMetadata({ metadataPath, imagesDir, defaultPack: pack, defaultStatus: status || DEFAULT_IMPORT_STATUS, defaultSource: source });
@@ -55,14 +57,17 @@ async function main() {
   }
 }
 
-function buildConfig({ stateDir }) {
+function buildConfig({ stateDir, dataRoot = "", stickersDir = "" }) {
   const repoRoot = path.resolve(__dirname, "..");
+  const resolvedStickersDir = stickersDir
+    ? path.resolve(stickersDir)
+    : (dataRoot ? path.join(path.resolve(dataRoot), "storage", "stickers") : path.join(stateDir, "stickers"));
   return {
     stateDir,
-    stickersDir: path.join(stateDir, "stickers"),
-    stickerAssetsDir: path.join(stateDir, "stickers", "assets"),
-    stickersIndexFile: path.join(stateDir, "stickers", "index.json"),
-    stickerTagsFile: path.join(stateDir, "stickers", "tags.json"),
+    stickersDir: resolvedStickersDir,
+    stickerAssetsDir: path.join(resolvedStickersDir, "assets"),
+    stickersIndexFile: path.join(resolvedStickersDir, "index.json"),
+    stickerTagsFile: path.join(resolvedStickersDir, "tags.json"),
     stickersTemplateDir: path.join(repoRoot, "templates", "stickers"),
     stickersTemplateIndexFile: path.join(repoRoot, "templates", "stickers", "index.json"),
     stickerTagsTemplateFile: path.join(repoRoot, "templates", "stickers", "tags.json"),
@@ -330,7 +335,7 @@ async function importStickers({ config, planned }) {
 }
 
 async function importOneSticker({ config, index, hashByStickerId, item }) {
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "asheriebridge-talkmaker-"));
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "mossbridge-talkmaker-"));
   const normalizedGifPath = path.join(tempDir, "normalized.gif");
   try {
     await normalizeStickerGif({

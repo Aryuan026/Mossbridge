@@ -20,7 +20,7 @@ Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 
 注意：这批 Driftstone 导出是第一轮优化结果，只能作为 `notion_staging` 输入格式参考，不能直接视为 Mossbridge 的 canonical memory tree schema。
 
 ```text
-/Users/mac/Documents/Codex/0-github/202604-Driftstone/output/notion_staging/
+/absolute/path/to/notion_staging/
   ajimem_2025-03/
     00_manifest.json
     01_memory_entries.json
@@ -241,6 +241,10 @@ topic_id exact match
 ## 每日网页端抓取插件的输入契约
 
 浏览器插件或网页端抓取工具可以先输出 daily capture，不必直接写温记忆。
+
+这个插件服务的是 OpenAI-user continuity：ChatGPT 网页/app 里的日常对话先作为原始沉淀进入 Mossbridge data root，随后再由 Codex/Claude Code 可读的本地导入器归一化。它不是私有自动化工具桥，也不应该调用任何不可公开的外部执行器。
+
+给外部导出工具对齐的单文件 JSON 契约见 [docs/app-daily-capture-json.md](./app-daily-capture-json.md)，对应 schema 在 [schemas/app-daily-capture-bundle-v0.1.schema.json](../schemas/app-daily-capture-bundle-v0.1.schema.json)。这个契约只负责 raw capture 验证，不直接写稳定记忆。
 
 建议一日一个目录：
 

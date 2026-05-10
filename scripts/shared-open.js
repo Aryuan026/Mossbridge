@@ -11,13 +11,13 @@ const {
 } = require("./shared-common");
 
 async function main() {
-  const workspaceRoot = process.env.ASHERIEBRIDGE_WORKSPACE_ROOT || process.cwd();
-  const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
+  const workspaceRoot = process.env.MOSSBRIDGE_WORKSPACE_ROOT || process.cwd();
+  const runtime = process.env.MOSSBRIDGE_RUNTIME || "codex";
 
   if (runtime === "codex") {
     await ensureSharedAppServer();
     const { threadId, workspaceRoot: resolvedWorkspaceRoot } = resolveBoundThread(workspaceRoot);
-    const child = spawn(process.env.ASHERIEBRIDGE_CODEX_COMMAND || "codex", [
+    const child = spawn(process.env.MOSSBRIDGE_CODEX_COMMAND || "codex", [
       "resume",
       threadId,
       "--remote",
@@ -40,14 +40,14 @@ async function main() {
     return;
   }
 
-  // For Claude: connect to the bridge's IPC socket so we can observe and
-  // interact with the same ClaudeCode process that handles WeChat messages.
-  const stateDir = process.env.ASHERIEBRIDGE_STATE_DIR || path.join(os.homedir(), ".asheriebridge");
+  // For Claude Code: connect to the bridge's IPC socket so we can observe and
+  // interact with the same process that handles WeChat messages.
+  const stateDir = process.env.MOSSBRIDGE_STATE_DIR || path.join(os.homedir(), ".mossbridge");
   const socketPath = path.join(stateDir, "claudecode-runtime.sock");
 
   if (!fs.existsSync(socketPath)) {
     console.error(`Claude IPC socket not found: ${socketPath}`);
-    console.error("Make sure the bridge is running with ASHERIEBRIDGE_RUNTIME=claudecode.");
+    console.error("Make sure the bridge is running with MOSSBRIDGE_RUNTIME=claudecode.");
     process.exit(1);
   }
 
@@ -64,7 +64,7 @@ async function main() {
     setTimeout(() => reject(new Error("connect timeout")), 3000);
   });
 
-  console.log(`Connected to ClaudeCode bridge IPC (${socketPath})`);
+  console.log(`Connected to Claude Code bridge IPC (${socketPath})`);
   console.log(`Observing workspace: ${workspaceRoot}`);
   console.log("Type your message and press Enter to send. Ctrl+C to exit.\n");
 
@@ -162,12 +162,10 @@ function handleIpcMessage(msg) {
         turnCount += 1;
         break;
       case "reply.completed":
-        console.log(`\n${c.cyan}[ClaudeCode → WeChat]${c.reset}\n${event.text}\n`);
+        console.log(`\n${c.cyan}[Claude Code -> WeChat]${c.reset}\n${event.text}\n`);
         break;
       case "turn.completed":
         console.log(`${c.gray}─────────────────────────${c.reset}`);
-        break;
-        console.log(`\n${c.cyan}[ClaudeCode → WeChat]${c.reset}\n${event.text}\n`);
         break;
       case "tool.use": {
         const inputStr = event.input
@@ -218,7 +216,7 @@ function handleIpcMessage(msg) {
   } else if (msg.type === "stderr") {
     console.log(`[stderr] ${msg.text}`);
   } else if (msg.type === "inboundMessage") {
-    console.log(`\n${c.cyan}[WeChat → ClaudeCode]${c.reset}\n${msg.text || ""}\n`);
+    console.log(`\n${c.cyan}[WeChat -> Claude Code]${c.reset}\n${msg.text || ""}\n`);
   }
 }
 
@@ -236,7 +234,7 @@ function formatReadableToolName(toolName) {
 
 function isProjectNativeToolApproval(toolName) {
   const normalized = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
-  return normalized.startsWith("mcp__asheriebridge_tools__");
+  return normalized.startsWith("mcp__mossbridge_tools__");
 }
 
 main().catch((error) => {

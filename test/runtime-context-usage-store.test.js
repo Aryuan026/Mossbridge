@@ -9,7 +9,7 @@ const { RuntimeContextUsageStore } = require("../src/core/runtime-context-usage-
 test("RuntimeContextUsageStore persists context snapshots by thread and runtime", () => {
   const filePath = path.join(
     os.tmpdir(),
-    `asheriebridge-context-usage-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    `mossbridge-context-usage-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
   );
   try {
     const store = new RuntimeContextUsageStore({ filePath });
@@ -32,7 +32,7 @@ test("RuntimeContextUsageStore persists context snapshots by thread and runtime"
 test("RuntimeContextUsageStore keeps recent auto compact events", () => {
   const filePath = path.join(
     os.tmpdir(),
-    `asheriebridge-auto-compact-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    `mossbridge-auto-compact-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
   );
   try {
     const store = new RuntimeContextUsageStore({ filePath });

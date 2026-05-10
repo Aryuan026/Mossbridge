@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mossbridge.local/schemas/app-daily-capture-bundle-v0.1.schema.json",
+  "title": "Mossbridge App Daily Capture Bundle v0.1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "source_client",
+    "captured_date",
+    "captured_at",
+    "conversations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "mossbridge_app_daily_capture_bundle_v0.1"
+    },
+    "source_client": {
+      "type": "string",
+      "minLength": 1
+    },
+    "captured_date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "exporter": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "conversations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "conversation_id",
+          "messages"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_title": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "role",
+                "created_at"
+              ],
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "system",
+                    "developer",
+                    "tool",
+                    "unknown"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "local_date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "anyOf": [
+                {
+                  "required": [
+                    "text"
+                  ]
+                },
+                {
+                  "required": [
+                    "attachments"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

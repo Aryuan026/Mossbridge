@@ -13,7 +13,7 @@ const {
   removePidFileIfMatches,
 } = require("./shared-common");
 
-const DEFAULT_LABEL = "com.asherie.mossbridge";
+const DEFAULT_LABEL = "com.mossbridge.bridge";
 
 async function main() {
   const command = normalizeText(process.argv[2] || "status");
@@ -49,8 +49,8 @@ async function main() {
 }
 
 function buildLaunchdConfig(options = {}) {
-  const runtime = normalizeText(options.runtime || process.env.ASHERIEBRIDGE_RUNTIME) || "claudecode";
-  const label = normalizeText(options.label || process.env.ASHERIEBRIDGE_LAUNCHD_LABEL) || DEFAULT_LABEL;
+  const runtime = normalizeText(options.runtime || process.env.MOSSBRIDGE_RUNTIME) || "codex";
+  const label = normalizeText(options.label || process.env.MOSSBRIDGE_LAUNCHD_LABEL) || DEFAULT_LABEL;
   const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
   return {
     label,
@@ -59,7 +59,7 @@ function buildLaunchdConfig(options = {}) {
     stateDir,
     logDir,
     plistPath: path.join(launchAgentsDir, `${label}.plist`),
-    nodePath: normalizeText(options.node || process.env.ASHERIEBRIDGE_NODE_PATH) || process.execPath,
+    nodePath: normalizeText(options.node || process.env.MOSSBRIDGE_NODE_PATH) || process.execPath,
     scriptPath: path.join(rootDir, "scripts", "shared-start.js"),
     stdoutPath: path.join(logDir, "launchd.out.log"),
     stderrPath: path.join(logDir, "launchd.err.log"),
@@ -123,13 +123,31 @@ function restartService(config, { takeover = false } = {}) {
 function printStatus(config) {
   const loaded = runLaunchctl(["print", serviceTarget(config)], { allowFailure: true });
   console.log(`label=${config.label}`);
+  console.log(`requested_runtime=${config.runtime}`);
   console.log(`plist=${fs.existsSync(config.plistPath) ? config.plistPath : "missing"}`);
+  if (fs.existsSync(config.plistPath)) {
+    const installedRuntime = readInstalledRuntime(config.plistPath);
+    console.log(`installed_runtime=${installedRuntime || "unknown"}`);
+    if (installedRuntime && installedRuntime !== config.runtime) {
+      console.log(`runtime_warning=plist is installed for ${installedRuntime}; run takeover/restart with ${config.runtime} to switch`);
+    }
+  }
   console.log(`launchd=${loaded.status === 0 ? "loaded" : "not_loaded"}`);
   const bridgePid = readPidFile(bridgePidFile);
   console.log(`bridge_pid=${bridgePid || "missing"}`);
   console.log(`bridge_alive=${bridgePid && isPidAlive(bridgePid) ? "yes" : "no"}`);
   if (loaded.status !== 0 && normalizeText(loaded.stderr)) {
     console.log(`launchd_detail=${normalizeText(loaded.stderr).split("\n")[0]}`);
+  }
+}
+
+function readInstalledRuntime(plistPath) {
+  try {
+    const text = fs.readFileSync(plistPath, "utf8");
+    const match = text.match(/<key>MOSSBRIDGE_RUNTIME<\/key>\s*<string>([^<]*)<\/string>/u);
+    return normalizeText(match?.[1]);
+  } catch {
+    return "";
   }
 }
 
@@ -150,9 +168,9 @@ function buildPlist(config) {
     "  <dict>",
     plistKeyValue("PATH", config.pathEnv, 4),
     plistKeyValue("HOME", config.home, 4),
-    plistKeyValue("ASHERIEBRIDGE_RUNTIME", config.runtime, 4),
-    plistKeyValue("ASHERIEBRIDGE_STATE_DIR", config.stateDir, 4),
-    plistKeyValue("ASHERIEBRIDGE_SHARED_SUPERVISE", "1", 4),
+    plistKeyValue("MOSSBRIDGE_RUNTIME", config.runtime, 4),
+    plistKeyValue("MOSSBRIDGE_STATE_DIR", config.stateDir, 4),
+    plistKeyValue("MOSSBRIDGE_SHARED_SUPERVISE", "1", 4),
     "  </dict>",
     "  <key>RunAtLoad</key>",
     "  <true/>",
@@ -224,7 +242,7 @@ function readParentPid(pid) {
 function parentLooksLikeSharedStart(pid) {
   const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
   const command = normalizeText(result.stdout);
-  return /shared-start\.js|npm run shared:start|asheriebridge\.js start/u.test(command);
+  return /shared-start\.js|npm run shared:start|mossbridge\.js start/u.test(command);
 }
 
 function safeKill(pid, signal) {
@@ -276,8 +294,8 @@ function printUsage() {
   console.log([
     "Usage: node scripts/launchd-service.js <install|uninstall|start|stop|restart|status|print-plist> [--takeover]",
     "Options:",
-    "  --runtime <id>   Runtime to start, default claudecode",
-    "  --label <label>  launchd label, default com.asherie.mossbridge",
+    "  --runtime <id>   Runtime to start, default codex",
+    "  --label <label>  launchd label, default com.mossbridge.bridge",
     "  --node <path>    Node.js executable path, default current process.execPath",
   ].join("\n"));
 }

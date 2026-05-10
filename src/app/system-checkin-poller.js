@@ -2,22 +2,45 @@ const crypto = require("crypto");
 
 const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-store");
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
+const { getPersistedContextTokenAgeMs } = require("../adapters/channel/weixin/context-token-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
+const { DeferredSystemReplyStore } = require("../core/deferred-system-reply-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
+const { RuntimeCooldownStore } = require("../core/runtime-cooldown-store");
+const { RuntimeContextUsageStore } = require("../core/runtime-context-usage-store");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
-const { hasRecentActivity, ACTIVE_WINDOW_MS } = require("../core/activity-tracker");
+const {
+  ACTIVE_WINDOW_MS,
+  HOT_ACTIVITY_MIN_EVENTS,
+  HOT_ACTIVITY_RECENT_MS,
+  HOT_ACTIVITY_WINDOW_MS,
+  getConversationHeat,
+  hasRecentActivity,
+} = require("../core/activity-tracker");
+
+const DEFAULT_CHECKIN_CONTEXT_TOKEN_MAX_AGE_MS = 6 * 60 * 60_000;
+const DEFAULT_CHECKIN_TOKEN_BACKOFF_PERCENT = 40;
+const DEFAULT_CHECKIN_TOKEN_SEVERE_BACKOFF_PERCENT = 60;
+const DEFAULT_CHECKIN_TOKEN_BACKOFF_MULTIPLIER = 3;
+const DEFAULT_CHECKIN_TOKEN_SEVERE_BACKOFF_MULTIPLIER = 6;
+const DEFAULT_CHECKIN_MAX_BACKOFF_MS = 2 * 60 * 60_000;
+const DEFAULT_CHECKIN_DAILY_TOKEN_BUDGET = 300_000;
+const DEFAULT_CHECKIN_DAILY_THREAD_BUDGET = 12;
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATES = [
-  "%USER% comes to mind again.",
-  "A small ordinary check-in window opens for %USER%; decide whether a tiny hello would help.",
-  "You have not surfaced for a little while. Reassess %USER%'s current day and whether a light touch belongs here.",
-  "%USER% may be between tasks or quietly pushing through something. Consider whether to appear with a small, low-stakes message.",
-  "This is a non-meal, non-reminder check-in window for %USER%; do not wait only for scheduled anchors.",
+  "%USER% comes to mind again; do a tiny maintenance pass, then decide whether to appear.",
+  "A small ordinary check-in window opens for %USER%; inspect light backstage state if useful, then decide whether a tiny hello would help.",
+  "You have not surfaced for a little while. Reassess %USER%'s current day, pending handles, and whether a light touch belongs here.",
+  "%USER% may be between tasks or quietly pushing through something. Consider whether to inspect continuity state, leave a backstage handle, or appear with a small, low-stakes message.",
+  "This is a non-meal, non-reminder check-in and maintenance window for %USER%; do not wait only for scheduled anchors.",
 ];
 
 async function runSystemCheckinPoller(config) {
   const account = resolveSelectedAccount(config);
   const queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
+  const deferredQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
+  const runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
+  const runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
   const checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
   const sessionStore = new SessionStore({
     filePath: config.sessionsFile,
@@ -27,24 +50,51 @@ async function runSystemCheckinPoller(config) {
   const defaultRange = resolveDefaultCheckinRange();
   let currentRange = checkinConfigStore.getRange(defaultRange);
 
-  console.log(`[asheriebridge] checkin poller ready user=${target.senderId} workspace=${target.workspaceRoot}`);
-  console.log(`[asheriebridge] checkin interval range ${formatRangeMinutes(currentRange)}`);
+  console.log(`[mossbridge] checkin poller ready user=${target.senderId} workspace=${target.workspaceRoot}`);
+  console.log(`[mossbridge] checkin interval range ${formatRangeMinutes(currentRange)}`);
 
   while (true) {
     currentRange = checkinConfigStore.getRange(defaultRange);
-    const delayMs = pickRandomDelayMs(currentRange.minIntervalMs, currentRange.maxIntervalMs);
+    const tokenBackoff = resolveCheckinTokenPressureBackoff({
+      config,
+      runtimeContextUsageStore,
+    });
+    const effectiveRange = applyCheckinTokenPressureBackoff(currentRange, tokenBackoff, config);
+    if (tokenBackoff.active) {
+      console.log(
+        `[mossbridge] checkin token backoff active ratio=${round(tokenBackoff.ratio, 3)} current=${tokenBackoff.currentTokens} range=${formatRangeMinutes(effectiveRange)}`,
+      );
+    }
+    const delayMs = pickRandomDelayMs(effectiveRange.minIntervalMs, effectiveRange.maxIntervalMs);
     const wakeAt = formatLocalTime(Date.now() + delayMs);
-    console.log(`[asheriebridge] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
+    console.log(`[mossbridge] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
     await sleep(delayMs);
 
-    if (queue.hasPendingForAccount(account.accountId)) {
-      console.log("[asheriebridge] checkin skipped: pending system message still in queue");
+    const readiness = resolveCheckinReadiness({
+      config,
+      accountId: account.accountId,
+      senderId: target.senderId,
+      queue,
+      deferredQueue,
+      runtimeCooldownStore,
+      runtimeContextUsageStore,
+    });
+    if (!readiness.ready) {
+      console.log(`[mossbridge] checkin skipped: ${formatCheckinSkipReason(readiness)}`);
       continue;
     }
 
     if (hasRecentActivity()) {
       const windowMin = Math.round(ACTIVE_WINDOW_MS / 60_000);
-      console.log(`[asheriebridge] checkin skipped: conversation active in last ${windowMin}m`);
+      console.log(`[mossbridge] checkin skipped: conversation active in last ${windowMin}m`);
+      continue;
+    }
+
+    const heat = resolveCheckinConversationHeat(config);
+    if (heat.hot) {
+      console.log(
+        `[mossbridge] checkin skipped: hot conversation ${heat.eventCount} events in ${Math.round(heat.windowMs / 60000)}m, last activity ${formatDuration(heat.ageMs)} ago`,
+      );
       continue;
     }
 
@@ -62,30 +112,325 @@ async function runSystemCheckinPoller(config) {
       },
       createdAt: new Date().toISOString(),
     });
-    console.log(`[asheriebridge] checkin queued id=${queued.id}`);
+    console.log(`[mossbridge] checkin queued id=${queued.id}`);
   }
+}
+
+function resolveCheckinReadiness({
+  config,
+  accountId,
+  senderId,
+  queue,
+  deferredQueue,
+  runtimeCooldownStore,
+  runtimeContextUsageStore,
+  nowMs = Date.now(),
+} = {}) {
+  if (queue && typeof queue.hasPendingForAccount === "function" && queue.hasPendingForAccount(accountId)) {
+    return { ready: false, reason: "pending_system_queue" };
+  }
+
+  const deferredCount = deferredQueue && typeof deferredQueue.countForSender === "function"
+    ? deferredQueue.countForSender(accountId, senderId)
+    : 0;
+  if (deferredCount > 0) {
+    return { ready: false, reason: "deferred_replies_pending", deferredCount };
+  }
+
+  const runtimeCooldown = runtimeCooldownStore && typeof runtimeCooldownStore.getActiveCooldown === "function"
+    ? runtimeCooldownStore.getActiveCooldown(config?.runtime || "codex", nowMs)
+    : null;
+  if (runtimeCooldown) {
+    return { ready: false, reason: "runtime_cooldown", runtimeCooldown };
+  }
+
+  const dailyBudget = resolveCheckinDailyBudget({
+    config,
+    runtimeContextUsageStore,
+    nowMs,
+  });
+  if (dailyBudget.exceeded) {
+    return { ready: false, reason: "daily_checkin_budget", dailyBudget };
+  }
+
+  const maxAgeMs = resolveCheckinContextTokenMaxAgeMs(config);
+  if (maxAgeMs > 0) {
+    const tokenAgeMs = getPersistedContextTokenAgeMs(config, accountId, senderId, nowMs);
+    if (!Number.isFinite(tokenAgeMs)) {
+      return { ready: false, reason: "missing_context_token" };
+    }
+    if (tokenAgeMs > maxAgeMs) {
+      return { ready: false, reason: "stale_context_token", tokenAgeMs, maxAgeMs };
+    }
+  }
+
+  return { ready: true };
+}
+
+function resolveCheckinContextTokenMaxAgeMs(config = {}) {
+  const parsedMinutes = Number.parseInt(String(config.checkinContextTokenMaxAgeMinutes ?? ""), 10);
+  if (Number.isFinite(parsedMinutes)) {
+    if (parsedMinutes <= 0) {
+      return 0;
+    }
+    return parsedMinutes * 60_000;
+  }
+  return DEFAULT_CHECKIN_CONTEXT_TOKEN_MAX_AGE_MS;
+}
+
+function resolveCheckinDailyBudget({
+  config = {},
+  runtimeContextUsageStore = null,
+  nowMs = Date.now(),
+} = {}) {
+  const tokenBudget = resolveOptionalPositiveNumber(
+    config.checkinDailyTokenBudget,
+    DEFAULT_CHECKIN_DAILY_TOKEN_BUDGET,
+  );
+  const threadBudget = resolveOptionalPositiveNumber(
+    config.checkinDailyThreadBudget,
+    DEFAULT_CHECKIN_DAILY_THREAD_BUDGET,
+  );
+  if (tokenBudget <= 0 && threadBudget <= 0) {
+    return { exceeded: false, disabled: true, tokenBudget, threadBudget };
+  }
+
+  try {
+    runtimeContextUsageStore?.load?.();
+  } catch {
+    // Stale or missing diagnostics should never stop the check-in poller.
+  }
+
+  const usage = summarizeSystemCheckinUsageForLocalDay({
+    snapshot: runtimeContextUsageStore?.snapshot?.() || {},
+    runtimeId: normalizeText(config.runtime) || "codex",
+    nowMs,
+  });
+  const tokenExceeded = tokenBudget > 0 && usage.currentTokens >= tokenBudget;
+  const threadExceeded = threadBudget > 0 && usage.threadCount >= threadBudget;
+
+  return {
+    ...usage,
+    tokenBudget,
+    threadBudget,
+    tokenExceeded,
+    threadExceeded,
+    exceeded: tokenExceeded || threadExceeded,
+  };
+}
+
+function summarizeSystemCheckinUsageForLocalDay({
+  snapshot = {},
+  runtimeId = "codex",
+  nowMs = Date.now(),
+} = {}) {
+  const targetDay = getShanghaiDayKey(nowMs);
+  const contexts = Object.values(snapshot.contextsByThreadId || {});
+  return contexts.reduce((acc, context) => {
+    if (normalizeText(context.runtimeId) !== runtimeId) {
+      return acc;
+    }
+    if (!isSystemCheckinContext(context)) {
+      return acc;
+    }
+    if (getShanghaiDayKey(Date.parse(context.updatedAt || "")) !== targetDay) {
+      return acc;
+    }
+    acc.currentTokens += Math.max(0, Number(context.currentTokens) || 0);
+    acc.threadCount += 1;
+    return acc;
+  }, {
+    day: targetDay,
+    runtimeId,
+    currentTokens: 0,
+    threadCount: 0,
+  });
+}
+
+function resolveCheckinTokenPressureBackoff({
+  config = {},
+  runtimeContextUsageStore = null,
+} = {}) {
+  const runtimeId = normalizeText(config.runtime) || "codex";
+  try {
+    runtimeContextUsageStore?.load?.();
+  } catch {
+    // Stale or missing diagnostics should never stop the check-in poller.
+  }
+  const usage = runtimeContextUsageStore?.getContext?.({ runtimeId }) || null;
+  const currentTokens = Number(usage?.currentTokens) || 0;
+  const contextWindow = Number(usage?.contextWindow) || Number(config.claudeContextWindow) || 0;
+  if (!currentTokens || !contextWindow) {
+    return { active: false, reason: "no_token_pressure", runtimeId, currentTokens, contextWindow, ratio: 0, multiplier: 1 };
+  }
+  const ratio = currentTokens / contextWindow;
+  const severeRatio = resolvePercentRatio(
+    config.checkinTokenSevereBackoffPercent,
+    DEFAULT_CHECKIN_TOKEN_SEVERE_BACKOFF_PERCENT,
+  );
+  const backoffRatio = resolvePercentRatio(
+    config.checkinTokenBackoffPercent,
+    DEFAULT_CHECKIN_TOKEN_BACKOFF_PERCENT,
+  );
+  if (ratio >= severeRatio) {
+    return {
+      active: true,
+      reason: "severe_token_pressure",
+      runtimeId,
+      currentTokens,
+      contextWindow,
+      ratio,
+      multiplier: resolvePositiveNumber(
+        config.checkinTokenSevereBackoffMultiplier,
+        DEFAULT_CHECKIN_TOKEN_SEVERE_BACKOFF_MULTIPLIER,
+      ),
+    };
+  }
+  if (ratio >= backoffRatio) {
+    return {
+      active: true,
+      reason: "token_pressure",
+      runtimeId,
+      currentTokens,
+      contextWindow,
+      ratio,
+      multiplier: resolvePositiveNumber(
+        config.checkinTokenBackoffMultiplier,
+        DEFAULT_CHECKIN_TOKEN_BACKOFF_MULTIPLIER,
+      ),
+    };
+  }
+  return {
+    active: false,
+    reason: "below_token_pressure",
+    runtimeId,
+    currentTokens,
+    contextWindow,
+    ratio,
+    multiplier: 1,
+  };
+}
+
+function applyCheckinTokenPressureBackoff(range = {}, tokenBackoff = {}, config = {}) {
+  if (!tokenBackoff?.active) {
+    return range;
+  }
+  const multiplier = resolvePositiveNumber(tokenBackoff.multiplier, DEFAULT_CHECKIN_TOKEN_BACKOFF_MULTIPLIER);
+  const maxBackoffMs = Math.max(
+    range.maxIntervalMs || 0,
+    resolvePositiveNumber(config.checkinMaxBackoffMinutes, DEFAULT_CHECKIN_MAX_BACKOFF_MS / 60_000) * 60_000,
+  );
+  const minIntervalMs = Math.min(maxBackoffMs, Math.round((Number(range.minIntervalMs) || 0) * multiplier));
+  const maxIntervalMs = Math.min(maxBackoffMs, Math.round((Number(range.maxIntervalMs) || minIntervalMs) * multiplier));
+  return {
+    minIntervalMs,
+    maxIntervalMs: Math.max(minIntervalMs, maxIntervalMs),
+  };
+}
+
+function resolveCheckinConversationHeat(config = {}, nowMs = Date.now()) {
+  return getConversationHeat({
+    nowMs,
+    windowMs: resolvePositiveNumber(config.checkinHotWindowMinutes, HOT_ACTIVITY_WINDOW_MS / 60_000) * 60_000,
+    recentWindowMs: resolvePositiveNumber(config.checkinHotRecentMinutes, HOT_ACTIVITY_RECENT_MS / 60_000) * 60_000,
+    minEvents: resolvePositiveNumber(config.checkinHotMinEvents, HOT_ACTIVITY_MIN_EVENTS),
+  });
+}
+
+function resolvePercentRatio(value, fallbackPercent) {
+  const parsed = Number(value);
+  const percent = Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackPercent;
+  return Math.min(1, percent / 100);
+}
+
+function resolvePositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveOptionalPositiveNumber(value, fallback) {
+  if (value === 0 || value === "0") {
+    return 0;
+  }
+  return resolvePositiveNumber(value, fallback);
+}
+
+function isSystemCheckinContext(context = {}) {
+  const bindingKey = normalizeText(context.bindingKey);
+  return bindingKey.includes("#asherie-system") || normalizeText(context.source) === "system";
+}
+
+function getShanghaiDayKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function round(value, digits = 2) {
+  const scale = 10 ** Math.max(0, Number(digits) || 0);
+  return Math.round((Number(value) || 0) * scale) / scale;
+}
+
+function formatCheckinSkipReason(readiness = {}) {
+  switch (readiness.reason) {
+    case "pending_system_queue":
+      return "pending system message still in queue";
+    case "deferred_replies_pending":
+      return `deferred system replies waiting for next inbound (${readiness.deferredCount || 0})`;
+    case "runtime_cooldown":
+      return `runtime cooldown until ${formatLocalTime(readiness.runtimeCooldown?.resetAtMs || readiness.runtimeCooldown?.resetAt)} (${formatDuration(readiness.runtimeCooldown?.remainingMs)} remaining)`;
+    case "daily_checkin_budget":
+      return `daily check-in budget reached (${readiness.dailyBudget?.currentTokens || 0}/${readiness.dailyBudget?.tokenBudget || 0} tokens, ${readiness.dailyBudget?.threadCount || 0}/${readiness.dailyBudget?.threadBudget || 0} system threads)`;
+    case "missing_context_token":
+      return "no usable WeChat context token for proactive delivery yet";
+    case "stale_context_token":
+      return `WeChat context token is stale (${formatDuration(readiness.tokenAgeMs)} > ${formatDuration(readiness.maxAgeMs)})`;
+    default:
+      return normalizeText(readiness.reason) || "not ready";
+  }
+}
+
+function formatDuration(ms) {
+  const minutes = Math.max(0, Math.round((Number(ms) || 0) / 60_000));
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+  return `${Math.round(hours / 24)}d`;
 }
 
 function resolvePollerTarget({ config, account, sessionStore }) {
   const senderId = resolvePreferredSenderId({
     config,
     accountId: account.accountId,
-    explicitUser: process.env.ASHERIEBRIDGE_CHECKIN_USER_ID || "",
+    explicitUser: process.env.MOSSBRIDGE_CHECKIN_USER_ID || "",
     sessionStore,
   });
   const workspaceRoot = resolvePreferredWorkspaceRoot({
     config,
     accountId: account.accountId,
     senderId,
-    explicitWorkspace: process.env.ASHERIEBRIDGE_CHECKIN_WORKSPACE || "",
+    explicitWorkspace: process.env.MOSSBRIDGE_CHECKIN_WORKSPACE || "",
     sessionStore,
   });
 
   if (!senderId) {
-    throw new Error("Cannot determine the WeChat user for the checkin poller. Set ASHERIEBRIDGE_CHECKIN_USER_ID or let the only active user talk to the bot once first.");
+    throw new Error("Cannot determine the WeChat user for the checkin poller. Set MOSSBRIDGE_CHECKIN_USER_ID or let the only active user talk to the bot once first.");
   }
   if (!workspaceRoot) {
-    throw new Error("Cannot determine the workspace for the checkin poller. Set ASHERIEBRIDGE_WORKSPACE_ROOT first.");
+    throw new Error("Cannot determine the workspace for the checkin poller. Set MOSSBRIDGE_WORKSPACE_ROOT first.");
   }
 
   return { senderId, workspaceRoot };
@@ -135,4 +480,13 @@ function buildCheckinTrigger(config) {
   return template.replace(/%USER%/g, userName);
 }
 
-module.exports = { runSystemCheckinPoller };
+module.exports = {
+  applyCheckinTokenPressureBackoff,
+  runSystemCheckinPoller,
+  resolveCheckinDailyBudget,
+  resolveCheckinConversationHeat,
+  resolveCheckinContextTokenMaxAgeMs,
+  resolveCheckinReadiness,
+  resolveCheckinTokenPressureBackoff,
+  summarizeSystemCheckinUsageForLocalDay,
+};

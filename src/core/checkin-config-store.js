@@ -44,10 +44,10 @@ class CheckinConfigStore {
 }
 
 function resolveDefaultCheckinRange(env = process.env) {
-  const minIntervalMs = readIntervalMs(env?.ASHERIEBRIDGE_CHECKIN_MIN_INTERVAL_MS, DEFAULT_MIN_INTERVAL_MS);
+  const minIntervalMs = readIntervalMs(env?.MOSSBRIDGE_CHECKIN_MIN_INTERVAL_MS, DEFAULT_MIN_INTERVAL_MS);
   const maxIntervalMs = Math.max(
     minIntervalMs,
-    readIntervalMs(env?.ASHERIEBRIDGE_CHECKIN_MAX_INTERVAL_MS, DEFAULT_MAX_INTERVAL_MS)
+    readIntervalMs(env?.MOSSBRIDGE_CHECKIN_MAX_INTERVAL_MS, DEFAULT_MAX_INTERVAL_MS)
   );
   return { minIntervalMs, maxIntervalMs };
 }

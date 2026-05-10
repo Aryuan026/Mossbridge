@@ -265,21 +265,21 @@ function listCommandGroups() {
 
 function buildTerminalHelpText() {
   const lines = [
-    "Usage: asheriebridge <command>",
+    "Usage: mossbridge <command>",
     "",
     "Current terminal commands:",
-    "  asheriebridge start        start the WeChat bridge and runtime loop",
-    "  npm run start:claudecode  start the WeChat bridge with ClaudeCode runtime",
-    "  asheriebridge login        start WeChat QR login",
-    "  asheriebridge accounts     list locally saved accounts",
-    "  asheriebridge doctor       print current config and thread state",
-    "  npm run doctor:claudecode print config and thread state in ClaudeCode mode",
+    "  mossbridge start        start the WeChat bridge and runtime loop",
+    "  npm run start:claudecode  start the WeChat bridge with Claude Code runtime",
+    "  mossbridge login        start WeChat QR login",
+    "  mossbridge accounts     list locally saved accounts",
+    "  mossbridge doctor       print current config and thread state",
+    "  npm run doctor:claudecode print config and thread state in Claude Code mode",
     "  npm run shared:start   start the shared app-server and WeChat bridge (Codex)",
-    "  npm run shared:start:claudecode  start the shared WeChat bridge with ClaudeCode",
+    "  npm run shared:start:claudecode  start the shared WeChat bridge with Claude Code",
     "  npm run shared:open    attach to the shared thread currently bound in WeChat (Codex)",
-    "  npm run shared:open:claudecode   attach to the shared ClaudeCode thread",
+    "  npm run shared:open:claudecode   attach to the shared Claude Code thread",
     "  npm run shared:status  show shared bridge status (Codex)",
-    "  npm run shared:status:claudecode show shared bridge status (ClaudeCode)",
+    "  npm run shared:status:claudecode show shared bridge status (Claude Code)",
   ];
 
   for (const group of COMMAND_GROUPS) {
@@ -294,7 +294,7 @@ function buildTerminalHelpText() {
   }
 
   lines.push("");
-  lines.push("AsherieBridge capability operations are exposed to models as project tools, not terminal subcommands.");
+  lines.push("Mossbridge capability operations are exposed to models as project tools, not terminal subcommands.");
   return lines.join("\n");
 }
 
@@ -367,13 +367,13 @@ function toTerminalCommandExample(commandText) {
     case "start":
     case "doctor":
     case "help":
-      return `asheriebridge ${normalized}`;
+      return `mossbridge ${normalized}`;
     case "shared start":
     case "shared open":
     case "shared status":
       return `npm run ${normalized.replace(" ", ":")}`;
     case "start --checkin":
-      return "asheriebridge start --checkin";
+      return "mossbridge start --checkin";
     default:
       return normalized;
   }

@@ -1,0 +1,29 @@
+# Release Alignment Checklist
+
+This file keeps discovered private-test issues aligned before Mossbridge is shared publicly. It should describe behavior and release risks, not private memories, logs, accounts, or local-only paths.
+
+Last updated: 2026-05-08
+
+## Current Alignment Map
+
+| Area | Found issue | Public-release expectation |
+| --- | --- | --- |
+| Runtime ownership | Private testing can lean on an external scheduler or a Claude Code lane by accident. | Shared bridge code owns startup, wakeups, nightly dreaming triggers, user-visible failure notices, and data writeback. Codex and Claude Code are adapters, not separate products. |
+| Nightly dreaming | Dreaming may run in a private external process, so standalone Bridge would not整理记忆 when that process is closed. | Bridge must provide its own quiet-window dreaming entry and write to local `dreaming_mutation_log`, `warm_memory`, and `memory_tree` without a private external process. |
+| Dreaming completion gate | A scheduled dreaming item can be touched by the scheduler but still fail before mutation/writeback. | Treat trigger as only an attempt. Mark complete only after mutation/writeback succeeds; foreground-active holds, runtime errors, parse failures, or write failures must reschedule the same item after a delay, keep retry metadata, and continue until success or explicit user/operator intervention. |
+| Dreaming receipts | Executor results can be saved internally but disappear from wakeup/run logs. | `memory_metabolism`, warm writes, cold promotions, cold patches, batch promotions, and failures must be visible in logs or receipts. |
+| Dreaming tone | Memory整理 can drift into cold code-review or work-order language. | Dreaming prompts may organize facts, but must preserve natural companionship texture and must not become frontend expression rules. |
+| Failure visibility | Runtime failures, quota notices, send failures, and first-event timeouts can leave the user waiting. | Bridge notices should be visible, friendly, throttled, retry-aware, and excluded from memory ingestion. |
+| Context delivery | Resident anchors, warm cards, cold vines, ongoing tracks, and recent-thread can become every-turn noise. | Delivery should be relevance-gated, session-aware, and able to退场 when a topic is no longer active. |
+| Proactive wakeups | Wakeups can fire without enough recent memory, or fail at WeChat send. | Wakeups must carry warm/ongoing/recent context, defer/retry send failures, and avoid pretending a裸 reminder is relationship-aware. |
+| Observation journal | Fresh observations can be recalled for unrelated queries. | Observation search must require semantic or route relevance; recency and confidence are boosters, not standalone matches. |
+| Attachments and stickers | Images may arrive in bursts, stickers/CDN paths may fail, and overlong replies can be clipped by WeChat. | Batch nearby attachments before answering, preserve image notes in context, use fallbacks for sticker delivery, and route long-form output away from WeChat when configured. |
+| Data separation | Private memory warehouses, state dirs, and test imports can bleed into a public clone. | Code, runtime state, stable memory, test data, attachments, and workspace files remain separable; clean-clone smoke must pass on an empty data root. |
+| External imports | Rikkahub/GPT/Notion imports can pollute the live private memory warehouse. | Import tests use an isolated data root, carry source metadata, dedupe before stable write, and remain deleteable/re-runnable. |
+| Cold tree and cases | Cold layer can act like another text recall store instead of a relation network; case index is still skeletal. | Cold memory should express topology and evidence edges; case index should record work cases without becoming daily chat noise. |
+
+## Sync Rule
+
+When a private-test fix affects WeChat intake, memory routing, wakeups, dreaming, attachments, local supervision, or failure recovery, first land the idea in shared bridge docs/tests. Then decide whether active private Bridge, public Mossbridge, and any private external system need separate code changes.
+
+Do not solve release issues by adding private keywords, personal paths, or one-off memory cheats. The goal is a bridge another person can clone and understand.

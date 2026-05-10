@@ -9,15 +9,15 @@ const {
   buildClaudeProjectMcpServerConfig,
 } = require("../src/adapters/runtime/claudecode/project-settings");
 
-test("ensureClaudeProjectMcpConfig upserts asheriebridge MCP server into workspace .mcp.json", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-claude-settings-"));
+test("ensureClaudeProjectMcpConfig upserts mossbridge MCP server into workspace .mcp.json", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-claude-settings-"));
   const workspaceRoot = path.join(root, "workspace");
-  const asheriebridgeHome = path.join(root, "asheriebridge-home");
+  const mossbridgeHome = path.join(root, "mossbridge-home");
   const configPath = path.join(workspaceRoot, ".mcp.json");
 
   fs.mkdirSync(workspaceRoot, { recursive: true });
-  fs.mkdirSync(path.join(asheriebridgeHome, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(asheriebridgeHome, "bin", "asheriebridge.js"), "#!/usr/bin/env node\n", "utf8");
+  fs.mkdirSync(path.join(mossbridgeHome, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(mossbridgeHome, "bin", "mossbridge.js"), "#!/usr/bin/env node\n", "utf8");
   fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
       other: {
@@ -27,7 +27,7 @@ test("ensureClaudeProjectMcpConfig upserts asheriebridge MCP server into workspa
     },
   }, null, 2));
 
-  const result = ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome });
+  const result = ensureClaudeProjectMcpConfig({ workspaceRoot, mossbridgeHome });
   const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
   assert.equal(result.configPath, configPath);
@@ -35,35 +35,35 @@ test("ensureClaudeProjectMcpConfig upserts asheriebridge MCP server into workspa
     command: "uvx",
     args: ["other"],
   });
-  assert.deepEqual(saved.mcpServers.asheriebridge_tools, buildClaudeProjectMcpServerConfig({
+  assert.deepEqual(saved.mcpServers.mossbridge_tools, buildClaudeProjectMcpServerConfig({
     workspaceRoot,
-    asheriebridgeHome,
+    mossbridgeHome,
   }));
 });
 
-test("ensureClaudeProjectMcpConfig rewrites stale asheriebridge MCP server config", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-claude-settings-stale-"));
+test("ensureClaudeProjectMcpConfig rewrites stale mossbridge MCP server config", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-claude-settings-stale-"));
   const workspaceRoot = path.join(root, "workspace");
-  const asheriebridgeHome = path.join(root, "asheriebridge-home");
+  const mossbridgeHome = path.join(root, "mossbridge-home");
   const configPath = path.join(workspaceRoot, ".mcp.json");
 
   fs.mkdirSync(workspaceRoot, { recursive: true });
-  fs.mkdirSync(path.join(asheriebridgeHome, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(asheriebridgeHome, "bin", "asheriebridge.js"), "#!/usr/bin/env node\n", "utf8");
+  fs.mkdirSync(path.join(mossbridgeHome, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(mossbridgeHome, "bin", "mossbridge.js"), "#!/usr/bin/env node\n", "utf8");
   fs.writeFileSync(configPath, JSON.stringify({
     mcpServers: {
-      asheriebridge_tools: {
+      mossbridge_tools: {
         command: "node",
         args: ["old.js"],
       },
     },
   }, null, 2));
 
-  ensureClaudeProjectMcpConfig({ workspaceRoot, asheriebridgeHome });
+  ensureClaudeProjectMcpConfig({ workspaceRoot, mossbridgeHome });
 
   const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  assert.deepEqual(saved.mcpServers.asheriebridge_tools, buildClaudeProjectMcpServerConfig({
+  assert.deepEqual(saved.mcpServers.mossbridge_tools, buildClaudeProjectMcpServerConfig({
     workspaceRoot,
-    asheriebridgeHome,
+    mossbridgeHome,
   }));
 });

@@ -2,16 +2,16 @@ const fs = require("fs");
 const path = require("path");
 const { listProjectToolNames } = require("../../../tools/tool-host");
 
-function resolveCodexProjectToolMcpServerConfig({ asheriebridgeHome = "" } = {}) {
-  const home = normalizeNonEmptyString(asheriebridgeHome)
-    || process.env.ASHERIEBRIDGE_HOME
+function resolveCodexProjectToolMcpServerConfig({ mossbridgeHome = "" } = {}) {
+  const home = normalizeNonEmptyString(mossbridgeHome)
+    || process.env.MOSSBRIDGE_HOME
     || path.resolve(__dirname, "..", "..", "..", "..");
-  const scriptPath = path.join(home, "bin", "asheriebridge.js");
+  const scriptPath = path.join(home, "bin", "mossbridge.js");
   if (!fs.existsSync(scriptPath)) {
     return null;
   }
   return {
-    name: "asheriebridge_tools",
+    name: "mossbridge_tools",
     command: process.execPath,
     args: [scriptPath, "tool-mcp-server", "--runtime-id", "codex"],
   };
@@ -21,7 +21,7 @@ function buildCodexMcpConfigArgs(mcpServerConfig) {
   if (!mcpServerConfig || typeof mcpServerConfig !== "object") {
     return [];
   }
-  const name = normalizeNonEmptyString(mcpServerConfig.name) || "asheriebridge_tools";
+  const name = normalizeNonEmptyString(mcpServerConfig.name) || "mossbridge_tools";
   const command = normalizeNonEmptyString(mcpServerConfig.command);
   const args = Array.isArray(mcpServerConfig.args)
     ? mcpServerConfig.args.map((value) => normalizeNonEmptyString(value)).filter(Boolean)

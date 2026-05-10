@@ -28,7 +28,7 @@ function runToolMcpServer({ toolHost, runtimeId = "", workspaceRoot = "" }) {
             },
           },
           serverInfo: {
-            name: "asheriebridge-tools",
+            name: "mossbridge-tools",
             version: "0.1.0",
           },
         }, reader.getMode());
@@ -141,15 +141,15 @@ function buildToolResources(toolCatalog) {
   const tools = Array.isArray(toolCatalog) ? toolCatalog : [];
   const resources = [];
   resources.push({
-    uri: "asheriebridge://tools/index",
-    name: "AsherieBridge Tool Index",
-    description: "Overview of AsherieBridge project tools with schemas and usage notes.",
+    uri: "mossbridge://tools/index",
+    name: "Mossbridge Tool Index",
+    description: "Overview of Mossbridge project tools with schemas and usage notes.",
     mimeType: "text/markdown",
     text: buildToolIndexMarkdown(tools),
   });
   for (const tool of tools) {
     resources.push({
-      uri: `asheriebridge://tools/${tool.name}`,
+      uri: `mossbridge://tools/${tool.name}`,
       name: `${tool.name} schema`,
       description: `Detailed schema and usage guidance for ${tool.name}.`,
       mimeType: "text/markdown",
@@ -161,9 +161,9 @@ function buildToolResources(toolCatalog) {
 
 function buildToolIndexMarkdown(tools) {
   const lines = [
-    "# AsherieBridge Project Tools",
+    "# Mossbridge Project Tools",
     "",
-    "These are AsherieBridge project tools.",
+    "These are Mossbridge project tools.",
     "",
   ];
   for (const tool of tools) {

@@ -9,7 +9,7 @@ const { WeixinIngressAuditStore } = require("../src/core/weixin-ingress-audit-st
 test("WeixinIngressAuditStore persists poll and inbound audit snapshots", () => {
   const filePath = path.join(
     os.tmpdir(),
-    `asheriebridge-weixin-audit-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    `mossbridge-weixin-audit-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
   );
   try {
     const store = new WeixinIngressAuditStore({ filePath });
@@ -39,7 +39,7 @@ test("WeixinIngressAuditStore persists poll and inbound audit snapshots", () => 
 test("WeixinIngressAuditStore keeps recent events bounded", () => {
   const filePath = path.join(
     os.tmpdir(),
-    `asheriebridge-weixin-audit-bounded-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    `mossbridge-weixin-audit-bounded-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
   );
   try {
     const store = new WeixinIngressAuditStore({ filePath });

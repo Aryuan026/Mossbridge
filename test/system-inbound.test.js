@@ -4,11 +4,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { CyberbossApp } = require("../src/core/app");
+const { MossbridgeApp } = require("../src/core/app");
 const { SystemMessageDispatcher } = require("../src/core/system-message-dispatcher");
 
 test("system messages bypass normal inbound wrapping", async () => {
-  const prepared = await CyberbossApp.prototype.prepareIncomingMessageForRuntime.call({
+  const prepared = await MossbridgeApp.prototype.prepareIncomingMessageForRuntime.call({
     async attachMemoryContextToPreparedText(normalized, runtimeText) {
       return {
         text: runtimeText,
@@ -34,13 +34,13 @@ test("system messages bypass normal inbound wrapping", async () => {
 
 test("system turns ask memory for proactive recall instead of user-triggered recall", async () => {
   let received = null;
-  const result = await CyberbossApp.prototype.attachMemoryContextToPreparedText.call({
+  const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call({
     projectDomains: {
       memory: {
         async captureContextPacket(args) {
           received = args;
           return {
-            runtime_prelude: "AsherieBridge memory context\n- warm-card: Meteor necklace",
+            runtime_prelude: "Mossbridge memory context\n- warm-card: Meteor necklace",
           };
         },
       },
@@ -52,7 +52,7 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
   }, "SYSTEM ACTION MODE\n\nTrigger:\n对我们重要的事情", "/workspace");
 
   assert.equal(received.recallMode, "proactive");
-  assert.equal(received.sourceClient, "asheriebridge_system_turn");
+  assert.equal(received.sourceClient, "mossbridge_system_turn");
   assert.match(result.text, /warm-card: Meteor necklace/);
 });
 
@@ -114,17 +114,17 @@ test("queued system messages attach fresh memory before runtime dispatch", async
     resolveWorkspaceRoot() {
       return "/workspace";
     },
-    isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
-    prepareSystemRuntimeBinding: CyberbossApp.prototype.prepareSystemRuntimeBinding,
+    isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
+    prepareSystemRuntimeBinding: MossbridgeApp.prototype.prepareSystemRuntimeBinding,
     async attachMemoryContextToPreparedText(normalized, runtimeText, workspaceRoot) {
       assert.equal(normalized.provider, "system");
       assert.equal(workspaceRoot, "/workspace");
       assert.match(normalized.originalText, /reminder: 10 点问我起床没/);
       assert.match(runtimeText, /SYSTEM ACTION MODE/);
       return {
-        text: `[AsherieBridge memory context]\n- ongoing: 起床提醒 | active | 近期作息\n\n===== Current Inbound Message =====\n${runtimeText}`,
+        text: `[Mossbridge memory context]\n- ongoing: 起床提醒 | active | 近期作息\n\n===== Current Inbound Message =====\n${runtimeText}`,
         packet: {
-          retrieval: { route: ["warm_memory", "resident_warm"], mode: "asheriebridge_context_packet" },
+          retrieval: { route: ["warm_memory", "resident_warm"], mode: "mossbridge_context_packet" },
           warm_memory_packet: { hit_count: 1 },
           ongoing_track_packet: { hit_count: 1 },
         },
@@ -136,7 +136,7 @@ test("queued system messages attach fresh memory before runtime dispatch", async
     },
   };
 
-  const ok = await CyberbossApp.prototype.dispatchSystemMessage.call(appLike, {
+  const ok = await MossbridgeApp.prototype.dispatchSystemMessage.call(appLike, {
     id: "sys-1",
     senderId: "user-1",
     text: "Due reminder for User: 10 点问我起床没",
@@ -164,8 +164,8 @@ test("queued system messages attach fresh memory before runtime dispatch", async
 test("reply system messages are delivered directly instead of re-entering the runtime", async () => {
   const sent = [];
   const dispatched = [];
-  const ok = await CyberbossApp.prototype.dispatchSystemMessage.call({
-    sendDirectVisibleSystemReply: CyberbossApp.prototype.sendDirectVisibleSystemReply,
+  const ok = await MossbridgeApp.prototype.dispatchSystemMessage.call({
+    sendDirectVisibleSystemReply: MossbridgeApp.prototype.sendDirectVisibleSystemReply,
     channelAdapter: {
       getKnownContextTokens() {
         return { "user-1": "ctx-1" };
@@ -196,12 +196,12 @@ test("reply system messages are delivered directly instead of re-entering the ru
 });
 
 test("ordinary wechat turns prepend a front-stage note that resists terse defaults", async () => {
-  const result = await CyberbossApp.prototype.attachMemoryContextToPreparedText.call({
+  const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call({
     projectDomains: {
       memory: {
         async captureContextPacket() {
           return {
-            runtime_prelude: "[AsherieBridge memory context]\n- resident-anchor: relation line",
+            runtime_prelude: "[Mossbridge memory context]\n- resident-anchor: relation line",
           };
         },
       },
@@ -212,17 +212,17 @@ test("ordinary wechat turns prepend a front-stage note that resists terse defaul
     text: "宝宝😏？",
   }, "宝宝😏？", "/workspace");
 
-  assert.match(result.text, /\[WeChat front-stage note\]/);
-  assert.match(result.text, /do not echo transport placeholder syntax/i);
-  assert.match(result.text, /do not collapse the reply into only acknowledgment plus a quick follow-up question/i);
-  assert.match(result.text, /stay for one more beat/i);
+  assert.match(result.text, /\[微信前台对话提醒\]/);
+  assert.match(result.text, /传输占位符/);
+  assert.match(result.text, /后台 short\/concise 不支配前台表达/);
+  assert.match(result.text, /先接住这一拍的情绪和关系节奏/);
   assert.match(result.text, /resident-anchor: relation line/);
   assert.match(result.text, /宝宝😏？/);
 });
 
 test("image attachments inject view_image instructions for runtimes that support it", async () => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-inbound-test-"));
-  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-workspace-test-"));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-inbound-test-"));
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-workspace-test-"));
   const originalFetch = global.fetch;
   global.fetch = async () => ({
     ok: true,
@@ -237,7 +237,7 @@ test("image attachments inject view_image instructions for runtimes that support
   });
 
   try {
-    const prepared = await CyberbossApp.prototype.prepareIncomingMessageForRuntime.call({
+    const prepared = await MossbridgeApp.prototype.prepareIncomingMessageForRuntime.call({
       config: {
         stateDir,
         weixinCdnBaseUrl: "https://cdn.example.com",
@@ -272,8 +272,8 @@ test("image attachments inject view_image instructions for runtimes that support
       receivedAt: "2026-04-17T10:00:00.000Z",
     }, workspaceRoot);
 
-    assert.match(prepared.text, /For images, use `view_image`/i);
-    assert.match(prepared.text, /paired attachment note/i);
+    assert.match(prepared.text, /图片请使用 `view_image`/);
+    assert.match(prepared.text, /配套说明笔记|说明笔记/);
     assert.doesNotMatch(prepared.text, /Do not use `Read` or shell commands on image files/i);
     assert.equal(prepared.attachments[0].contentType, "image/jpeg");
     assert.equal(prepared.attachments[0].isImage, true);
@@ -286,8 +286,8 @@ test("image attachments inject view_image instructions for runtimes that support
 });
 
 test("image attachments tell claudecode to use Read on the saved local image file", async () => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-inbound-test-"));
-  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-workspace-test-"));
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-inbound-test-"));
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-workspace-test-"));
   const originalFetch = global.fetch;
   global.fetch = async () => ({
     ok: true,
@@ -302,7 +302,7 @@ test("image attachments tell claudecode to use Read on the saved local image fil
   });
 
   try {
-    const prepared = await CyberbossApp.prototype.prepareIncomingMessageForRuntime.call({
+    const prepared = await MossbridgeApp.prototype.prepareIncomingMessageForRuntime.call({
       config: {
         stateDir,
         weixinCdnBaseUrl: "https://cdn.example.com",
@@ -337,9 +337,9 @@ test("image attachments tell claudecode to use Read on the saved local image fil
       receivedAt: "2026-04-17T10:00:00.000Z",
     }, workspaceRoot);
 
-    assert.match(prepared.text, /You must inspect the raw attachment files before replying to User/i);
-    assert.match(prepared.text, /For images, use `Read` on the saved local image file/i);
-    assert.match(prepared.text, /paired attachment note/i);
+    assert.match(prepared.text, /回复 User 之前，请先查看附件本体/);
+    assert.match(prepared.text, /图片请对保存后的本地图片文件使用 `Read`/);
+    assert.match(prepared.text, /配套说明笔记|说明笔记/);
     assert.doesNotMatch(prepared.text, /Do not use shell commands or wrappers/i);
     assert.doesNotMatch(prepared.text, /view_image/i);
     assert.equal(prepared.attachments[0].contentType, "image/jpeg");
@@ -379,14 +379,14 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
         packet: { hit_count: 1 },
       };
     },
-    schedulePendingImageInboundFlush: CyberbossApp.prototype.schedulePendingImageInboundFlush,
-    clearPendingImageInboundTimer: CyberbossApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: CyberbossApp.prototype.flushPendingImageInboundBatch,
+    schedulePendingImageInboundFlush: MossbridgeApp.prototype.schedulePendingImageInboundFlush,
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
   };
   const bindingKey = "binding:user-1";
   const workspaceRoot = "/workspace";
 
-  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -410,7 +410,7 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -438,7 +438,7 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
   assert.equal(routed.length, 0);
   assert.equal(typings.length, 2);
 
-  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
     bindingKey,
     workspaceRoot,
   });
@@ -448,7 +448,8 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
   assert.equal(routed[0].prepared.attachments.length, 2);
   assert.match(routed[0].prepared.text, /photo-1\.jpg/);
   assert.match(routed[0].prepared.text, /photo-2\.jpg/);
-  assert.match(routed[0].prepared.text, /For images, use `Read` on the saved local image file/);
+  assert.match(routed[0].prepared.text, /图片请对保存后的本地图片文件使用 `Read`/);
+  assert.match(routed[0].prepared.text, /合成一段自然回应/);
   assert.match(routed[0].prepared.text, /^\[memory\]/);
   assert.deepEqual(routed[0].prepared.memoryContextPacket, { hit_count: 1 });
 });
@@ -473,14 +474,14 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       routed.push(payload);
       return true;
     },
-    schedulePendingImageInboundFlush: CyberbossApp.prototype.schedulePendingImageInboundFlush,
-    clearPendingImageInboundTimer: CyberbossApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: CyberbossApp.prototype.flushPendingImageInboundBatch,
+    schedulePendingImageInboundFlush: MossbridgeApp.prototype.schedulePendingImageInboundFlush,
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
   };
   const bindingKey = "binding:user-1";
   const workspaceRoot = "/workspace";
 
-  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -504,7 +505,7 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -524,7 +525,7 @@ test("image batch can merge with a trailing plain-text caption", async () => {
     delayMs: 3000,
   });
 
-  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
     bindingKey,
     workspaceRoot,
   });
@@ -590,13 +591,13 @@ test("caption after a pending image waits so the next short text can join", asyn
       draft.timer = setTimeout(() => {}, 60_000);
       this.pendingImageInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: CyberbossApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: CyberbossApp.prototype.flushPendingImageInboundBatch,
-    hasPendingImageInbound: CyberbossApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: CyberbossApp.prototype.enqueuePendingImageInbound,
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
   };
 
-  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
     workspaceId: "default",
     accountId: "wx-account",
     senderId: "user-1",
@@ -613,7 +614,7 @@ test("caption after a pending image waits so the next short text can join", asyn
     receivedAt: "2026-05-05T10:00:01.000Z",
   }, { allowCommands: true });
 
-  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
     workspaceId: "default",
     accountId: "wx-account",
     senderId: "user-1",
@@ -625,11 +626,11 @@ test("caption after a pending image waits so the next short text can join", asyn
   }, { allowCommands: true });
 
   assert.equal(routed.length, 0);
-  assert.deepEqual(scheduledDelays, [1500, 3000]);
+  assert.deepEqual(scheduledDelays, [8000, 6000]);
   const pending = [...appLike.pendingImageInboundByScope.values()][0];
   assert.equal(pending.messages.length, 2);
 
-  CyberbossApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
     prepared: {
@@ -648,7 +649,7 @@ test("caption after a pending image waits so the next short text can join", asyn
     delayMs: 3000,
   });
 
-  const flushed = await CyberbossApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -660,9 +661,204 @@ test("caption after a pending image waits so the next short text can join", asyn
   assert.equal(routed[0].prepared.attachments.length, 1);
 });
 
+test("failed image intake can wait and merge with later saved images", async () => {
+  const routed = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingImageInboundByScope: new Map(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text || "attachment payload",
+        text: normalized.text || "attachment payload",
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+        attachmentFailures: Array.isArray(normalized.attachmentFailures) ? normalized.attachmentFailures : [],
+      };
+    },
+    async routePreparedInbound(payload) {
+      routed.push(payload);
+      return true;
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingImageInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+  };
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [],
+    attachmentFailures: [{
+      kind: "image",
+      sourceFileName: "lost-photo.jpg",
+      reason: "attachment download failed",
+    }],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [{
+      kind: "image",
+      absolutePath: "/workspace/inbox/photo-ok.jpg",
+      sourceFileName: "photo-ok.jpg",
+      contentType: "image/jpeg",
+      isImage: true,
+    }],
+    attachmentFailures: [],
+    receivedAt: "2026-05-05T10:00:02.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  const pending = [...appLike.pendingImageInboundByScope.values()][0];
+  assert.equal(pending.messages.length, 2);
+
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, true);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].prepared.attachments.length, 1);
+  assert.equal(routed[0].prepared.attachmentFailures.length, 1);
+  assert.match(routed[0].prepared.text, /photo-ok\.jpg/);
+  assert.match(routed[0].prepared.text, /lost-photo\.jpg/);
+  assert.match(routed[0].prepared.text, /do not ignore the saved attachments/i);
+});
+
+test("image flush waits until a multi-message WeChat poll batch has been processed", () => {
+  const scheduled = [];
+  const typings = [];
+  const appLike = {
+    pendingImageInboundByScope: new Map(),
+    deferredImageInboundFlushScopeKeys: new Set(),
+    inboundUpdateBatchDepth: 0,
+    channelAdapter: {
+      async sendTyping(payload) {
+        typings.push(payload);
+      },
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
+      scheduled.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
+    },
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    beginInboundUpdateBatch: MossbridgeApp.prototype.beginInboundUpdateBatch,
+    endInboundUpdateBatch: MossbridgeApp.prototype.endInboundUpdateBatch,
+    shouldDeferImageInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferImageInboundFlushUntilPollBatchEnds,
+    rememberDeferredImageInboundFlush: MossbridgeApp.prototype.rememberDeferredImageInboundFlush,
+    scheduleDeferredImageInboundFlushes: MossbridgeApp.prototype.scheduleDeferredImageInboundFlushes,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+  };
+  const bindingKey = "binding:user-1";
+  const workspaceRoot = "/workspace";
+
+  MossbridgeApp.prototype.beginInboundUpdateBatch.call(appLike, 5);
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+    bindingKey,
+    workspaceRoot,
+    prepared: {
+      workspaceId: "default",
+      accountId: "wx-account",
+      senderId: "user-1",
+      messageId: "msg-1",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      originalText: "",
+      runtimeText: "image one",
+      text: "image one",
+      attachments: [{
+        kind: "image",
+        absolutePath: "/workspace/inbox/photo-1.jpg",
+        sourceFileName: "photo-1.jpg",
+        contentType: "image/jpeg",
+        isImage: true,
+      }],
+      attachmentFailures: [],
+      receivedAt: "2026-05-05T10:00:01.000Z",
+    },
+  });
+  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+    bindingKey,
+    workspaceRoot,
+    prepared: {
+      workspaceId: "default",
+      accountId: "wx-account",
+      senderId: "user-1",
+      messageId: "msg-2",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      originalText: "",
+      runtimeText: "image two",
+      text: "image two",
+      attachments: [{
+        kind: "image",
+        absolutePath: "/workspace/inbox/photo-2.jpg",
+        sourceFileName: "photo-2.jpg",
+        contentType: "image/jpeg",
+        isImage: true,
+      }],
+      attachmentFailures: [],
+      receivedAt: "2026-05-05T10:00:02.000Z",
+    },
+  });
+
+  assert.equal(scheduled.length, 0);
+  assert.equal(typings.length, 2);
+  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 2);
+
+  MossbridgeApp.prototype.endInboundUpdateBatch.call(appLike);
+
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].scopeKey, "binding:user-1::/workspace");
+});
+
 test("location arrive_home trigger enqueues a system action message", () => {
   const queued = [];
-  CyberbossApp.prototype.handleLocationAccepted.call({
+  MossbridgeApp.prototype.handleLocationAccepted.call({
     activeAccountId: "wx-account",
     config: {
       allowedUserIds: ["user-1"],
@@ -703,7 +899,7 @@ test("location arrive_home trigger enqueues a system action message", () => {
 
 test("location leave_home trigger and major move both enqueue system action messages", () => {
   const queued = [];
-  CyberbossApp.prototype.handleLocationAccepted.call({
+  MossbridgeApp.prototype.handleLocationAccepted.call({
     activeAccountId: "wx-account",
     config: {
       allowedUserIds: ["user-1"],
@@ -803,8 +999,15 @@ test("system dispatcher keeps random checkin as an opportunity instead of a mand
   }, "ctx");
 
   assert.match(prepared.text, /Trigger kind: checkin_opportunity/i);
-  assert.match(prepared.text, /This is only an opportunity to reconnect, not a mandatory interruption/i);
+  assert.match(prepared.text, /lightweight maintenance and reconnection window/i);
+  assert.match(prepared.text, /small, low-risk maintenance pass/i);
+  assert.match(prepared.text, /Prefer read-only checks first/i);
+  assert.match(prepared.text, /solitude journal entry/i);
+  assert.match(prepared.text, /Do not store raw hidden chain-of-thought/i);
+  assert.match(prepared.text, /wakeup decision record/i);
+  assert.match(prepared.text, /continuity handle/i);
   assert.match(prepared.text, /allowed to gently interrupt/i);
   assert.match(prepared.text, /Do not wait only for meal times/i);
+  assert.match(prepared.text, /maintenance done or intentionally skipped/i);
   assert.match(prepared.text, /Choose silence only when you have a concrete reason/i);
 });

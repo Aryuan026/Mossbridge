@@ -9,7 +9,7 @@ third_party/
 firmware/
 
 # Runtime state and personal data. Keep code portable; keep memory/data local.
-/.asheriebridge/
+/.mossbridge/
 /asherie_gateway/
 /sync-buffers/
 /accounts/

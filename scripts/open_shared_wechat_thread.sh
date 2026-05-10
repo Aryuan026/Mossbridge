@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${ASHERIEBRIDGE_SHARED_PORT:-8765}"
+PORT="${MOSSBRIDGE_SHARED_PORT:-8765}"
 REMOTE_URL="ws://127.0.0.1:${PORT}"
-STATE_DIR="${ASHERIEBRIDGE_STATE_DIR:-$HOME/.asheriebridge}"
+STATE_DIR="${MOSSBRIDGE_STATE_DIR:-$HOME/.mossbridge}"
 LOG_DIR="${STATE_DIR}/logs"
 PID_FILE="${LOG_DIR}/shared-wechat.pid"
 
@@ -16,7 +16,7 @@ function resolve_pid_cwd() {
 }
 
 function list_bridge_processes() {
-  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/asheriebridge\.js start --checkin/ { print }'
+  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start --checkin/ { print }'
 }
 
 function find_bridge_child_pid() {
@@ -75,7 +75,7 @@ function find_existing_bridge_pid() {
 EXISTING_PID="$(find_existing_bridge_pid || true)"
 
 if [[ -z "${EXISTING_PID}" ]]; then
-  echo "shared asheriebridge is not running." >&2
+  echo "shared mossbridge is not running." >&2
   echo "start it in a separate terminal and keep it in the foreground:" >&2
   echo "  cd ${ROOT_DIR}" >&2
   echo "  ./scripts/start_shared_wechat.sh" >&2
@@ -84,7 +84,7 @@ fi
 
 echo "${EXISTING_PID}" > "${PID_FILE}"
 
-echo "shared asheriebridge running pid=${EXISTING_PID} endpoint=${REMOTE_URL}"
+echo "shared mossbridge running pid=${EXISTING_PID} endpoint=${REMOTE_URL}"
 
-export ASHERIEBRIDGE_CODEX_ENDPOINT="${REMOTE_URL}"
+export MOSSBRIDGE_CODEX_ENDPOINT="${REMOTE_URL}"
 exec "${ROOT_DIR}/scripts/open_wechat_thread.sh" "$@"

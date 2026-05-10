@@ -7,8 +7,8 @@ It is intentionally operational rather than architectural: when the user returns
 
 - Keep the Mac awake, powered, and online when possible.
 - Keep the shared bridge process running with ClaudeCode runtime.
-- Do not clear `~/.asheriebridge` during the test.
-- Do not delete `AsherieHome/data/cache` or `AsherieHome/data/storage`.
+- Do not clear `~/.mossbridge` during the test.
+- Do not delete the configured shared data root cache or storage directories.
 - If a failure appears in WeChat, note the local time and the user-facing symptom before retrying.
 
 ## Primary Signals
@@ -18,7 +18,7 @@ It is intentionally operational rather than architectural: when the user returns
 - `System queues`: system-message queue, deferred-system replies, reminders, and screenshot queue should not silently pile up.
 - `Proactive check-in`: random check-ins should happen at the configured cadence, but skip recent active conversation.
 - `Memory context`: ordinary turns should carry warm memory, ongoing tracks, observation journal only when activated, and recent-thread tail.
-- `Dreaming/metabolism`: Home-side dreaming should see both WeChat and Home sediment when Home is running.
+- `Dreaming/metabolism`: bridge-owned dreaming should see WeChat and app-capture sediment when the quiet-window trigger is available.
 - `Cold tree`: do not treat lack of cold hits as failure by itself; evaluate whether topology edges and case/project provenance are useful.
 
 ## Quick Collection
@@ -29,7 +29,7 @@ From the Mossbridge repo:
 node scripts/collect-travel-diagnostics.js --write
 ```
 
-The command prints a local JSON path under `~/.asheriebridge/diagnostics/`.
+The command prints a local JSON path under `~/.mossbridge/diagnostics/`.
 By default it avoids raw text previews. If a specific symptom needs content-level inspection:
 
 ```bash
@@ -47,14 +47,14 @@ Use preview mode sparingly because it can include fragments of recent WeChat tex
 5. Did runtime context approach the auto-compact threshold?
 6. Did observation journal stay quiet for unrelated questions?
 7. Did wakeups and reminders carry memory context or behave like empty alarms?
-8. Did dreaming run while Home was open and the user was quiet?
+8. Did dreaming run while the user was quiet, without relying on a private external scheduler?
 
 ## Expected Current Baseline
 
 - Runtime: ClaudeCode.
 - Preferred model: `claude-opus-4-6`.
-- Workspace root: `/Users/mac/Documents/Codex/1-Asherie`.
-- Data root: `/Users/mac/Documents/Codex/AsherieHome/data`.
+- Workspace root: the bound workspace used for this pressure test.
+- Data root: the configured Mossbridge data root for this pressure test.
 - Random check-in default: 5-25 minutes, with a recent-activity skip window.
 - Observation journal: non-empty queries require observation intent or lexical activation; recency/confidence alone should not recall notes.
 

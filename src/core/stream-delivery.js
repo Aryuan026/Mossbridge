@@ -1,14 +1,15 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
 const { recordAiReply } = require("./activity-tracker");
-const { shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
+const { RUNTIME_NOTICE_KIND, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, onRuntimeNotice, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
+    this.onRuntimeNotice = typeof onRuntimeNotice === "function" ? onRuntimeNotice : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
       ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
@@ -339,7 +340,7 @@ class StreamDelivery {
       const failedDelivery = pendingDeliveries[0];
       const failedText = buildDeliveryPreviewText(failedDelivery);
       void this.deferSystemReply(state, buildEffectiveReplyText(state.deferredReplyPrefix, failedText), error, "plain_reply");
-      console.error(`[asheriebridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
+      console.error(`[mossbridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
     });
 
     await state.sendChain;
@@ -353,16 +354,17 @@ class StreamDelivery {
     const replyText = buildReplyText(state, { completedOnly: false });
     const resolved = resolveSystemReplyAction(replyText);
     if (resolved.kind === "silent") {
+      this.notifyRuntimeNotice(state, resolved.runtimeNotice, replyText);
       this.markAllItemsSent(state);
       console.log(
-        `[asheriebridge] suppressed system reply thread=${state.threadId} action=silent preview=${JSON.stringify(replyText.slice(0, 120))}`
+        `[mossbridge] suppressed system reply thread=${state.threadId} action=silent preview=${JSON.stringify(replyText.slice(0, 120))}`
       );
       return;
     }
 
     if (resolved.kind !== "send_message") {
       console.error(
-        `[asheriebridge] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
+        `[mossbridge] invalid system reply thread=${state.threadId} reason=${resolved.reason} preview=${JSON.stringify(replyText.slice(0, 160))}`
       );
       return;
     }
@@ -371,7 +373,7 @@ class StreamDelivery {
       await this.sendSystemReply(state, resolved.message);
       this.markAllItemsSent(state);
     }).catch((error) => {
-      console.error(`[asheriebridge] failed to deliver system reply thread=${state.threadId}: ${error.message}`);
+      console.error(`[mossbridge] failed to deliver system reply thread=${state.threadId}: ${error.message}`);
     });
 
     await state.sendChain;
@@ -388,7 +390,7 @@ class StreamDelivery {
 
     if (delivery.kind === "invalid_action") {
       console.error(
-        `[asheriebridge] invalid structured action item thread=${state.threadId} reason=${delivery.reason} preview=${JSON.stringify((delivery.sourceText || "").slice(0, 160))}`
+        `[mossbridge] invalid structured action item thread=${state.threadId} reason=${delivery.reason} preview=${JSON.stringify((delivery.sourceText || "").slice(0, 160))}`
       );
       return;
     }
@@ -397,6 +399,7 @@ class StreamDelivery {
     if (!baseText) {
       return;
     }
+    this.notifyRuntimeNotice(state, delivery.runtimeNotice, delivery.sourceText || baseText);
 
     const payload = {
       userId: state.replyTarget.userId,
@@ -435,7 +438,7 @@ class StreamDelivery {
         throw error;
       }
       console.warn(
-        `[asheriebridge] system reply retrying with refreshed context token thread=${state.threadId} user=${retryTarget.userId}`
+        `[mossbridge] system reply retrying with refreshed context token thread=${state.threadId} user=${retryTarget.userId}`
       );
       try {
         const retryPayload = {
@@ -486,11 +489,11 @@ class StreamDelivery {
         kind,
       });
       console.warn(
-        `[asheriebridge] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
+        `[mossbridge] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
       );
       return true;
     } catch (deferError) {
-      console.error(`[asheriebridge] failed to defer system reply thread=${state.threadId}: ${deferError.message}`);
+      console.error(`[mossbridge] failed to defer system reply thread=${state.threadId}: ${deferError.message}`);
       return false;
     }
   }
@@ -593,6 +596,26 @@ class StreamDelivery {
       state.sentItemIds.add(itemId);
     }
   }
+
+  notifyRuntimeNotice(state, runtimeNotice, sourceText = "") {
+    if (!runtimeNotice || runtimeNotice.kind !== RUNTIME_NOTICE_KIND.CAPACITY) {
+      return;
+    }
+    if (typeof this.onRuntimeNotice !== "function") {
+      return;
+    }
+    try {
+      this.onRuntimeNotice({
+        kind: runtimeNotice.kind,
+        action: runtimeNotice.action,
+        threadId: state?.threadId || "",
+        provider: state?.replyTarget?.provider || "",
+        text: sourceText,
+      });
+    } catch (error) {
+      console.error(`[mossbridge] runtime notice hook failed thread=${state?.threadId || ""}: ${error.message}`);
+    }
+  }
 }
 
 function buildRunKey(threadId, turnId = "") {
@@ -655,8 +678,8 @@ function collectPendingReplyDeliveries(state, { force }) {
     });
     if (runtimeNotice.shielded) {
       pending.push(runtimeNotice.action === "replace"
-        ? { itemId, kind: "plain", text: runtimeNotice.text }
-        : { itemId, kind: "silent", sourceText });
+        ? { itemId, kind: "plain", text: runtimeNotice.text, runtimeNotice, sourceText }
+        : { itemId, kind: "silent", sourceText, runtimeNotice });
       continue;
     }
     pending.push({ itemId, kind: "plain", text: sanitizedText });
@@ -796,7 +819,7 @@ function resolveSystemReplyAction(replyText) {
   }
   const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, { provider: "system" });
   if (runtimeNotice.shielded) {
-    return { kind: "silent", reason: "runtime capacity notice" };
+    return { kind: "silent", reason: "runtime capacity notice", runtimeNotice };
   }
 
   const candidate = extractSystemActionJsonCandidate(normalized) || normalized;

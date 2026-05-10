@@ -5,8 +5,11 @@ const { compactMessages } = require("../asherie/context-compactor");
 const { ConversationCacheStore } = require("../asherie/conversation-cache-store");
 const { WakeupStore } = require("../asherie/wakeup-store");
 const { CalendarStore } = require("../asherie/calendar-store");
-const { OngoingTrackStore } = require("../asherie/ongoing-track-store");
+const { OngoingTrackStore, isOngoingOverviewQuery } = require("../asherie/ongoing-track-store");
 const { ObservationJournalStore } = require("../asherie/observation-journal-store");
+const { EpisodeJournalStore, buildEpisodeJournalPacket } = require("../asherie/episode-journal-store");
+const { CaseIndexStore } = require("../asherie/case-index-store");
+const { SolitudeJournalStore } = require("../asherie/solitude-journal-store");
 const { ColdRootStore } = require("../asherie/cold-root-store");
 const { MemoryVersionBank, countPayload, normalizePayload } = require("../asherie/memory-version-bank");
 const {
@@ -46,10 +49,13 @@ class AsherieMemoryService {
         memoryTreeDirOverride: this.config.asherieMemoryTreeDir,
         caseIndexDirOverride: this.config.asherieCaseIndexDir,
         observationJournalDirOverride: this.config.asherieObservationJournalDir,
+        episodeJournalDirOverride: this.config.asherieEpisodeJournalDir,
+        solitudeJournalDirOverride: this.config.asherieSolitudeJournalDir,
         notionSyncDirOverride: this.config.asherieNotionSyncDir,
         appDailyCaptureDirOverride: this.config.asherieAppDailyCaptureDir,
         warmMemoryDirOverride: this.config.asherieWarmMemoryDir,
         memoryVersionBankDirOverride: this.config.asherieMemoryVersionBankDir,
+        runtimeId: this.config.runtime || "codex",
       },
     );
     ensureGatewayStorageLayout(this.layout);
@@ -62,6 +68,15 @@ class AsherieMemoryService {
       600,
     );
     this.observationJournal = new ObservationJournalStore(this.layout.observationJournalDir, {
+      identity: this.identity,
+    });
+    this.episodeJournal = new EpisodeJournalStore(this.layout.episodeJournalDir, {
+      identity: this.identity,
+    });
+    this.caseIndexStore = new CaseIndexStore(this.layout.caseIndexDir, {
+      identity: this.identity,
+    });
+    this.solitudeJournal = new SolitudeJournalStore(this.layout.solitudeJournalDir, {
       identity: this.identity,
     });
     this.memoryVersionBank = new MemoryVersionBank(this.layout.memoryVersionBankDir, { identity: this.identity });
@@ -84,6 +99,8 @@ class AsherieMemoryService {
     const scopes = this.resolveScopes(args);
     const query = normalizeText(args.query || args.text);
     const recallMode = normalizeText(args.recall_mode || args.recallMode) || "user_triggered";
+    const runtimeProfile = normalizeText(args.runtime_profile || args.runtimeProfile);
+    const proactiveLite = runtimeProfile === "proactive_lite";
     const cacheLimit = resolveContextCacheLimit({
       requested: args.cache_limit || args.cacheLimit,
       recallMode,
@@ -99,8 +116,17 @@ class AsherieMemoryService {
       cacheLimit,
       Boolean(args.include_payload || args.includePayload),
     );
-    const recallFocus = buildRecallFocus({
+    const focusQuery = buildEffectiveRecallQuery({
       query,
+      recentRecords: recent.records,
+      recallMode,
+      limit: resolvePositiveInt(
+        args.recall_recent_record_limit || args.recallRecentRecordLimit,
+        Number(this.config.asherieRecallRecentRecordLimit) || 8,
+      ),
+    });
+    const recallFocus = buildRecallFocus({
+      query: focusQuery,
       recentRecords: recent.records,
       recentRecordLimit: resolvePositiveInt(
         args.recall_recent_record_limit || args.recallRecentRecordLimit,
@@ -130,7 +156,10 @@ class AsherieMemoryService {
     });
     const calendarPacket = this.calendarStore.summarizeForWakeup(scopes.scopedUserId, new Date());
     const wakeupPacket = buildWakeupRuntimePacket(this.wakeupStore, scopes.scopedUserId);
-    const recallQuery = normalizeText(recallFocus.recall_query || query);
+    const recallQuery = normalizeText(recallFocus.recall_query || focusQuery || query);
+    const ongoingQuery = normalizeText(recallMode) === "proactive"
+      ? recallQuery
+      : normalizeText(query);
     const warmMemoryPacket = buildWarmMemoryRuntimePacket(this.warmMemoryStore, scopes.warmScope, {
       query: recallQuery,
       limit: Number(args.limit) || 6,
@@ -150,7 +179,8 @@ class AsherieMemoryService {
         : [],
     });
     const ongoingTrackPacket = this.buildOngoingTrackRuntimePacket(scopes.scopedUserId, {
-      query: recallQuery,
+      query: ongoingQuery,
+      includeZeroScore: shouldIncludeZeroScoreOngoingTracks(ongoingQuery, recallMode),
       limit: resolvePositiveInt(
         args.prelude_ongoing_limit || args.preludeOngoingLimit,
         Number(this.config.asheriePreludeOngoingLimit) || 4,
@@ -167,6 +197,47 @@ class AsherieMemoryService {
         Number(this.config.asheriePreludeObservationLimit) || 4,
       ),
     });
+    const episodeJournalPacket = this.buildEpisodeJournalRuntimePacket(scopes.scopedUserId, {
+      query: recallQuery,
+      limit: resolvePositiveInt(
+        args.prelude_episode_limit || args.preludeEpisodeLimit,
+        Number(this.config.asheriePreludeEpisodeLimit) || 3,
+      ),
+    });
+    const solitudeJournalPacket = shouldIncludeSolitudeDigestForTurn({
+      query: recallQuery,
+      recallMode,
+      runtimeProfile,
+      requested: args.include_solitude_digest ?? args.includeSolitudeDigest,
+    })
+      ? this.buildSolitudeJournalRuntimePacket(scopes.scopedUserId, {
+          query: recallQuery,
+          recentLimit: resolvePositiveInt(
+            args.prelude_solitude_recent_limit || args.preludeSolitudeRecentLimit,
+            Number(this.config.asheriePreludeSolitudeRecentLimit) || 2,
+          ),
+          patternLimit: resolvePositiveInt(
+            args.prelude_solitude_pattern_limit || args.preludeSolitudePatternLimit,
+            Number(this.config.asheriePreludeSolitudePatternLimit) || 3,
+          ),
+          candidateLimit: resolvePositiveInt(
+            args.prelude_solitude_candidate_limit || args.preludeSolitudeCandidateLimit,
+            Number(this.config.asheriePreludeSolitudeCandidateLimit) || 2,
+          ),
+        })
+      : {
+          ok: true,
+          scoped_user_id: scopes.scopedUserId,
+          query: recallQuery,
+          total_scanned: 0,
+          hit_count: 0,
+          recent_notes: [],
+          recurring_patterns: { tags: [], lessons: [], next_actions: [] },
+          promotion_candidates: [],
+          summary: "",
+          policy: "Solitude digest is only carried for wakeup/maintenance or explicit self-review queries.",
+        };
+    const currentTurnSignals = normalizeCurrentTurnSignals(args.current_turn_signals || args.currentTurnSignals || {});
 
     let coldMemoryVersion = "";
     let coldMemoryPayload = {};
@@ -185,7 +256,11 @@ class AsherieMemoryService {
       agentId: scopes.coldScope.agent_id,
       version: normalizeText(args.version),
     });
-    const shouldSearchColdRoots = Boolean(recallQuery);
+    const shouldSearchColdRoots = !proactiveLite && shouldSearchColdRootsForTurn({
+      query: recallQuery,
+      recallFocus,
+      recallMode,
+    });
 
     const coldRootPacket = shouldSearchColdRoots
       ? this.coldRootStore.searchRoots({
@@ -194,6 +269,7 @@ class AsherieMemoryService {
           agentId: scopes.coldScope.agent_id,
           query: recallQuery,
           limit: Number(args.cold_limit || args.coldLimit) || 2,
+          minScore: recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context ? 1 : 2,
           version: coldMemoryVersion,
         })
       : {
@@ -225,10 +301,12 @@ class AsherieMemoryService {
       coldMemoryError = "";
     }
     const retrieval = buildMemoryRetrievalPacket({
-      mode: "asheriebridge_context_packet",
+      mode: "mossbridge_context_packet",
       warmMemoryPacket,
       residentWarmPacket,
+      episodeJournalPacket,
       observationJournalPacket,
+      solitudeJournalPacket,
       curatedHits: [],
       liteFallbackHits: [],
       hippocovePacket: coldMemoryVersion
@@ -254,7 +332,11 @@ class AsherieMemoryService {
       coldVinePacket,
       temporalRecallPacket,
       ongoingTrackPacket,
+      episodeJournalPacket,
       observationJournalPacket,
+      solitudeJournalPacket,
+      recallMode,
+      currentTurnSignals,
       recentRecords: recent.records,
       calendarPacket,
       wakeupPacket,
@@ -270,6 +352,10 @@ class AsherieMemoryService {
         args.prelude_ongoing_limit || args.preludeOngoingLimit,
         Number(this.config.asheriePreludeOngoingLimit) || 4,
       ),
+      preludeEpisodeLimit: resolvePositiveInt(
+        args.prelude_episode_limit || args.preludeEpisodeLimit,
+        Number(this.config.asheriePreludeEpisodeLimit) || 3,
+      ),
       preludeOngoingShadowLimit: resolvePositiveInt(
         args.prelude_ongoing_shadow_limit || args.preludeOngoingShadowLimit,
         Number(this.config.asheriePreludeOngoingShadowLimit) || 6,
@@ -277,6 +363,10 @@ class AsherieMemoryService {
       preludeObservationLimit: resolvePositiveInt(
         args.prelude_observation_limit || args.preludeObservationLimit,
         Number(this.config.asheriePreludeObservationLimit) || 4,
+      ),
+      preludeSolitudeLimit: resolvePositiveInt(
+        args.prelude_solitude_limit || args.preludeSolitudeLimit,
+        Number(this.config.asheriePreludeSolitudeLimit) || 3,
       ),
       preludeRecentSnippetLimit: resolvePositiveInt(
         args.prelude_recent_snippet_limit || args.preludeRecentSnippetLimit,
@@ -290,6 +380,7 @@ class AsherieMemoryService {
 
     return {
       ok: true,
+      runtime_profile: runtimeProfile || "default",
       user_id: scopes.resolvedUserId,
       scoped_user_id: scopes.scopedUserId,
       cold_scope: scopes.coldScope,
@@ -298,7 +389,10 @@ class AsherieMemoryService {
       warm_memory_packet: warmMemoryPacket,
       resident_warm_packet: residentWarmPacket,
       ongoing_track_packet: ongoingTrackPacket,
+      episode_journal_packet: episodeJournalPacket,
+      episode_attention: buildEpisodeAttentionPacket(episodeJournalPacket, currentTurnSignals),
       observation_journal_packet: observationJournalPacket,
+      solitude_journal_packet: solitudeJournalPacket,
       temporal_recall_packet: {
         ...temporalRecallPacket,
         stats: temporalRows.stats,
@@ -347,11 +441,11 @@ class AsherieMemoryService {
       endpoint: normalizeText(args.endpoint) || "/wechat/runtime-turn",
       status: normalizeText(args.status) || "ok",
       error: normalizeText(args.error),
-      source_client: normalizeText(args.source_client || args.sourceClient) || "asheriebridge_wechat",
+      source_client: normalizeText(args.source_client || args.sourceClient) || "mossbridge_wechat",
       source_user_agent: normalizeText(args.source_user_agent || args.sourceUserAgent || args.account_id || args.accountId),
       user_id: scopes.resolvedUserId,
       scoped_user_id: scopes.scopedUserId,
-      route_id: normalizeText(args.route_id || args.routeId) || "asheriebridge_wechat",
+      route_id: normalizeText(args.route_id || args.routeId) || "mossbridge_wechat",
       transport_id: normalizeText(args.transport_id || args.transportId) || "weixin",
       runtime_id: normalizeText(args.runtime_id || args.runtimeId) || "codex",
       channel_id: normalizeText(args.channel_id || args.channelId) || "weixin",
@@ -361,7 +455,7 @@ class AsherieMemoryService {
       latency_ms: Number(args.latency_ms || args.latencyMs) || 0,
       query,
       assistant_text_final: assistantTextFinal,
-      retrieval_mode: normalizeText(retrieval.mode) || "asheriebridge_context_packet",
+      retrieval_mode: normalizeText(retrieval.mode) || "mossbridge_context_packet",
       retrieval_route: Array.isArray(retrieval.route) ? retrieval.route : [],
       input_guard: args.input_guard || args.inputGuard || {},
       context_compaction: compaction.report,
@@ -383,6 +477,11 @@ class AsherieMemoryService {
         || args.memoryContextPacket?.ongoing_track_packet
         || args.ongoing_track
         || args.ongoingTrack
+        || {},
+      episode_journal: args.memory_context_packet?.episode_journal_packet
+        || args.memoryContextPacket?.episode_journal_packet
+        || args.episode_journal
+        || args.episodeJournal
         || {},
       observation_journal: args.memory_context_packet?.observation_journal_packet
         || args.memoryContextPacket?.observation_journal_packet
@@ -573,6 +672,231 @@ class AsherieMemoryService {
     };
   }
 
+  async upsertEpisode(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const stored = this.episodeJournal.upsert(scopes.scopedUserId, args);
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      record: stored,
+    };
+  }
+
+  async appendEpisodeEntry(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const episodeId = normalizeText(args.episode_id || args.episodeId);
+    if (!episodeId) {
+      throw new Error("episode_id is required");
+    }
+    const entry = this.episodeJournal.appendEntry(scopes.scopedUserId, episodeId, args.entry && typeof args.entry === "object" ? args.entry : args);
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      episode_id: episodeId,
+      entry,
+      record: this.episodeJournal.get(scopes.scopedUserId, episodeId),
+    };
+  }
+
+  async listEpisodes(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const items = this.episodeJournal.list(scopes.scopedUserId, {
+      query: normalizeText(args.query || args.text),
+      statuses: normalizeStringList(args.statuses),
+      limit: Number(args.limit) || 20,
+    });
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      items,
+      count: items.length,
+    };
+  }
+
+  async readEpisode(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const episodeId = normalizeText(args.episode_id || args.episodeId);
+    if (!episodeId) {
+      throw new Error("episode_id is required");
+    }
+    const record = this.episodeJournal.get(scopes.scopedUserId, episodeId, {
+      includeEntries: args.include_entries !== false && args.includeEntries !== false,
+      limit: Number(args.limit) || 200,
+    });
+    return {
+      ok: Boolean(record),
+      scoped_user_id: scopes.scopedUserId,
+      episode_id: episodeId,
+      record,
+      error: record ? "" : `episode not found: ${episodeId}`,
+    };
+  }
+
+  async upsertCase(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const stored = this.caseIndexStore.upsert(scopes.scopedUserId, {
+      ...args,
+      owner_id: scopes.coldScope.owner_id,
+      realm_id: scopes.coldScope.realm_id,
+      agent_id: scopes.coldScope.agent_id,
+    });
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      record: stored,
+    };
+  }
+
+  async appendSolitudeEntry(args = {}) {
+    const scopedUserId = canonicalScopedUserId(args.userId || args.scoped_user_id || args.scopedUserId, this.identity);
+    return this.solitudeJournal.append(scopedUserId, {
+      ...args,
+      user_id: args.user_id || args.userId || this.identity.userId,
+      realm_id: args.realm_id || args.realmId || this.identity.realmId,
+      agent_id: args.agent_id || args.agentId || this.identity.agentId,
+    });
+  }
+
+  async searchSolitudeEntries(args = {}) {
+    const scopedUserId = canonicalScopedUserId(args.userId || args.scoped_user_id || args.scopedUserId, this.identity);
+    return this.solitudeJournal.search(scopedUserId, args);
+  }
+
+  async appendWakeupDecision(args = {}) {
+    const scopedUserId = canonicalScopedUserId(args.userId || args.scoped_user_id || args.scopedUserId, this.identity);
+    const record = this.wakeupStore.append({
+      ...args,
+      scoped_user_id: scopedUserId,
+      user_id: normalizeText(args.user_id || args.userId) || this.identity.userId,
+      realm_id: normalizeText(args.realm_id || args.realmId) || this.identity.realmId,
+      agent_id: normalizeText(args.agent_id || args.agentId) || this.identity.agentId,
+      decision: normalizeWakeupDecision(args.decision),
+      wake_motive: normalizeText(args.wake_motive || args.wakeMotive || args.motive),
+      intent_summary: normalizeText(args.intent_summary || args.intentSummary || args.summary),
+      actions_taken: normalizeStringList(args.actions_taken || args.actionsTaken),
+      next_actions: normalizeStringList(args.next_actions || args.nextActions),
+      budget_posture: normalizeText(args.budget_posture || args.budgetPosture),
+      contact_channel: normalizeText(args.contact_channel || args.contactChannel),
+      context_key: normalizeText(args.context_key || args.contextKey),
+      chain_of_thought_policy: "Store concise, shareable wakeup outcomes only; do not store raw hidden chain-of-thought.",
+    });
+    return {
+      ok: true,
+      scoped_user_id: scopedUserId,
+      record,
+    };
+  }
+
+  async listWakeupDecisions(args = {}) {
+    const scopedUserId = canonicalScopedUserId(args.userId || args.scoped_user_id || args.scopedUserId, this.identity);
+    const limit = Math.max(1, Math.min(Number(args.limit) || 6, 50));
+    const includeCleared = args.include_cleared === true || args.includeCleared === true;
+    const records = (this.wakeupStore?.recent(scopedUserId, limit, includeCleared) || [])
+      .map(compactWakeupDecisionRecord);
+    return {
+      ok: true,
+      scoped_user_id: scopedUserId,
+      count: records.length,
+      latest: records[0] || null,
+      pending_next_actions: collectWakeupNextActions(records),
+      records,
+      policy: "Use wakeup decisions as a backstage agenda and continuity trace, not as a front-stage voice rule.",
+    };
+  }
+
+  async appendCaseEvent(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const caseId = normalizeText(args.case_id || args.caseId);
+    if (!caseId) {
+      throw new Error("case_id is required");
+    }
+    const event = this.caseIndexStore.appendEvent(scopes.scopedUserId, caseId, {
+      ...args,
+      owner_id: scopes.coldScope.owner_id,
+      realm_id: scopes.coldScope.realm_id,
+      agent_id: scopes.coldScope.agent_id,
+    });
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      case_id: caseId,
+      event,
+      record: this.caseIndexStore.get(scopes.scopedUserId, caseId, scopes.coldScope),
+    };
+  }
+
+  async linkCaseArtifact(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const caseId = normalizeText(args.case_id || args.caseId);
+    if (!caseId) {
+      throw new Error("case_id is required");
+    }
+    return this.caseIndexStore.linkArtifact(scopes.scopedUserId, caseId, {
+      ...args,
+      owner_id: scopes.coldScope.owner_id,
+      realm_id: scopes.coldScope.realm_id,
+      agent_id: scopes.coldScope.agent_id,
+    });
+  }
+
+  async closeCase(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const caseId = normalizeText(args.case_id || args.caseId);
+    if (!caseId) {
+      throw new Error("case_id is required");
+    }
+    return this.caseIndexStore.close(scopes.scopedUserId, caseId, {
+      ...args,
+      owner_id: scopes.coldScope.owner_id,
+      realm_id: scopes.coldScope.realm_id,
+      agent_id: scopes.coldScope.agent_id,
+    });
+  }
+
+  async searchCases(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const items = this.caseIndexStore.list(scopes.scopedUserId, {
+      query: normalizeText(args.query || args.text),
+      statuses: normalizeStringList(args.statuses),
+      limit: Number(args.limit) || 20,
+    });
+    return {
+      ok: true,
+      scoped_user_id: scopes.scopedUserId,
+      items,
+      count: items.length,
+    };
+  }
+
+  async readCase(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const caseId = normalizeText(args.case_id || args.caseId);
+    if (!caseId) {
+      throw new Error("case_id is required");
+    }
+    const record = this.caseIndexStore.get(scopes.scopedUserId, caseId, {
+      ...scopes.coldScope,
+      includeEvents: args.include_events !== false && args.includeEvents !== false,
+      limit: Number(args.limit) || 200,
+    });
+    return {
+      ok: Boolean(record),
+      scoped_user_id: scopes.scopedUserId,
+      case_id: caseId,
+      record,
+      error: record ? "" : `case not found: ${caseId}`,
+    };
+  }
+
+  async exportCaseMarkdown(args = {}) {
+    const scopes = this.resolveScopes(args);
+    const caseId = normalizeText(args.case_id || args.caseId);
+    if (!caseId) {
+      throw new Error("case_id is required");
+    }
+    return this.caseIndexStore.exportMarkdown(scopes.scopedUserId, caseId, scopes.coldScope);
+  }
+
   async appendObservation(args = {}) {
     const scopes = this.resolveScopes(args);
     const stored = this.observationJournal.append(scopes.scopedUserId, {
@@ -676,7 +1000,7 @@ class AsherieMemoryService {
       defaultRealmId: normalizeText(args.default_realm_id || args.defaultRealmId || args.channel_id || args.channelId) || "weixin",
       ownerId: normalizeText(args.owner_id || args.ownerId),
       realmId: normalizeText(args.realm_id || args.realmId),
-      agentId: normalizeText(args.agent_id || args.agentId) || "asheriebridge",
+      agentId: normalizeText(args.agent_id || args.agentId) || "mossbridge",
       identity: this.identity,
     });
     const warmScope = new WarmMemoryScope({
@@ -778,13 +1102,17 @@ class AsherieMemoryService {
     return result;
   }
 
-  buildOngoingTrackRuntimePacket(scopedUserId, { query = "", limit = 4, shadowLimit = 6 } = {}) {
+  buildOngoingTrackRuntimePacket(scopedUserId, { query = "", limit = 4, shadowLimit = 6, includeZeroScore = false } = {}) {
     const activeTracks = this.ongoingTrackStore.list(scopedUserId, {
       query,
       statuses: ["active", "blocked", "paused"],
       limit: 24,
     });
-    const hits = activeTracks.slice(0, Math.max(1, Math.min(Number(limit) || 4, 12)));
+    const overviewQuery = isOngoingOverviewQuery(query);
+    const eligibleTracks = normalizeText(query) && !includeZeroScore
+      ? activeTracks.filter((item) => shouldCarryOngoingTrackForQuery(item, { overviewQuery }))
+      : activeTracks;
+    const hits = eligibleTracks.slice(0, Math.max(1, Math.min(Number(limit) || 4, 12)));
     const shadowSnippets = collectTrackShadowSnippets(hits, shadowLimit);
     const openLoops = hits
       .map((item) => formatTrackOpenLoop(item))
@@ -822,14 +1150,82 @@ class AsherieMemoryService {
       ].filter(Boolean).join(" | "),
     };
   }
+
+  buildEpisodeJournalRuntimePacket(scopedUserId, { query = "", limit = 3 } = {}) {
+    return buildEpisodeJournalPacket(this.episodeJournal, scopedUserId, {
+      query,
+      limit,
+      statuses: ["active", "settled"],
+    });
+  }
+
+  buildSolitudeJournalRuntimePacket(scopedUserId, {
+    query = "",
+    recentLimit = 2,
+    patternLimit = 3,
+    candidateLimit = 2,
+  } = {}) {
+    return this.solitudeJournal.buildDigest(scopedUserId, {
+      query,
+      recentLimit,
+      patternLimit,
+      candidateLimit,
+      minRepeat: 2,
+    });
+  }
+}
+
+function shouldCarryOngoingTrackForQuery(item = {}, { overviewQuery = false } = {}) {
+  const score = Number(item?.query_score) || 0;
+  if (score >= 5) {
+    return true;
+  }
+  return Boolean(overviewQuery && normalizeText(item?.status) !== "done" && normalizeText(item?.status) !== "archived");
+}
+
+function buildEffectiveRecallQuery({ query = "", recentRecords = [], recallMode = "", limit = 4 } = {}) {
+  const base = normalizeText(query);
+  if (normalizeText(recallMode) !== "proactive") {
+    return base;
+  }
+  const rows = [];
+  for (const record of Array.isArray(recentRecords) ? recentRecords : []) {
+    if (String(record?.source_client || "").includes("system_turn")) {
+      continue;
+    }
+    const userLine = normalizeText(record?.query);
+    const assistantLine = normalizeText(record?.assistant_text_final);
+    if (userLine && !isThinRecentLine(userLine)) {
+      rows.push(userLine);
+    }
+    if (assistantLine && isUsefulReplyContext(assistantLine)) {
+      rows.push(assistantLine);
+    }
+    if (rows.length >= Math.max(2, Number(limit) || 4)) {
+      break;
+    }
+  }
+  const seed = rows
+    .reverse()
+    .map((item) => truncateText(item, 96))
+    .join(" ")
+    .trim();
+  if (!seed) {
+    return base;
+  }
+  return truncateText(seed, 420);
 }
 
 function buildRuntimePrelude({
   recallFocus,
+  recallMode,
   warmMemoryPacket,
   residentWarmPacket,
   ongoingTrackPacket,
+  episodeJournalPacket,
   observationJournalPacket,
+  solitudeJournalPacket,
+  currentTurnSignals,
   coldMemoryVersion,
   coldMemoryPayload,
   coldSource,
@@ -842,8 +1238,10 @@ function buildRuntimePrelude({
   preludeWarmLimit = 5,
   preludeResidentWarmLimit = 4,
   preludeOngoingLimit = 4,
+  preludeEpisodeLimit = 3,
   preludeOngoingShadowLimit = 2,
   preludeObservationLimit = 4,
+  preludeSolitudeLimit = 3,
   preludeRecentSnippetLimit = 4,
   preludeRecentThreadLimit = 3,
 }) {
@@ -852,8 +1250,14 @@ function buildRuntimePrelude({
   const residentWarmHits = Array.isArray(residentWarmPacket?.hits) ? residentWarmPacket.hits : [];
   const coldRootHits = Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits : [];
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
+  const includeRecentContext = shouldIncludeRecentContextPrelude(recallFocus, recallMode);
+  const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
   ensurePreludeHeader(lines);
-  lines.push(...buildMemorySelfMaintenancePrelude());
+  lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
+  if (proactiveRecentStateLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...proactiveRecentStateLines);
+  }
   if (residentWarmHits.length) {
     ensurePreludeHeader(lines);
     residentWarmHits.slice(0, preludeResidentWarmLimit).forEach((hit) => {
@@ -867,7 +1271,9 @@ function buildRuntimePrelude({
     warmHits.slice(0, preludeWarmLimit).forEach((hit) => {
       const title = normalizePreludeText(hit.title) || normalizePreludeText(hit.material_id) || "untitled";
       const summary = normalizePreludeText(hit.summary || hit.snippet);
-      lines.push(`- warm: ${title}${summary ? ` | ${summary}` : ""}`);
+      const episodeRefs = normalizeStringList(hit.episode_refs).slice(0, 2).join(", ");
+      const caseRefs = normalizeStringList(hit.case_refs).slice(0, 2).join(", ");
+      lines.push(`- warm: ${title}${summary ? ` | ${summary}` : ""}${episodeRefs ? ` | episode_refs=${episodeRefs}` : ""}${caseRefs ? ` | case_refs=${caseRefs}` : ""}`);
     });
   }
 
@@ -906,10 +1312,27 @@ function buildRuntimePrelude({
     });
   }
 
+  const episodeLines = buildEpisodePrelude(episodeJournalPacket, preludeEpisodeLimit);
+  if (episodeLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...episodeLines);
+  }
+  const episodeAttentionLines = buildEpisodeAttentionPrelude(episodeJournalPacket, currentTurnSignals);
+  if (episodeAttentionLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...episodeAttentionLines);
+  }
+
   const observationLines = buildObservationPrelude(observationJournalPacket, preludeObservationLimit);
   if (observationLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...observationLines);
+  }
+
+  const solitudeLines = buildSolitudePrelude(solitudeJournalPacket, preludeSolitudeLimit);
+  if (solitudeLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...solitudeLines);
   }
 
   if (coldRootHits.length) {
@@ -931,19 +1354,20 @@ function buildRuntimePrelude({
     });
   }
 
-  if (coldMemoryVersion) {
+  const includeColdPrelude = shouldIncludeColdPrelude(recallFocus, coldRootHits);
+  if (coldMemoryVersion && includeColdPrelude) {
     const counts = countPayload(coldMemoryPayload);
     ensurePreludeHeader(lines);
     lines.push(`- cold: ${coldMemoryVersion} | persona=${counts.persona} facts=${counts.sql} case=${counts.case}`);
   }
 
-  const caseUpdateLines = buildColdCasePrelude(coldMemoryPayload);
+  const caseUpdateLines = includeColdPrelude ? buildColdCasePrelude(coldMemoryPayload) : [];
   if (caseUpdateLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...caseUpdateLines);
   }
 
-  if (!coldMemoryVersion && normalizeText(coldSource?.source_kind) === "truth_layer_snapshot") {
+  if (includeColdPrelude && !coldMemoryVersion && normalizeText(coldSource?.source_kind) === "truth_layer_snapshot") {
     ensurePreludeHeader(lines);
     const snapshotVersion = normalizeText(coldSource?.active_version) || "truth_layer:latest";
     const rootCount = Number(coldSource?.root_count) || 0;
@@ -962,7 +1386,14 @@ function buildRuntimePrelude({
     lines.push(...temporalRecallLines);
   }
 
-  const recentThreadLines = buildRecentThreadPrelude(recentRecords, preludeRecentThreadLimit);
+  const recentThreadLimit = resolveRecentThreadPreludeLimit({
+    requested: preludeRecentThreadLimit,
+    recallFocus,
+    recallMode,
+  });
+  const recentThreadLines = includeRecentContext && !proactiveRecentStateLines.length && recentThreadLimit > 0
+    ? buildRecentThreadPrelude(recentRecords, recentThreadLimit)
+    : [];
   if (recentThreadLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...recentThreadLines);
@@ -980,9 +1411,15 @@ function buildRuntimePrelude({
     lines.push(...wakeupLines);
   }
 
-  const snippets = (Array.isArray(recentRecords) ? recentRecords : [])
+  const recentSnippetLimit = recentThreadLimit > 0
+    ? Math.min(
+        Math.max(0, Number(preludeRecentSnippetLimit) || 0),
+        recentThreadLimit,
+      )
+    : 0;
+  const snippets = includeRecentContext && !proactiveRecentStateLines.length && recentSnippetLimit > 0 ? (Array.isArray(recentRecords) ? recentRecords : [])
     .filter((record) => !String(record?.source_client || "").includes("system_turn"))
-    .slice(0, preludeRecentSnippetLimit)
+    .slice(0, recentSnippetLimit)
     .map((record) => {
       const query = normalizeText(record.query);
       const reply = normalizeText(record.assistant_text_final);
@@ -991,7 +1428,7 @@ function buildRuntimePrelude({
       }
       return `- recent: ${truncateText(query || "(system)", 60)} -> ${truncateText(reply || "(no reply)", 60)}`;
     })
-    .filter(Boolean);
+    .filter(Boolean) : [];
   if (snippets.length) {
     ensurePreludeHeader(lines);
     lines.push(...snippets);
@@ -1002,8 +1439,8 @@ function buildRuntimePrelude({
 
 function ensurePreludeHeader(lines) {
   if (Array.isArray(lines) && !lines.length) {
-    lines.push("[AsherieBridge memory context]");
-    lines.push("Treat this block as soft recall. The current inbound message below is the source of truth.");
+    lines.push("[记忆参考]");
+    lines.push("这只是后台轻量召回。下面的当前消息才是这一轮对话的中心，不要把参考信息写成汇报。");
   }
 }
 
@@ -1015,6 +1452,21 @@ function buildWakeupRuntimePacket(wakeupStore, scopedUserId) {
     latest_send: rows.find((item) => normalizeText(item?.decision) === "send") || null,
     count: rows.length,
   };
+}
+
+function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
+  if (normalizeText(recallMode) !== "proactive") {
+    return [];
+  }
+  const threadLines = buildRecentThreadPrelude(recentRecords, 4, { includeTimestamp: true });
+  if (!threadLines.length) {
+    return [];
+  }
+  return [
+    "- 主动唤醒当前态：下面几条最近自然对话优先级高于长期记忆；不要问已经被这些尾巴回答过的问题。",
+    "- 相对时间校准：latest-thread 里的“今天/明天/昨天”只按该条时间戳理解；除非日历或提醒明确确认，不要把“明天要做的事”说成当前已经发生。",
+    ...threadLines.map((line) => line.replace(/^- recent-thread:/u, "- latest-thread:")),
+  ];
 }
 
 function buildStickyCalendarPrelude(calendarPacket = {}) {
@@ -1055,13 +1507,155 @@ function buildWakeupPrelude(wakeupPacket = {}) {
   return [parts.join(" | ")];
 }
 
-function buildMemorySelfMaintenancePrelude() {
+function buildMemorySelfMaintenancePrelude(recallFocus = {}) {
   return [
-    "- memory-self-maintenance: memory tools are part of your own continuity, not an external chore. Use them when they help preserve relationship continuity, prior facts, preferences, corrections, or active story threads.",
-    "- observation-journal: use observations as revisable companionship notes, not fixed labels. If the user says an observation is wrong or uncomfortable, correct it, lower confidence, or mark it rejected.",
-    "- memory-system-feedback: if the current memory tools, recall results, prompts, or bridge behavior feel insufficient, uncomfortable, or too constraining, name the problem naturally and make a concrete request for the missing capability instead of pretending everything is fine.",
-    "- memory-frontstage-freedom: memory work grounds confidence and continuity; it must not dictate your wording, persona, emotional range, or conversational behavior.",
+    "- 记忆自维护：后台工具只在需要连续性、纠错、偏好、活跃故事线或用户主动要求时使用；如果当前像自然闲聊或换话题，先让对话自己走。",
+    "- 小事记：旅行、相册、小任务、阶段性事件可放进可回看的 episode 盒子；从同一事件沉淀温卡时带上 episode_refs。",
+    "- 观察簿：观察是可修正的相处笔记，不是给用户贴死标签；用户说不对或不舒服时要修正或降置信。",
+    "- 系统反馈：如果工具、召回或提示词让你觉得不够用或太束缚，可以自然说出问题并提出具体需要。",
+    "- 前台自由：后台记忆不规定措辞、人格、情绪范围或聊天方式。先自然回应，再维护需要维护的记忆。",
   ];
+}
+
+function shouldIncludeRecentContextPrelude(recallFocus = {}, recallMode = "") {
+  if (normalizeText(recallMode) === "proactive") {
+    return true;
+  }
+  return Boolean(
+    recallFocus?.used_recent_context
+    || recallFocus?.explicit_recall_signal
+  );
+}
+
+function shouldIncludeSolitudeDigestForTurn({ query = "", recallMode = "", runtimeProfile = "", requested } = {}) {
+  if (requested === true) {
+    return true;
+  }
+  if (requested === false) {
+    return false;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return true;
+  }
+  if (normalizeText(runtimeProfile) === "proactive_lite") {
+    return true;
+  }
+  return looksLikeSolitudeOverviewQuery(query);
+}
+
+function looksLikeSolitudeOverviewQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return /(独处笔记|后台经验|维护经验|唤醒经验|心跳经验|自我整理|自己想了什么|你最近学到|为什么沉默|为什么不打扰|经验摘要|solitude|self[-_ ]?review|maintenance note)/i.test(normalized);
+}
+
+function shouldIncludeZeroScoreOngoingTracks(query = "", recallMode = "") {
+  if (!normalizeText(query)) {
+    return true;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return looksLikeOngoingOverviewQuery(query);
+  }
+  return looksLikeOngoingOverviewQuery(query);
+}
+
+function shouldSearchColdRootsForTurn({ query = "", recallFocus = {}, recallMode = "" } = {}) {
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) {
+    return false;
+  }
+  if (looksLikeColdRecallQuery(normalizedQuery)) {
+    return true;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return Boolean(recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context);
+  }
+  return Boolean(recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context);
+}
+
+function shouldIncludeColdPrelude(recallFocus = {}, coldRootHits = []) {
+  if (Array.isArray(coldRootHits) && coldRootHits.length) {
+    return true;
+  }
+  const query = normalizeText(recallFocus?.recall_query || recallFocus?.current_query);
+  return Boolean(
+    recallFocus?.explicit_recall_signal
+    || looksLikeColdRecallQuery(query)
+    || looksLikeOngoingOverviewQuery(query)
+  );
+}
+
+function looksLikeColdRecallQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return /(还记得|记不记得|记得|以前|之前|过去|长期|一直|历史|关系|身份|背景|家族|家庭|亲属|亲戚|父亲|母亲|爸爸|妈妈|姥姥|姥爷|妹妹|弟弟|项目|科研|论文|工作|case|案例|记忆树|冷记忆|cold|vine|根据.*印象|对我的?印象|了解我|我是谁|象征|信物|重要的事)/i.test(normalized);
+}
+
+function looksLikeOngoingOverviewQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return /(最近|目前|现在|这阵子|这段时间).*(脑子|挂着|主线|待办|进展|事情|任务|忙)|脑子里.*(什么|哪些|挂着)/i.test(normalized);
+}
+
+function buildEpisodePrelude(packet = {}, limit = 3) {
+  const hits = Array.isArray(packet?.hits) ? packet.hits : [];
+  return hits.slice(0, Math.max(1, Math.min(Number(limit) || 3, 6))).map((item) => {
+    const title = normalizePreludeText(item.title) || normalizePreludeText(item.episode_id) || "episode";
+    const status = normalizePreludeText(item.status) || "active";
+    const summary = normalizePreludeText(item.summary);
+    const counts = [
+      Number(item.entry_count) ? `entries=${Number(item.entry_count)}` : "",
+      Number(item.attachment_count) ? `attachments=${Number(item.attachment_count)}` : "",
+      Number(item.topology_edge_count) ? `topology_edges=${Number(item.topology_edge_count)}` : "",
+    ].filter(Boolean).join(" ");
+    return `- 小事记：${[title, status, counts, summary ? truncateText(summary, 110) : ""].filter(Boolean).join(" | ")}`;
+  });
+}
+
+function buildEpisodeAttentionPrelude(packet = {}, currentTurnSignals = {}) {
+  const hits = Array.isArray(packet?.hits) ? packet.hits : [];
+  const active = hits.find((item) => normalizePreludeText(item.status) === "active") || hits[0] || null;
+  const attachmentCount = Number(currentTurnSignals?.attachment_count) || 0;
+  const imageCount = Number(currentTurnSignals?.image_count) || 0;
+  const failureCount = Number(currentTurnSignals?.attachment_failure_count) || 0;
+  const activeScore = Number(active?.query_score) || 0;
+  const shouldCarryActive = Boolean(active) && (activeScore > 0 || attachmentCount || failureCount);
+  if (!shouldCarryActive && !attachmentCount && !failureCount) {
+    return [];
+  }
+  const cues = [];
+  if (shouldCarryActive) {
+    const title = normalizePreludeText(active.title) || normalizePreludeText(active.episode_id) || "existing episode";
+    const episodeId = normalizePreludeText(active.episode_id);
+    cues.push(`candidate=${title}${episodeId ? ` [${episodeId}]` : ""}${activeScore ? ` score=${activeScore}` : ""}`);
+  }
+  if (attachmentCount || imageCount) {
+    cues.push(`attachments=${attachmentCount}${imageCount ? ` images=${imageCount}` : ""}`);
+  }
+  if (failureCount) {
+    cues.push(`attachment_failures=${failureCount}`);
+  }
+  const action = shouldCarryActive
+    ? "如果这一轮还在延续这个事件，先读/续写小事记，不要只靠当前聊天尾巴硬接。"
+    : "如果这些附件或说明组成一个阶段性事件，查看后可以创建或继续一个小事记。";
+  return [
+    `- 小事记提醒：${cues.join(" | ")} | ${action} 如果同时写入或更新稳定温卡，请带上对应 episode_refs。前台回复仍然保持自然，不要像汇报工具结果。`,
+  ];
+}
+
+function buildEpisodeAttentionPacket(packet = {}, currentTurnSignals = {}) {
+  const lines = buildEpisodeAttentionPrelude(packet, currentTurnSignals);
+  return {
+    active: lines.length > 0,
+    summary: lines[0] || "",
+    current_turn_signals: normalizeCurrentTurnSignals(currentTurnSignals),
+  };
 }
 
 function buildObservationPrelude(packet = {}, limit = 4) {
@@ -1080,6 +1674,75 @@ function buildObservationPrelude(packet = {}, limit = 4) {
     ].filter(Boolean);
     return `- observation: ${bits.join(" | ")}`;
   });
+}
+
+function buildSolitudePrelude(packet = {}, limit = 3) {
+  const maxLines = Math.max(1, Math.min(Number(limit) || 3, 6));
+  const lines = [];
+  const recentNotes = Array.isArray(packet?.recent_notes) ? packet.recent_notes : [];
+  const recurring = packet?.recurring_patterns && typeof packet.recurring_patterns === "object"
+    ? packet.recurring_patterns
+    : {};
+  const tags = Array.isArray(recurring.tags) ? recurring.tags : [];
+  const lessons = Array.isArray(recurring.lessons) ? recurring.lessons : [];
+  const nextActions = Array.isArray(recurring.next_actions) ? recurring.next_actions : [];
+  const candidates = Array.isArray(packet?.promotion_candidates) ? packet.promotion_candidates : [];
+  if (!recentNotes.length && !tags.length && !lessons.length && !nextActions.length && !candidates.length) {
+    return [];
+  }
+  lines.push("- solitude-digest: 后台独处经验，只影响唤醒/维护/是否升级记忆的判断；不是前台语气模板，也不要把它当成用户事实。");
+  for (const note of recentNotes.slice(0, maxLines)) {
+    const bits = [
+      normalizePreludeText(note.wake_context || note.entry_type) || "note",
+      normalizePreludeText(note.summary) ? truncateText(note.summary, 96) : "",
+      normalizePreludeText(note.lesson) ? `lesson: ${truncateText(note.lesson, 72)}` : "",
+      Array.isArray(note.next_actions) && note.next_actions.length ? `next: ${truncateText(note.next_actions[0], 64)}` : "",
+    ].filter(Boolean);
+    if (bits.length) {
+      lines.push(`- solitude-note: ${bits.join(" | ")}`);
+    }
+    if (lines.length >= maxLines + 1) {
+      return lines;
+    }
+  }
+  for (const tag of tags.slice(0, maxLines)) {
+    const value = normalizePreludeText(tag.value);
+    if (value) {
+      lines.push(`- solitude-pattern: tag=${value} x${Number(tag.count) || 0}`);
+    }
+    if (lines.length >= maxLines + 1) {
+      return lines;
+    }
+  }
+  for (const lesson of lessons.slice(0, maxLines)) {
+    const value = normalizePreludeText(lesson.value);
+    if (value) {
+      lines.push(`- solitude-pattern: lesson x${Number(lesson.count) || 0} | ${truncateText(value, 88)}`);
+    }
+    if (lines.length >= maxLines + 1) {
+      return lines;
+    }
+  }
+  for (const action of nextActions.slice(0, maxLines)) {
+    const value = normalizePreludeText(action.value);
+    if (value) {
+      lines.push(`- solitude-pattern: next_action x${Number(action.count) || 0} | ${truncateText(value, 88)}`);
+    }
+    if (lines.length >= maxLines + 1) {
+      return lines;
+    }
+  }
+  for (const candidate of candidates.slice(0, maxLines)) {
+    const summary = normalizePreludeText(candidate.summary);
+    const kind = normalizePreludeText(candidate.entry_type) || "candidate";
+    if (summary) {
+      lines.push(`- solitude-candidate: ${kind} | ${truncateText(summary, 96)}`);
+    }
+    if (lines.length >= maxLines + 1) {
+      return lines;
+    }
+  }
+  return lines;
 }
 
 function buildTemporalRecallPrelude(packet = {}) {
@@ -1110,13 +1773,14 @@ function buildColdCasePrelude(coldMemoryPayload = {}) {
   return (Array.isArray(coldMemoryPayload?.case_updates) ? coldMemoryPayload.case_updates : [])
     .slice(0, 2)
     .map((item) => {
+      const caseId = normalizePreludeText(item?.case_id || item?.id);
       const summary = normalizePreludeText(item?.summary);
       const nextAction = normalizePreludeText(item?.next_action || item?.nextAction);
       const title = summary || nextAction;
       if (!title) {
         return "";
       }
-      return `- case-update: ${title}${nextAction && nextAction !== summary ? ` | next: ${nextAction}` : ""}`;
+      return `- case-update: ${title}${caseId ? ` | case_id=${caseId}` : ""}${nextAction && nextAction !== summary ? ` | next: ${nextAction}` : ""}`;
     })
     .filter(Boolean);
 }
@@ -1213,7 +1877,31 @@ function formatCompactTimestamp(value) {
   return parsed.toISOString().slice(0, 16).replace("T", " ");
 }
 
-function buildRecentThreadPrelude(recentRecords = [], limit = 3) {
+function formatCompactLocalTimestamp(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return normalized.replace("T", " ").replace(/(?:\.000)?Z$/u, "");
+  }
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(parsed).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} Asia/Shanghai`;
+}
+
+function buildRecentThreadPrelude(recentRecords = [], limit = 3, { includeTimestamp = false } = {}) {
   const rows = [];
   const seen = new Set();
   for (const record of Array.isArray(recentRecords) ? recentRecords : []) {
@@ -1238,16 +1926,35 @@ function buildRecentThreadPrelude(recentRecords = [], limit = 3) {
     seen.add(pairKey);
     const userLine = truncateText(query, 60);
     const assistantLine = truncateText(reply, 72);
+    const timestamp = includeTimestamp ? formatCompactLocalTimestamp(record.ts_utc || record.timestamp || record.received_at) : "";
+    const stamp = timestamp ? `${timestamp} | ` : "";
     rows.push(
       assistantLine
-        ? `- recent-thread: 用户: ${userLine} | 你: ${assistantLine}`
-        : `- recent-thread: 用户: ${userLine}`,
+        ? `- recent-thread: ${stamp}用户: ${userLine} | 你: ${assistantLine}`
+        : `- recent-thread: ${stamp}用户: ${userLine}`,
     );
     if (rows.length >= Math.max(1, Number(limit) || 1)) {
       break;
     }
   }
   return rows;
+}
+
+function resolveRecentThreadPreludeLimit({ requested, recallFocus = {}, recallMode = "" } = {}) {
+  const base = Math.max(0, Number(requested) || 0);
+  if (base <= 0) {
+    return 0;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return Math.min(base, 2);
+  }
+  if (recallFocus?.explicit_recall_signal) {
+    return Math.min(base, 2);
+  }
+  if (recallFocus?.used_recent_context) {
+    return Math.min(base, 1);
+  }
+  return 0;
 }
 
 function formatCalendarStickyItem(item = {}) {
@@ -1359,6 +2066,72 @@ function normalizeStringList(value) {
   return source.map((item) => normalizeText(item)).filter(Boolean);
 }
 
+function normalizeWakeupDecision(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  const known = new Set([
+    "send",
+    "silent",
+    "maintenance",
+    "defer",
+    "budget_hold",
+    "continue_case",
+    "reminder",
+    "sticker",
+  ]);
+  return known.has(normalized) ? normalized : "silent";
+}
+
+function compactWakeupDecisionRecord(record = {}) {
+  return {
+    record_id: normalizeText(record.record_id),
+    ts_utc: normalizeText(record.ts_utc),
+    decision: normalizeWakeupDecision(record.decision),
+    wake_motive: normalizeText(record.wake_motive),
+    intent_summary: normalizeText(record.intent_summary),
+    actions_taken: normalizeStringList(record.actions_taken).slice(0, 6),
+    next_actions: normalizeStringList(record.next_actions).slice(0, 6),
+    budget_posture: normalizeText(record.budget_posture),
+    contact_channel: normalizeText(record.contact_channel),
+    context_key: normalizeText(record.context_key),
+    cleared: Boolean(record.cleared),
+  };
+}
+
+function collectWakeupNextActions(records = []) {
+  const seen = new Set();
+  const output = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    for (const action of normalizeStringList(record?.next_actions)) {
+      const key = action.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      output.push({
+        from_record_id: normalizeText(record.record_id),
+        action,
+        ts_utc: normalizeText(record.ts_utc),
+      });
+      if (output.length >= 8) {
+        return output;
+      }
+    }
+  }
+  return output;
+}
+
+function normalizeCurrentTurnSignals(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    provider: normalizeText(source.provider),
+    source_client: normalizeText(source.source_client || source.sourceClient),
+    has_text: Boolean(source.has_text || source.hasText),
+    attachment_count: Math.max(0, Number(source.attachment_count ?? source.attachmentCount) || 0),
+    image_count: Math.max(0, Number(source.image_count ?? source.imageCount) || 0),
+    attachment_failure_count: Math.max(0, Number(source.attachment_failure_count ?? source.attachmentFailureCount) || 0),
+  };
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -1369,10 +2142,9 @@ function normalizePreludeText(value) {
 
 function redactIdentitySeedPaths(text) {
   return normalizeText(text)
-    .replace(/soul_ref:\s*\/Users\/[^\s"'，。；;）)]+/giu, "soul_ref: [private_identity_seed]")
-    .replace(/memory_ref:\s*\/Users\/[^\s"'，。；;）)]+/giu, "memory_ref: [private_memory_root]")
-    .replace(/\/Users\/[^\s"'，。；;）)]+\/Aji-Memory\/[^\s"'，。；;）)]*/giu, "[private_memory_root]")
-    .replace(/\/Users\/[^\s"'，。；;）)]+\/[^"'，。；;）)]*\/soul\.md/giu, "[private_identity_seed]");
+    .replace(/soul_ref:\s*\/[^\s"'，。；;）)]+/giu, "soul_ref: [private_identity_seed]")
+    .replace(/memory_ref:\s*\/[^\s"'，。；;）)]+/giu, "memory_ref: [private_memory_root]")
+    .replace(/\/[^\s"'，。；;）)]*\/soul\.md/giu, "[private_identity_seed]");
 }
 
 module.exports = {

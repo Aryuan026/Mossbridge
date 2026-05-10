@@ -9,7 +9,7 @@ try {
 }
 
 try {
-  require("dotenv").config({ path: path.join(os.homedir(), ".asheriebridge", ".env") });
+  require("dotenv").config({ path: path.join(os.homedir(), ".mossbridge", ".env") });
 } catch {
   // ignore
 }
@@ -27,23 +27,23 @@ async function main() {
 
 function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = {}) {
   const options = parseArgs(argv);
-  const runtime = normalizeText(env.ASHERIEBRIDGE_RUNTIME) || "codex";
-  const stateDir = normalizeText(env.ASHERIEBRIDGE_STATE_DIR) || path.join(os.homedir(), ".asheriebridge");
+  const runtime = normalizeText(env.MOSSBRIDGE_RUNTIME) || "codex";
+  const stateDir = normalizeText(env.MOSSBRIDGE_STATE_DIR) || path.join(os.homedir(), ".mossbridge");
   const sessionFile = options.sessionFile
-    || normalizeText(env.ASHERIEBRIDGE_SESSIONS_FILE)
+    || normalizeText(env.MOSSBRIDGE_SESSIONS_FILE)
     || path.join(stateDir, "sessions.json");
   const envFile = options.envFile
-    || normalizeText(env.ASHERIEBRIDGE_ENV_FILE)
+    || normalizeText(env.MOSSBRIDGE_ENV_FILE)
     || path.join(rootDir, ".env");
   const workspaceRoot = path.resolve(
     options.workspaceRoot
-    || normalizeText(env.ASHERIEBRIDGE_WORKSPACE_ROOT)
+    || normalizeText(env.MOSSBRIDGE_WORKSPACE_ROOT)
     || cwd
   );
   const state = loadSessionState(sessionFile);
-  const selected = selectBindingForWorkspace(state, workspaceRoot, runtime, normalizeText(env.ASHERIEBRIDGE_ACCOUNT_ID));
+  const selected = selectBindingForWorkspace(state, workspaceRoot, runtime, normalizeText(env.MOSSBRIDGE_ACCOUNT_ID));
   const currentModel = getBindingModel(selected?.binding, workspaceRoot);
-  const envDefaultModel = runtime === "claudecode" ? normalizeText(env.ASHERIEBRIDGE_CLAUDE_MODEL) : "";
+  const envDefaultModel = runtime === "claudecode" ? normalizeText(env.MOSSBRIDGE_CLAUDE_MODEL) : "";
 
   if (!options.model && !options.clear) {
     return formatSummary({
@@ -70,7 +70,7 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
 
   let envUpdated = false;
   if (runtime === "claudecode" && nextModel) {
-    upsertEnvValue(envFile, "ASHERIEBRIDGE_CLAUDE_MODEL", nextModel);
+    upsertEnvValue(envFile, "MOSSBRIDGE_CLAUDE_MODEL", nextModel);
     envUpdated = true;
   }
 

@@ -26,8 +26,9 @@ class ColdRootStore {
     const rows = Array.isArray(index.roots) ? index.roots : [];
     const limit = clampLimit(args.limit, 8, 1, 50);
     const query = normalizeText(args.query || args.text);
+    const minScore = Math.max(1, Number(args.min_score ?? args.minScore) || 2);
     const hits = query
-      ? scoreRootRows(rows, query, limit)
+      ? scoreRootRows(rows, query, limit, { minScore })
       : rows.slice(0, limit);
     return {
       ok: true,
@@ -704,7 +705,7 @@ function findSourceItemIndex(row, items) {
   return items.findIndex((item, itemIndex) => buildRootKey(row.source_type, item, itemIndex) === normalizeText(row.root_key));
 }
 
-function scoreRootRows(rows, query, limit) {
+function scoreRootRows(rows, query, limit, { minScore = 2 } = {}) {
   const needle = normalizeText(query).toLowerCase();
   const tokens = tokenizeQuery(needle);
   return rows
@@ -712,7 +713,7 @@ function scoreRootRows(rows, query, limit) {
       const score = scoreRootRow(row, needle, tokens);
       return { score, row };
     })
-    .filter((entry) => entry.score > 0)
+    .filter((entry) => entry.score >= minScore)
     .sort((left, right) => right.score - left.score)
     .slice(0, limit)
     .map((entry) => entry.row);

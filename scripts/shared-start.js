@@ -10,8 +10,8 @@ const {
 } = require("./shared-common");
 
 async function main() {
-  const runtime = process.env.ASHERIEBRIDGE_RUNTIME || "codex";
-  const supervise = process.env.ASHERIEBRIDGE_SHARED_SUPERVISE !== "0";
+  const runtime = process.env.MOSSBRIDGE_RUNTIME || "codex";
+  const supervise = process.env.MOSSBRIDGE_SHARED_SUPERVISE !== "0";
   let shuttingDown = false;
   let restartCount = 0;
   console.log(`starting shared bridge runtime=${runtime}`);
@@ -28,20 +28,20 @@ async function main() {
 
   const existingBridgePid = ensureBridgeNotRunning();
   if (existingBridgePid) {
-    console.log(`shared asheriebridge already running pid=${existingBridgePid}`);
+    console.log(`shared mossbridge already running pid=${existingBridgePid}`);
     return;
   }
 
   const childEnv = { ...process.env };
   const isCodex = runtime === "codex";
   if (isCodex) {
-    childEnv.ASHERIEBRIDGE_CODEX_ENDPOINT = listenUrl;
+    childEnv.MOSSBRIDGE_CODEX_ENDPOINT = listenUrl;
   }
 
   let child = null;
 
   const startChild = () => {
-    child = spawn(process.execPath, ["./bin/asheriebridge.js", "start", "--checkin"], {
+    child = spawn(process.execPath, ["./bin/mossbridge.js", "start", "--checkin"], {
       cwd: rootDir,
       env: childEnv,
       stdio: "inherit",
@@ -65,7 +65,7 @@ async function main() {
       restartCount += 1;
       const delayMs = Math.min(30_000, 1_000 * restartCount);
       console.error(
-        `shared asheriebridge exited code=${code ?? "unknown"}; restarting in ${Math.round(delayMs / 1000)}s`
+        `shared mossbridge exited code=${code ?? "unknown"}; restarting in ${Math.round(delayMs / 1000)}s`
       );
       setTimeout(startChild, delayMs);
     });

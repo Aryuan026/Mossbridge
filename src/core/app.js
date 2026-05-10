@@ -18,6 +18,7 @@ const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./d
 const { resolveWorkspaceOfficePaths } = require("./workspace-office-layout");
 const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
+const { RuntimeCooldownStore } = require("./runtime-cooldown-store");
 const { RuntimeContextUsageStore } = require("./runtime-context-usage-store");
 const { WeixinIngressAuditStore } = require("./weixin-ingress-audit-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
@@ -37,7 +38,7 @@ const {
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
 const { recordUserMessage, recordAiReply } = require("./activity-tracker");
-const { isRuntimeCapacityNotice, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
+const { buildRuntimeCapacityNotice, isRuntimeCapacityNotice, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
@@ -53,10 +54,11 @@ const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
 const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
 const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
+const DEFAULT_CHECKIN_RUNTIME_TEXT_CHARS = 8_000;
 const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
-const INBOUND_IMAGE_BATCH_IDLE_MS = 1_500;
-const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 3_000;
+const INBOUND_IMAGE_BATCH_IDLE_MS = 8_000;
+const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 6_000;
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -65,7 +67,7 @@ function createRuntimeAdapter(config) {
   return createCodexRuntimeAdapter(config);
 }
 
-class CyberbossApp {
+class MossbridgeApp {
   constructor(config) {
     this.config = config;
     this.channelAdapter = createWeixinChannelAdapter(config);
@@ -80,6 +82,7 @@ class CyberbossApp {
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
     this.threadStateStore = new ThreadStateStore();
+    this.runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
     this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
     this.weixinIngressAuditStore = new WeixinIngressAuditStore({ filePath: config.weixinIngressAuditFile });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
@@ -90,14 +93,18 @@ class CyberbossApp {
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
+    this.inboundUpdateBatchDepth = 0;
+    this.deferredImageInboundFlushScopeKeys = new Set();
     this.turnBoundaryScopeKeys = new Set();
     this.turnWritebackContextByRunKey = new Map();
     this.pendingTurnWritebackByThreadId = new Map();
+    this.residentAnchorPreludeKeys = new Set();
     this.systemMessageDispatcher = null;
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
       sessionStore: this.runtimeAdapter.getSessionStore(),
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
+      onRuntimeNotice: (payload) => this.recordRuntimeNotice(payload),
     });
     this.pendingRuntimeEventWatchdogs = new Map();
     this.runningTurnWatchdogs = new Map();
@@ -117,7 +124,7 @@ class CyberbossApp {
         .then(() => this.handleRuntimeEvent(event))
         .catch((error) => {
           const message = error instanceof Error ? error.stack || error.message : String(error);
-          console.error(`[asheriebridge] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
+          console.error(`[mossbridge] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
         });
     });
   }
@@ -129,6 +136,12 @@ class CyberbossApp {
       runtime: this.runtimeAdapter.describe(),
       timeline: this.timelineIntegration.describe(),
       memory: this.projectDomains?.memory?.describe ? this.projectDomains.memory.describe() : null,
+      maintenance: {
+        profile: this.config.maintenanceProfile,
+        selfRepairAllowed: this.config.maintenanceAllowSelfRepair,
+        actionLevel: this.config.maintenanceAllowSelfRepair ? "safe_repair" : "read_only_report",
+        diagnosticMemoryPolicy: "Failure reports, quota notices, and maintenance chatter must stay out of memory/dreaming capture.",
+      },
       threads: this.threadStateStore.snapshot(),
     }, null, 2));
   }
@@ -154,25 +167,25 @@ class CyberbossApp {
     const syncBuffer = this.channelAdapter.loadSyncBuffer();
     await this.restoreBoundThreadSubscriptions();
 
-    console.log("[asheriebridge] bootstrap ok");
-    console.log(`[asheriebridge] channel=${this.channelAdapter.describe().id}`);
-    console.log(`[asheriebridge] runtime=${this.runtimeAdapter.describe().id}`);
-    console.log(`[asheriebridge] timeline=${this.timelineIntegration.describe().id}`);
-    console.log(`[asheriebridge] account=${account.accountId}`);
-    console.log(`[asheriebridge] baseUrl=${account.baseUrl}`);
-    console.log(`[asheriebridge] workspaceRoot=${this.config.workspaceRoot}`);
-    console.log(`[asheriebridge] knownContextTokens=${knownContextTokens}`);
-    console.log(`[asheriebridge] syncBuffer=${syncBuffer ? "ready" : "empty"}`);
-    console.log(`[asheriebridge] runtimeEndpoint=${runtimeState.endpoint || runtimeState.command || "(spawn)"}`);
-    console.log(`[asheriebridge] runtimeModels=${runtimeState.models?.length || 0}`);
+    console.log("[mossbridge] bootstrap ok");
+    console.log(`[mossbridge] channel=${this.channelAdapter.describe().id}`);
+    console.log(`[mossbridge] runtime=${this.runtimeAdapter.describe().id}`);
+    console.log(`[mossbridge] timeline=${this.timelineIntegration.describe().id}`);
+    console.log(`[mossbridge] account=${account.accountId}`);
+    console.log(`[mossbridge] baseUrl=${account.baseUrl}`);
+    console.log(`[mossbridge] workspaceRoot=${this.config.workspaceRoot}`);
+    console.log(`[mossbridge] knownContextTokens=${knownContextTokens}`);
+    console.log(`[mossbridge] syncBuffer=${syncBuffer ? "ready" : "empty"}`);
+    console.log(`[mossbridge] runtimeEndpoint=${runtimeState.endpoint || runtimeState.command || "(spawn)"}`);
+    console.log(`[mossbridge] runtimeModels=${runtimeState.models?.length || 0}`);
     if (this.config.startWithLocationServer) {
       await this.ensureLocationServerStarted();
     }
-    console.log("[asheriebridge] bridge loop started; waiting for WeChat messages.");
+    console.log("[mossbridge] bridge loop started; waiting for WeChat messages.");
     if (this.config.startWithCheckin) {
-      console.log("[asheriebridge] checkin: enabled");
+      console.log("[mossbridge] checkin: enabled");
       void runSystemCheckinPoller(this.config).catch((error) => {
-        console.error(`[asheriebridge] checkin poller stopped: ${error.message}`);
+        console.error(`[mossbridge] checkin poller stopped: ${error.message}`);
       });
     }
 
@@ -201,11 +214,16 @@ class CyberbossApp {
           consecutiveFailures = 0;
           const messages = sortInboundUpdateMessages(Array.isArray(response?.msgs) ? response.msgs : []);
           this.recordWeixinPollAudit({ response, messages, syncBufferBefore });
-          for (const message of messages) {
-            if (shutdown.stopped) {
-              break;
+          this.beginInboundUpdateBatch(messages.length);
+          try {
+            for (const message of messages) {
+              if (shutdown.stopped) {
+                break;
+              }
+              await this.handleIncomingMessage(message);
             }
-            await this.handleIncomingMessage(message);
+          } finally {
+            this.endInboundUpdateBatch();
           }
           await Promise.all([
             this.flushDueReminders(account),
@@ -223,7 +241,7 @@ class CyberbossApp {
           }
 
           consecutiveFailures += 1;
-          console.error(`[asheriebridge] poll failed: ${formatErrorMessage(error)}`);
+          console.error(`[mossbridge] poll failed: ${formatErrorMessage(error)}`);
           await sleep(consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS);
         }
       }
@@ -243,7 +261,7 @@ class CyberbossApp {
       onAccepted: (result) => this.handleLocationAccepted(result),
     });
     console.log(
-      `[asheriebridge] locationServer=http://${this.config.locationHost}:${this.config.locationPort} store=${this.config.locationStoreFile}`
+      `[mossbridge] locationServer=http://${this.config.locationHost}:${this.config.locationPort} store=${this.config.locationStoreFile}`
     );
     return this.projectDomains.presence.getWhereaboutsServer();
   }
@@ -409,7 +427,7 @@ class CyberbossApp {
         .map((message) => normalizeCommandArgument(String(message?.message_id ?? message?.client_id ?? ""))),
     });
     if (messageCount > 0) {
-      console.log(`[asheriebridge] weixin poll messages=${messageCount}`);
+      console.log(`[mossbridge] weixin poll messages=${messageCount}`);
     }
   }
 
@@ -428,7 +446,7 @@ class CyberbossApp {
     });
     if (event && stage !== "dispatched") {
       const suffix = event.error ? ` error=${event.error}` : "";
-      console.log(`[asheriebridge] weixin inbound ${event.stage} message=${event.messageId || "(unknown)"}${suffix}`);
+      console.log(`[mossbridge] weixin inbound ${event.stage} message=${event.messageId || "(unknown)"}${suffix}`);
     }
   }
 
@@ -446,6 +464,24 @@ class CyberbossApp {
     });
   }
 
+  recordRuntimeNotice({ text = "", threadId = "", source = "", provider = "" } = {}) {
+    if (!isRuntimeCapacityNotice(text)) {
+      return null;
+    }
+    const cooldown = this.runtimeCooldownStore.setCapacityCooldown({
+      runtimeId: this.config.runtime || "codex",
+      text,
+      source: normalizeText(source) || normalizeText(provider) || "runtime_notice",
+      threadId,
+    });
+    if (cooldown) {
+      console.warn(
+        `[mossbridge] runtime cooldown active runtime=${cooldown.runtimeId} until=${cooldown.resetAt} source=${cooldown.source || "runtime_notice"}`
+      );
+    }
+    return cooldown;
+  }
+
   primeDeferredRepliesForSender(normalized) {
     if (!normalized?.accountId || !normalized?.senderId || !normalized?.contextToken) {
       return;
@@ -461,7 +497,7 @@ class CyberbossApp {
     });
     this.streamDelivery.setDeferredReplyPrefix(bindingKey, formatDeferredSystemReplyBatch(pendingReplies));
     console.warn(
-      `[asheriebridge] queued deferred reply prefix sender=${normalized.senderId} count=${pendingReplies.length}`
+      `[mossbridge] queued deferred reply prefix sender=${normalized.senderId} count=${pendingReplies.length}`
     );
   }
 
@@ -599,6 +635,16 @@ class CyberbossApp {
   }
 
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
+    const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
+    if (cooldown) {
+      await this.channelAdapter.sendText({
+        userId: prepared.senderId,
+        text: buildRuntimeCapacityNotice(cooldown.messagePreview || ""),
+        contextToken: prepared.contextToken,
+      }).catch(() => {});
+      return false;
+    }
+
     if (this.isTurnDispatchBlocked(bindingKey, workspaceRoot)) {
       this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
       return false;
@@ -608,6 +654,54 @@ class CyberbossApp {
 
   hasPendingImageInbound(bindingKey, workspaceRoot) {
     return this.pendingImageInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
+  }
+
+  beginInboundUpdateBatch(messageCount = 0) {
+    if (Number(messageCount) <= 1) {
+      return;
+    }
+    this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) || 0) + 1;
+  }
+
+  endInboundUpdateBatch() {
+    if (!(Number(this.inboundUpdateBatchDepth) > 0)) {
+      return;
+    }
+    this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) - 1);
+    if (this.inboundUpdateBatchDepth === 0) {
+      this.scheduleDeferredImageInboundFlushes();
+    }
+  }
+
+  shouldDeferImageInboundFlushUntilPollBatchEnds() {
+    return Number(this.inboundUpdateBatchDepth) > 0;
+  }
+
+  rememberDeferredImageInboundFlush(scopeKey) {
+    if (!scopeKey) {
+      return;
+    }
+    if (!(this.deferredImageInboundFlushScopeKeys instanceof Set)) {
+      this.deferredImageInboundFlushScopeKeys = new Set();
+    }
+    this.clearPendingImageInboundTimer(scopeKey);
+    this.deferredImageInboundFlushScopeKeys.add(scopeKey);
+  }
+
+  scheduleDeferredImageInboundFlushes() {
+    const scopeKeys = this.deferredImageInboundFlushScopeKeys instanceof Set
+      ? Array.from(this.deferredImageInboundFlushScopeKeys)
+      : [];
+    if (this.deferredImageInboundFlushScopeKeys instanceof Set) {
+      this.deferredImageInboundFlushScopeKeys.clear();
+    }
+    for (const scopeKey of scopeKeys) {
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (!draft?.bindingKey || !draft?.workspaceRoot) {
+        continue;
+      }
+      this.schedulePendingImageInboundFlush(scopeKey, draft.bindingKey, draft.workspaceRoot);
+    }
   }
 
   enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS }) {
@@ -624,12 +718,23 @@ class CyberbossApp {
     };
     current.messages.push(clonePreparedInboundMessage(prepared));
     this.pendingImageInboundByScope.set(scopeKey, current);
-    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs);
     void this.channelAdapter.sendTyping({
       userId: prepared.senderId,
       status: 1,
       contextToken: prepared.contextToken,
     }).catch(() => {});
+    const shouldDeferFlush = typeof this.shouldDeferImageInboundFlushUntilPollBatchEnds === "function"
+      ? this.shouldDeferImageInboundFlushUntilPollBatchEnds()
+      : Number(this.inboundUpdateBatchDepth) > 0;
+    if (shouldDeferFlush) {
+      if (typeof this.rememberDeferredImageInboundFlush === "function") {
+        this.rememberDeferredImageInboundFlush(scopeKey);
+      } else {
+        this.clearPendingImageInboundTimer(scopeKey);
+      }
+      return;
+    }
+    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs);
   }
 
   schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS) {
@@ -643,7 +748,7 @@ class CyberbossApp {
     draft.timer = setTimeout(() => {
       void this.flushPendingImageInboundBatch({ bindingKey, workspaceRoot }).catch((error) => {
         const message = error instanceof Error ? error.stack || error.message : String(error);
-        console.error(`[asheriebridge] image inbound debounce flush failed ${message}`);
+        console.error(`[mossbridge] image inbound debounce flush failed ${message}`);
       });
     }, Math.max(0, Number(delayMs) || 0));
     this.pendingImageInboundByScope.set(scopeKey, draft);
@@ -1045,7 +1150,7 @@ class CyberbossApp {
     });
     this.streamDelivery.suppressNextRunForThread?.(normalizedThreadId);
     console.log(
-      `[asheriebridge] auto compact requested thread=${normalizedThreadId} current=${formatCompactNumber(reason?.currentTokens)} threshold=${formatCompactNumber(reason?.compactThresholdTokens)}`
+      `[mossbridge] auto compact requested thread=${normalizedThreadId} current=${formatCompactNumber(reason?.currentTokens)} threshold=${formatCompactNumber(reason?.compactThresholdTokens)}`
     );
     try {
       const result = await this.runtimeAdapter.compactThread({
@@ -1067,7 +1172,7 @@ class CyberbossApp {
       this.pendingAutoCompactByThreadId.delete(normalizedThreadId);
       this.streamDelivery.cancelSuppressedRunForThread?.(normalizedThreadId);
       console.warn(
-        `[asheriebridge] auto compact failed thread=${normalizedThreadId}: ${error instanceof Error ? error.message : String(error || "unknown error")}`
+        `[mossbridge] auto compact failed thread=${normalizedThreadId}: ${error instanceof Error ? error.message : String(error || "unknown error")}`
       );
     }
   }
@@ -1144,7 +1249,7 @@ class CyberbossApp {
         turnId: normalizedTurnId,
         workspaceRoot,
       }).catch((error) => {
-        console.error(`[asheriebridge] stalled turn recovery failed thread=${normalizedThreadId}: ${error.message}`);
+        console.error(`[mossbridge] stalled turn recovery failed thread=${normalizedThreadId}: ${error.message}`);
       });
       this.turnGateStore.releaseThread(normalizedThreadId);
       await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true }).catch(() => {});
@@ -1250,15 +1355,10 @@ class CyberbossApp {
         });
         attachments = persisted.saved;
         attachmentFailures = persisted.failed;
-
-        if (!persisted.saved.length && persisted.failed.length && !String(normalized.text || "").trim()) {
-          await this.channelAdapter.sendText({
-            userId: normalized.senderId,
-            text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
-            contextToken: normalized.contextToken,
-            preserveBlock: true,
-          }).catch(() => {});
-          return null;
+        if (attachmentFailures.length) {
+          console.warn(
+            `[mossbridge] attachment intake failed message=${normalized.messageId || ""} saved=${attachments.length} failed=${attachmentFailures.length} reasons=${attachmentFailures.map((item) => item.reason).join(" | ")}`
+          );
         }
 
         runtimeText = buildInboundText(normalized, persisted, this.config, {
@@ -1327,7 +1427,7 @@ class CyberbossApp {
         });
       } catch (error) {
         const messageText = error instanceof Error ? error.message : String(error || "unknown error");
-        console.error(`[asheriebridge] timeline screenshot failed job=${job.id} ${messageText}`);
+        console.error(`[mossbridge] timeline screenshot failed job=${job.id} ${messageText}`);
         await this.channelAdapter.sendTyping({
           userId: job.senderId,
           status: 0,
@@ -1407,6 +1507,16 @@ class CyberbossApp {
       return true;
     }
 
+    if (isCheckinOpportunityMessage(message)) {
+      const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
+      if (cooldown) {
+        console.log(
+          `[mossbridge] checkin dropped: runtime cooldown until ${cooldown.resetAt || cooldown.resetAtMs || ""}`,
+        );
+        return true;
+      }
+    }
+
     const prepared = this.systemMessageDispatcher?.buildPreparedMessage(message, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
     if (!prepared) {
       throw new Error("system message could not be prepared");
@@ -1441,7 +1551,10 @@ class CyberbossApp {
       workspaceRoot,
     );
     preparedForDispatch.runtimeText = runtimeText;
-    preparedForDispatch.text = clampSystemRuntimeText(memoryContext.text);
+    preparedForDispatch.text = clampSystemRuntimeText(
+      memoryContext.text,
+      resolveSystemRuntimeTextMaxChars(preparedForDispatch, this.config),
+    );
     preparedForDispatch.memoryContextPacket = memoryContext.packet;
     return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared: preparedForDispatch });
   }
@@ -1951,12 +2064,12 @@ class CyberbossApp {
       return;
     }
     console.log(
-      `[asheriebridge] approval response requested thread=${threadId} requestId=${approval.requestId} mode=${approvalResponse.result ? "result" : "decision"} workspace=${workspaceRoot}`
+      `[mossbridge] approval response requested thread=${threadId} requestId=${approval.requestId} mode=${approvalResponse.result ? "result" : "decision"} workspace=${workspaceRoot}`
     );
     await this.runtimeAdapter.respondApproval(approvalResponse);
     this.runtimeAdapter.getSessionStore().clearApprovalPrompt(threadId);
     console.log(
-      `[asheriebridge] approval response delivered thread=${threadId} requestId=${approval.requestId}`
+      `[mossbridge] approval response delivered thread=${threadId} requestId=${approval.requestId}`
     );
     if (command.name === "always" && approvalResponse.decision === "accept") {
       this.runtimeAdapter.getSessionStore().rememberApprovalPrefixForWorkspace(workspaceRoot, approval.commandTokens);
@@ -2162,7 +2275,7 @@ class CyberbossApp {
       const approvalResponse = buildApprovalResponsePayload(event.payload, "no");
       if (approvalResponse) {
         console.log(
-          `[asheriebridge] approval auto-denied forbidden identity seed read thread=${event.payload.threadId} requestId=${event.payload.requestId}`
+          `[mossbridge] approval auto-denied forbidden identity seed read thread=${event.payload.threadId} requestId=${event.payload.requestId}`
         );
         sessionStore.clearApprovalPrompt(event.payload.threadId);
         await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
@@ -2182,7 +2295,7 @@ class CyberbossApp {
       if (promptState?.signature && promptState.signature === promptSignature) {
         sessionStore.rememberApprovalPrompt(event.payload.threadId, event.payload.requestId, promptSignature);
         console.log(
-          `[asheriebridge] approval prompt deduped thread=${event.payload.threadId} requestId=${event.payload.requestId}`
+          `[mossbridge] approval prompt deduped thread=${event.payload.threadId} requestId=${event.payload.requestId}`
         );
         return;
       }
@@ -2231,6 +2344,14 @@ class CyberbossApp {
       return;
     }
     const rawText = normalizeText(text) || "❌ Execution failed";
+    if (isRuntimeCapacityNotice(rawText)) {
+      this.recordRuntimeNotice({
+        text: rawText,
+        threadId,
+        source: "runtime_turn_failed",
+        provider: target.provider,
+      });
+    }
     if (target.provider === "system" && isClaudeRuntimeFailureText(rawText)) {
       const key = `${target.userId}:${classifyRuntimeFailureKind(rawText)}`;
       const lastAt = Number(this.lastSystemFailureNoticeAtByKey.get(key)) || 0;
@@ -2256,12 +2377,12 @@ class CyberbossApp {
     const target = this.resolveReplyTargetForBinding(bindingKey);
     if (!target) {
       console.warn(
-        `[asheriebridge] approval prompt skipped binding=${bindingKey} requestId=${approval?.requestId || ""} reason=no_reply_target`
+        `[mossbridge] approval prompt skipped binding=${bindingKey} requestId=${approval?.requestId || ""} reason=no_reply_target`
       );
       return;
     }
     console.log(
-      `[asheriebridge] approval prompt sending binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
+      `[mossbridge] approval prompt sending binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
     );
     await this.channelAdapter.sendTyping({
       userId: target.userId,
@@ -2275,7 +2396,7 @@ class CyberbossApp {
       preserveBlock: true,
     });
     console.log(
-      `[asheriebridge] approval prompt delivered binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
+      `[mossbridge] approval prompt delivered binding=${bindingKey} user=${target.userId} requestId=${approval?.requestId || ""}`
     );
   }
 
@@ -2341,19 +2462,38 @@ class CyberbossApp {
     }
 
     try {
+      if (!this.residentAnchorPreludeKeys) {
+        this.residentAnchorPreludeKeys = new Set();
+      }
+      const residentPreludeKey = this.resolveResidentAnchorPreludeKey?.(normalized, workspaceRoot) || "";
+      const residentAlreadyDelivered = Boolean(
+        residentPreludeKey && this.residentAnchorPreludeKeys.has(residentPreludeKey),
+      );
       const packet = await memoryDomain.captureContextPacket({
         userId: normalized.senderId,
         senderId: normalized.senderId,
         query: normalizeText(normalized.originalText) || normalizeText(normalized.text) || baseText,
         receivedAt: normalized.receivedAt,
-        sourceClient: normalized.provider === "system" ? "asheriebridge_system_turn" : "asheriebridge_wechat",
+        sourceClient: normalized.provider === "system" ? "mossbridge_system_turn" : "mossbridge_wechat",
         recallMode: normalized.provider === "system" ? "proactive" : "user_triggered",
         channelId: "weixin",
         workspaceRoot,
+        currentTurnSignals: buildCurrentTurnSignalsForMemory(normalized),
+        ...buildMemoryCapturePressureOptions(normalized, {
+          residentAlreadyDelivered,
+        }),
       });
+      if (
+        !residentAlreadyDelivered
+        && residentPreludeKey
+        && (Number(packet?.resident_warm_packet?.hit_count) || 0) > 0
+      ) {
+        this.residentAnchorPreludeKeys.add(residentPreludeKey);
+      }
       const prelude = normalizeText(packet?.runtime_prelude || packet?.summary);
       const frontstageNote = buildWechatFrontstageTurnNote(normalized);
-      const sections = [frontstageNote, prelude].filter(Boolean);
+      const toolHoverNote = buildWechatToolHoverNote(normalized);
+      const sections = [frontstageNote, toolHoverNote, prelude].filter(Boolean);
       if (!sections.length) {
         return {
           text: baseText,
@@ -2365,12 +2505,40 @@ class CyberbossApp {
         packet,
       };
     } catch (error) {
-      console.warn(`[asheriebridge] memory context skipped: ${formatErrorMessage(error)}`);
+      console.warn(`[mossbridge] memory context skipped: ${formatErrorMessage(error)}`);
       return {
         text: baseText,
         packet: null,
       };
     }
+  }
+
+  resolveResidentAnchorPreludeKey(normalized = {}, workspaceRoot = "") {
+    const senderId = normalizeCommandArgument(normalized.senderId || normalized.chatId);
+    if (!senderId) {
+      return "";
+    }
+    const runtimeId = normalizeCommandArgument(this.runtimeAdapter?.describe?.().id) || "runtime";
+    const root = normalizeCommandArgument(workspaceRoot) || normalizeCommandArgument(this.config?.workspaceRoot) || "workspace";
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    let bindingKey = "";
+    try {
+      bindingKey = sessionStore?.buildBindingKey?.({
+        workspaceId: normalized.workspaceId || this.config?.workspaceId,
+        accountId: normalized.accountId || this.activeAccountId || this.config?.accountId,
+        senderId,
+      }) || "";
+    } catch {
+      bindingKey = "";
+    }
+    const identityKey = normalizeCommandArgument(bindingKey) || senderId;
+    let threadId = "";
+    try {
+      threadId = sessionStore?.getThreadIdForWorkspace?.(identityKey, root) || "";
+    } catch {
+      threadId = "";
+    }
+    return [runtimeId, identityKey, root, normalizeCommandArgument(threadId) || "opening"].join("::");
   }
 
   rememberTurnWritebackContext({ turn, prepared, bindingKey, workspaceRoot, dispatchedAtMs = 0 }) {
@@ -2438,9 +2606,7 @@ class CyberbossApp {
     const runtimeFailureNotice = event.type === "runtime.turn.failed";
     const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
     const role = snapshot.prepared.provider === "system" ? "system" : "user";
-    const incomingTextForCache = snapshot.prepared.originalText
-      || snapshot.prepared.runtimeText
-      || snapshot.prepared.text;
+    const incomingTextForCache = buildIncomingTextForConversationCache(snapshot.prepared);
     try {
       const writebackResult = await memoryDomain.writebackTurn({
         userId: snapshot.prepared.senderId,
@@ -2476,7 +2642,7 @@ class CyberbossApp {
         threadId: event.payload.threadId,
         model: snapshot.model,
         latencyMs: snapshot.dispatchedAtMs ? Math.max(0, Date.now() - snapshot.dispatchedAtMs) : 0,
-        sourceClient: snapshot.prepared.provider === "system" ? "asheriebridge_system_turn" : "asheriebridge_wechat",
+        sourceClient: snapshot.prepared.provider === "system" ? "mossbridge_system_turn" : "mossbridge_wechat",
         memoryContextPacket: snapshot.prepared.memoryContextPacket || null,
         systemTurn: snapshot.prepared.provider === "system"
           ? {
@@ -2495,7 +2661,7 @@ class CyberbossApp {
         });
       }
     } catch (error) {
-      console.warn(`[asheriebridge] writeback skipped thread=${event?.payload?.threadId || ""} ${formatErrorMessage(error)}`);
+      console.warn(`[mossbridge] writeback skipped thread=${event?.payload?.threadId || ""} ${formatErrorMessage(error)}`);
     }
   }
 }
@@ -2505,13 +2671,77 @@ function buildWechatFrontstageTurnNote(normalized = {}) {
     return "";
   }
   return [
-    "[WeChat front-stage note]",
-    "This is ordinary one-on-one WeChat conversation, not a terse tool reply.",
-    "Generic runtime defaults such as \"responses should be short and concise\" do not control this front-stage answer.",
-    "If user-side emoji or stickers appear as ordinary emoji or a short parenthetical cue, read them as emotional context only; do not echo transport placeholder syntax as your house style.",
-    "Unless the user clearly wants speed or brevity, do not collapse the reply into only acknowledgment plus a quick follow-up question.",
-    "If the moment is relational, tired, playful, vulnerable, or carrying afterglow from the previous line, stay for one more beat so the reply feels complete before you decide whether a question is even needed.",
+    "[微信前台对话提醒]",
+    "这是和用户的一对一自然微信对话，不是工具回执、调试报告或工程答复；后台 short/concise 不支配前台表达。",
+    "用户发来的 emoji、表情包或括号小动作只作为情绪线索；不要把 `[微笑]` 这类传输占位符当成你的表达习惯。",
+    "先接住这一拍的情绪和关系节奏，再决定要不要提问或处理事实；自然、亲近、具体，比机械简短更重要。",
   ].join("\n");
+}
+
+function buildWechatToolHoverNote(normalized = {}) {
+  const provider = normalizeText(normalized?.provider);
+  if (provider && !["weixin", "system"].includes(provider)) {
+    return "";
+  }
+  const attachmentCount = Array.isArray(normalized?.attachments) ? normalized.attachments.length : 0;
+  const lines = [
+    "[当前可用动作提醒]",
+    "这些能力可以按需主动拿起，不必等用户点名；但它们不是本轮任务清单，也不是前台说话风格。不适合就完全忽略。",
+    "- 表情包：当一张贴图能自然补一层温度、玩笑、庆祝、撒娇或软着陆时，可以先用自然意图搜索表情仓再发送；先说清楚该说的话，贴图只做附加表达。",
+    "- 记忆、提醒、日记、episode、观察：如果这一轮出现未来会复用的信息、跟进点、可修正印象或一个小事件，可以静默维护，不必等用户用工具名提醒。",
+    "- 文件/附件：如果已经生成本地文件且当前通道支持发送，可以直接发送；不要假设未安装的外部账号、设备或私有执行器存在。",
+    "不要把这些能力变成关键词条件；用完工具后继续自然聊天，不暴露内部 id、协议、队列或路径。",
+  ];
+  if (attachmentCount > 0) {
+    lines.splice(
+      5,
+      0,
+      "- 附件/图片：先把可见内容和意义接进当前回复；如果图片明显适合沉淀为表情包、episode 素材或附件说明，可以顺手维护对应仓位。",
+    );
+  }
+  return lines.join("\n");
+}
+
+function buildIncomingTextForConversationCache(prepared = {}) {
+  const originalText = normalizeText(prepared.originalText);
+  const fallbackText = normalizeText(prepared.runtimeText) || normalizeText(prepared.text);
+  const attachmentContext = buildAttachmentContextForConversationCache(prepared);
+  if (attachmentContext) {
+    return [originalText, attachmentContext].filter(Boolean).join("\n\n");
+  }
+  return originalText || fallbackText;
+}
+
+function buildAttachmentContextForConversationCache(prepared = {}) {
+  const attachments = Array.isArray(prepared.attachments) ? prepared.attachments : [];
+  const failures = Array.isArray(prepared.attachmentFailures) ? prepared.attachmentFailures : [];
+  const lines = [];
+  if (attachments.length) {
+    lines.push("Attachment context:");
+    for (const item of attachments) {
+      const kind = normalizeText(item?.kind) || "file";
+      const file = normalizeText(item?.relativePath) || normalizeText(item?.absolutePath) || normalizeText(item?.fileName);
+      const note = normalizeText(item?.noteRelativePath) || normalizeText(item?.noteAbsolutePath);
+      if (file) {
+        lines.push(`- [${kind}] file: ${file}`);
+      }
+      if (note) {
+        lines.push(`  note: ${note}`);
+      }
+    }
+  }
+  if (failures.length) {
+    if (!lines.length) {
+      lines.push("Attachment context:");
+    }
+    lines.push("Attachment intake errors:");
+    for (const item of failures) {
+      const label = normalizeText(item?.sourceFileName) || normalizeText(item?.kind) || "attachment";
+      const reason = normalizeText(item?.reason) || "unknown error";
+      lines.push(`- ${label}: ${reason}`);
+    }
+  }
+  return lines.join("\n").trim();
 }
 
 function buildRunKey(threadId, turnId) {
@@ -2521,6 +2751,50 @@ function buildRunKey(threadId, turnId) {
 function isDirectVisibleReplySystemMessage(message = {}) {
   const kind = normalizeText(message?.kind).toLowerCase();
   return kind === "reply" || kind === "direct_reply";
+}
+
+function isBackgroundCheckinOpportunity(normalized = {}) {
+  if (normalizeText(normalized?.provider) !== "system") {
+    return false;
+  }
+  const triggerKind = normalizeText(
+    normalized?.systemTurn?.trigger_kind
+      || normalized?.systemTurn?.triggerKind
+      || normalized?.kind
+      || normalized?.metadata?.checkinKind,
+  );
+  return triggerKind === "checkin_opportunity";
+}
+
+function isCheckinOpportunityMessage(message = {}) {
+  return normalizeText(message?.kind) === "checkin_opportunity";
+}
+
+function buildMemoryCapturePressureOptions(normalized = {}, { residentAlreadyDelivered = false } = {}) {
+  if (!isBackgroundCheckinOpportunity(normalized)) {
+    return {
+      residentLimit: residentAlreadyDelivered ? 0 : undefined,
+    };
+  }
+  return {
+    runtimeProfile: "proactive_lite",
+    cacheLimit: 16,
+    recallRecentRecordLimit: 4,
+    temporalRecallLimit: 4,
+    limit: 3,
+    residentLimit: residentAlreadyDelivered ? 0 : 2,
+    preludeWarmLimit: 3,
+    preludeResidentWarmLimit: residentAlreadyDelivered ? 0 : 2,
+    preludeOngoingLimit: 3,
+    preludeOngoingShadowLimit: 3,
+    preludeObservationLimit: 1,
+    preludeEpisodeLimit: 1,
+    preludeRecentSnippetLimit: 3,
+    preludeRecentThreadLimit: 2,
+    coldLimit: 1,
+    coldVineLimit: 2,
+    coldVinePerRootLimit: 1,
+  };
 }
 
 function normalizeReplyTarget(target) {
@@ -2632,7 +2906,7 @@ function formatContextStatusLine({ runtimeName, context, claudeContextWindow, cl
   if (runtimeName === "claudecode") {
     const configuredWindow = Number(claudeContextWindow);
     if (!Number.isFinite(configuredWindow) || configuredWindow <= 0) {
-      return "📦 context: set ASHERIEBRIDGE_CLAUDE_CONTEXT_WINDOW";
+      return "📦 context: set MOSSBRIDGE_CLAUDE_CONTEXT_WINDOW";
     }
     const reservedOutputTokens = Math.max(0, Number(claudeMaxOutputTokens) || 0);
     const availableMessageWindow = configuredWindow - reservedOutputTokens;
@@ -2775,7 +3049,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports = { CyberbossApp };
+module.exports = { MossbridgeApp };
 
 function parseChannelCommand(text) {
   const normalized = typeof text === "string" ? text.trim() : "";
@@ -2889,17 +3163,31 @@ function buildSystemRuntimeSenderId(senderId) {
   return `${normalized}#asherie-system`;
 }
 
-function clampSystemRuntimeText(value) {
+function clampSystemRuntimeText(value, maxChars = MAX_SYSTEM_RUNTIME_TEXT_CHARS) {
   const text = String(value || "").trim();
-  if (!text || text.length <= MAX_SYSTEM_RUNTIME_TEXT_CHARS) {
+  const limit = resolvePositiveInt(maxChars, MAX_SYSTEM_RUNTIME_TEXT_CHARS);
+  if (!text || text.length <= limit) {
     return text;
   }
-  const keep = Math.max(0, MAX_SYSTEM_RUNTIME_TEXT_CHARS - 160);
+  const keep = Math.max(0, limit - 160);
   return [
     text.slice(0, keep).trimEnd(),
     "",
-    "[AsherieBridge note: system-turn context was trimmed before ClaudeCode dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
+    "[Mossbridge note: system-turn context was trimmed before ClaudeCode dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
   ].join("\n");
+}
+
+function resolveSystemRuntimeTextMaxChars(prepared, config = {}) {
+  const triggerKind = normalizeText(prepared?.systemTurn?.trigger_kind);
+  if (triggerKind !== "checkin_opportunity") {
+    return MAX_SYSTEM_RUNTIME_TEXT_CHARS;
+  }
+  return resolvePositiveInt(config.checkinRuntimeTextMaxChars, DEFAULT_CHECKIN_RUNTIME_TEXT_CHARS);
+}
+
+function resolvePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
@@ -2986,7 +3274,7 @@ function matchesBuiltInCommandPrefix(commandTokens) {
 
    if (
     normalized[0] === "mcp_tool"
-      && normalized[1] === "asheriebridge_tools"
+      && normalized[1] === "mossbridge_tools"
    ) {
     return true;
   }
@@ -3253,42 +3541,64 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
     if (lines.length) {
       lines.push("");
     }
-    lines.push(`${userName} sent image/file attachments. They were saved into the bound workspace office inbox:`);
+    lines.push(`${userName} 发来了图片/文件，已经保存到绑定工作仓的 inbox：`);
     for (const item of saved) {
-      const suffix = item.sourceFileName ? ` (original name: ${item.sourceFileName})` : "";
-      lines.push(`- [${item.kind}] file: ${item.absolutePath}${suffix}`);
+      const suffix = item.sourceFileName ? `（原文件名：${item.sourceFileName}）` : "";
+      lines.push(`- [${item.kind}] 文件：${item.absolutePath}${suffix}`);
       if (item.noteAbsolutePath) {
-        lines.push(`  note: ${item.noteAbsolutePath}`);
+        lines.push(`  说明笔记：${item.noteAbsolutePath}`);
       }
     }
-    lines.push(`You must inspect the raw attachment files before replying to ${userName}.`);
+    lines.push(`回复 ${userName} 之前，请先查看附件本体，不要只凭文件名或缓存说明猜。`);
     if (saved.some((item) => isImageAttachmentItem(item))) {
       if (runtimeUsesReadForImages(runtimeId)) {
-        lines.push("For images, use `Read` on the saved local image file.");
+        lines.push("图片请对保存后的本地图片文件使用 `Read`。");
       } else {
-        lines.push("For images, use `view_image`.");
+        lines.push("图片请使用 `view_image`。");
       }
-      lines.push("If an image is clearly meant as a reusable sticker or reaction image, you may save it with the sticker tool after inspecting it.");
+      lines.push("如果图片明显适合作为可复用表情包，可以在看过之后用 sticker 工具保存。");
+    }
+    const imageContextCount = saved.filter((item) => isImageAttachmentItem(item)).length
+      + failed.filter((item) => isImageAttachmentFailureItem(item)).length;
+    if (imageContextCount > 1) {
+      lines.push("这些图片可能属于同一组连续分享。先看完所有可用图片，再合成一段自然回应；除非用户要求逐张点评，不要每张都单独长评。");
+      lines.push("考虑微信投递，尽量把多图回应收成一两条自然气泡能承载的长度。");
     }
     if (officePaths.notesRoot) {
-      lines.push("If an attachment may matter beyond this turn, update its paired attachment note with a short factual summary instead of relying on the raw file alone.");
-      lines.push(`Keep durable attachment notes under: ${officePaths.notesRoot}`);
+      lines.push("如果附件之后还可能被用到，可以更新配套说明笔记，留下简短事实摘要，不要只依赖原文件。");
+      lines.push(`长期附件说明笔记放在：${officePaths.notesRoot}`);
     }
-    lines.push(`If a required tool is missing, tell ${userName} exactly what is missing and that you cannot read the file yet.`);
+    lines.push(`如果缺少必要工具，请直接告诉 ${userName} 缺了什么，以及目前还不能读取该文件。`);
   }
 
   if (failed.length) {
     if (lines.length) {
       lines.push("");
     }
-    lines.push("Attachment intake errors:");
+    lines.push("附件接收异常：");
     for (const item of failed) {
       const label = item.sourceFileName || item.kind || "attachment";
       lines.push(`- ${label}: ${item.reason}`);
     }
+    if (saved.length) {
+      lines.push("If some attachments failed but others were saved, briefly mention the failed item after considering the saved attachments; do not ignore the saved attachments because one item failed.");
+    }
   }
 
   return lines.join("\n").trim();
+}
+
+function buildCurrentTurnSignalsForMemory(normalized = {}) {
+  const attachments = Array.isArray(normalized.attachments) ? normalized.attachments : [];
+  const failures = Array.isArray(normalized.attachmentFailures) ? normalized.attachmentFailures : [];
+  return {
+    provider: normalizeText(normalized.provider),
+    source_client: normalizeText(normalized.provider) === "system" ? "mossbridge_system_turn" : "mossbridge_wechat",
+    has_text: Boolean(normalizeText(normalized.originalText) || normalizeText(normalized.text)),
+    attachment_count: attachments.length,
+    image_count: attachments.filter((item) => isImageAttachmentItem(item)).length,
+    attachment_failure_count: failures.length,
+  };
 }
 
 function runtimeUsesReadForImages(runtimeId) {
@@ -3340,11 +3650,17 @@ function buildMergedInboundPrepared({
 }
 
 function shouldBatchImageContextInbound(message) {
+  return isImageContextPreparedMessage(message);
+}
+
+function isImageContextPreparedMessage(message) {
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const attachmentFailures = Array.isArray(message?.attachmentFailures) ? message.attachmentFailures : [];
-  return attachments.length > 0
-    && attachments.every((item) => isImageAttachmentItem(item))
-    && attachmentFailures.length === 0;
+  if (!attachments.length && !attachmentFailures.length) {
+    return false;
+  }
+  return attachments.every((item) => isImageAttachmentItem(item))
+    && attachmentFailures.every((item) => isImageAttachmentFailureItem(item));
 }
 
 function takeImageContextBatchMessages(messages, maxAttachments) {
@@ -3355,11 +3671,21 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
 
   for (const message of Array.isArray(messages) ? messages : []) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    const imageContext = isImageContextPreparedMessage(message);
     if (!attachments.length && isPlainTextPreparedMessage(message) && hasImageInBatch) {
       batchMessages.push(message);
       continue;
     }
+    if (!attachments.length && imageContext) {
+      batchMessages.push(message);
+      hasImageInBatch = true;
+      continue;
+    }
     if (!attachments.length) {
+      remainingMessages.push(message);
+      continue;
+    }
+    if (!imageContext) {
       remainingMessages.push(message);
       continue;
     }
@@ -3419,6 +3745,12 @@ function isPlainTextPreparedMessage(prepared) {
 function isImageAttachmentItem(item) {
   return Boolean(item?.isImage) || normalizeText(item?.contentType).toLowerCase().startsWith("image/")
     || normalizeText(item?.kind).toLowerCase() === "image";
+}
+
+function isImageAttachmentFailureItem(item) {
+  return normalizeText(item?.contentType).toLowerCase().startsWith("image/")
+    || normalizeText(item?.kind).toLowerCase() === "image"
+    || Boolean(normalizeText(item?.sourceFileName).toLowerCase().match(/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/u));
 }
 
 function isAutoApprovedStateDirOperation(approval, config = {}) {

@@ -14,6 +14,8 @@ const { resolveWorkspaceOfficePaths } = require("../core/workspace-office-layout
 const execFileAsync = promisify(execFile);
 const DEFAULT_PICK_LIMIT = 5;
 const MAX_PICK_LIMIT = 20;
+const DEFAULT_TAG_LIST_LIMIT = 160;
+const MAX_TAG_LIST_LIMIT = 240;
 const MAX_STICKER_SAVE_BATCH_SIZE = 10;
 const MAX_STICKER_MUTATION_BATCH_SIZE = 50;
 const MIN_STICKER_DESC_CHARS = 16;
@@ -24,6 +26,22 @@ const STICKER_TAG_GUIDANCE = "Reuse existing tags when they fit. Otherwise creat
 const STICKER_DESC_GUIDANCE = `Prefer descs of ${MIN_STICKER_DESC_CHARS} or more characters. If readable text exists, append it after the short scene description.`;
 const STICKER_DESC_FIELD_DESCRIPTION = `A concrete sticker description. ${STICKER_DESC_GUIDANCE}`;
 const STICKER_STATUS_FIELD_DESCRIPTION = "Optional sticker status. active is available for normal picking; archive stays searchable but is not picked by default.";
+const STICKER_SEMANTIC_FIELDS = ["meaning", "gesture", "frontstageEffect", "tone", "useWhen", "avoidWhen", "rawContent"];
+const STICKER_SEARCH_FIELD_WEIGHTS = {
+  meaning: 5.0,
+  useWhen: 4.2,
+  rawContent: 3.4,
+  desc: 3.0,
+  tags: 2.8,
+  gesture: 2.0,
+  frontstageEffect: 2.0,
+  tone: 1.4,
+  pack: 1.0,
+};
+const STICKER_SEND_PREVIEW_SIZE = 512;
+const STICKER_SEND_PREVIEW_TOOL = "/usr/bin/sips";
+const STICKER_ANIMATED_GIF_DIRECT_MAX_BYTES = 768 * 1024;
+const STICKER_STATIC_PREVIEW_EXTENSIONS = new Set([".gif", ".webp"]);
 
 class StickerService {
   constructor({ config, channelAdapter, sessionStore, channelFileService }) {
@@ -33,11 +51,20 @@ class StickerService {
     this.channelFileService = channelFileService;
   }
 
-  async listTags() {
+  async listTags({ query = "", limit = DEFAULT_TAG_LIST_LIMIT } = {}) {
     ensureStickerCatalogFilesSync(this.config);
+    const normalizedQuery = normalizeText(query).toLowerCase();
+    const allTags = loadStickerTagsSync(this.config);
+    const normalizedLimit = normalizeTagListLimit(limit);
+    const tags = normalizedQuery
+      ? allTags.filter((tag) => tag.toLowerCase().includes(normalizedQuery))
+      : allTags;
     return {
-      tags: loadStickerTagsSync(this.config),
-      guidance: `Choose 1-3 short tags. ${STICKER_TAG_GUIDANCE} Make desc concrete enough to identify the sticker. ${STICKER_DESC_GUIDANCE}`,
+      tags: tags.slice(0, normalizedLimit),
+      totalCount: allTags.length,
+      matchedCount: tags.length,
+      truncated: tags.length > normalizedLimit,
+      guidance: `For sending, prefer semantic sticker_search by mood/scene. Use tags mostly for saving or narrow curation. ${STICKER_TAG_GUIDANCE} ${STICKER_DESC_GUIDANCE}`,
     };
   }
 
@@ -117,6 +144,7 @@ class StickerService {
         pack: normalizeText(value?.pack),
         status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
         favorite: Boolean(value?.favorite),
+        ...pickStickerSemanticFields(value),
       }));
 
     return {
@@ -124,6 +152,57 @@ class StickerService {
       pack: normalizedPack,
       status: includeArchive ? "any" : normalizedStatus,
       candidates: entries,
+    };
+  }
+
+  async search({ query = "", limit = DEFAULT_PICK_LIMIT, pack = "", status = STICKER_STATUS_ACTIVE, includeArchive = false } = {}) {
+    ensureStickerCatalogFilesSync(this.config);
+    const normalizedQuery = normalizeText(query);
+    if (!normalizedQuery) {
+      throw new Error("Sticker query is required.");
+    }
+    const normalizedLimit = normalizePickLimit(limit);
+    const normalizedPack = normalizeText(pack);
+    const normalizedStatus = normalizeStickerStatus(status, STICKER_STATUS_ACTIVE);
+    const tokens = tokenizeStickerSearchText(normalizedQuery);
+    const index = loadStickerIndexSync(this.config);
+    const scored = [];
+
+    for (const [stickerId, value] of Object.entries(index)) {
+      if (normalizedPack && normalizeText(value?.pack) !== normalizedPack) {
+        continue;
+      }
+      if (!includeArchive && normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) !== normalizedStatus) {
+        continue;
+      }
+      if (!fs.existsSync(resolveStickerFilePath(this.config, stickerId))) {
+        continue;
+      }
+      let score = scoreStickerEntry(value, normalizedQuery, tokens);
+      if (Boolean(value?.favorite)) {
+        score += 0.25;
+      }
+      if (score <= 0) {
+        continue;
+      }
+      scored.push([score, stickerId, value]);
+    }
+
+    scored.sort((left, right) => right[0] - left[0]);
+    return {
+      query: normalizedQuery,
+      pack: normalizedPack,
+      status: includeArchive ? "any" : normalizedStatus,
+      candidates: scored.slice(0, normalizedLimit).map(([score, stickerId, value]) => ({
+        stickerId,
+        desc: normalizeText(value?.desc),
+        tags: Array.isArray(value?.tags) ? value.tags : [],
+        pack: normalizeText(value?.pack),
+        status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
+        favorite: Boolean(value?.favorite),
+        ...pickStickerSemanticFields(value),
+        score: Number(score.toFixed(4)),
+      })),
     };
   }
 
@@ -149,6 +228,7 @@ class StickerService {
           favorite: Boolean(value?.favorite),
           source: normalizeText(value?.source),
           sourceId: normalizeText(value?.sourceId),
+          ...pickStickerSemanticFields(value),
           filePath,
           hasFile: fs.existsSync(filePath),
         };
@@ -180,13 +260,43 @@ class StickerService {
     if (!fs.existsSync(filePath)) {
       throw new Error(`Sticker file is missing: ${filePath}`);
     }
-    const delivery = await this.channelFileService.sendToCurrentChat({
+    const deliveryCandidates = await prepareStickerDeliveryCandidates({
+      config: this.config,
+      stickerId: normalizedStickerId,
       filePath,
-      userId,
-    }, context);
+    });
+    const attemptedDeliveries = [];
+    let delivery = null;
+    let deliveredCandidate = null;
+    for (const candidate of deliveryCandidates) {
+      try {
+        delivery = await this.channelFileService.sendToCurrentChat({
+          filePath: candidate.filePath,
+          userId,
+        }, context);
+        deliveredCandidate = candidate;
+        break;
+      } catch (error) {
+        attemptedDeliveries.push({
+          filePath: candidate.filePath,
+          transform: candidate.transform,
+          error: error instanceof Error ? error.message : String(error || "unknown error"),
+        });
+      }
+    }
+    if (!deliveredCandidate) {
+      const lastAttempt = attemptedDeliveries.at(-1);
+      throw new Error(`Sticker delivery failed: ${lastAttempt?.error || "unknown error"}`);
+    }
     return {
       stickerId: normalizedStickerId,
       filePath,
+      mimeType: guessStickerMimeType(filePath),
+      deliveryFilePath: deliveredCandidate.filePath,
+      deliveryMimeType: guessStickerMimeType(deliveredCandidate.filePath),
+      deliveryTransform: deliveredCandidate.transform,
+      deliveryTransformError: deliveredCandidate.error,
+      attemptedDeliveries,
       delivery,
     };
   }
@@ -249,6 +359,12 @@ class StickerService {
         favorite: item.favorite ?? Boolean(previous.favorite),
         source: item.source ?? normalizeText(previous.source),
         sourceId: item.sourceId ?? normalizeText(previous.sourceId),
+        meaning: item.meaning ?? normalizeText(previous.meaning),
+        gesture: item.gesture ?? normalizeText(previous.gesture),
+        frontstageEffect: item.frontstageEffect ?? normalizeText(previous.frontstageEffect || previous.frontstage_effect),
+        tone: item.tone ?? normalizeTextList(previous.tone),
+        useWhen: item.useWhen ?? normalizeTextList(previous.useWhen || previous.use_when),
+        avoidWhen: item.avoidWhen ?? normalizeTextList(previous.avoidWhen || previous.avoid_when),
       };
       tagCatalog.splice(0, tagCatalog.length, ...mergeStickerTagCatalog(tagCatalog, item.tags));
     }
@@ -395,6 +511,11 @@ function mergeStickerTemplateIndexSync(paths, templateIndex = {}) {
   let changed = false;
   for (const [stickerId, templateEntry] of Object.entries(templateIndex)) {
     if (currentIndex[stickerId]) {
+      const merged = mergeStickerTemplateSemantics(currentIndex[stickerId], templateEntry);
+      if (!stickerEntriesEqual(currentIndex[stickerId], merged)) {
+        currentIndex[stickerId] = merged;
+        changed = true;
+      }
       continue;
     }
     currentIndex[stickerId] = templateEntry;
@@ -456,6 +577,13 @@ function normalizeStickerIndexPayload(value) {
       favorite: Boolean(entry?.favorite),
       source: normalizeText(entry?.source),
       sourceId: normalizeText(entry?.sourceId),
+      meaning: normalizeText(entry?.meaning),
+      gesture: normalizeText(entry?.gesture),
+      frontstageEffect: normalizeText(entry?.frontstageEffect || entry?.frontstage_effect),
+      tone: normalizeTextList(entry?.tone),
+      useWhen: normalizeTextList(entry?.useWhen || entry?.use_when),
+      avoidWhen: normalizeTextList(entry?.avoidWhen || entry?.avoid_when),
+      rawContent: normalizeText(entry?.rawContent || entry?.raw_content),
     };
   }
   return normalized;
@@ -464,9 +592,27 @@ function normalizeStickerIndexPayload(value) {
 function stickerEntriesEqual(left, right) {
   const normalizedLeft = normalizeStickerIndexPayload({ item: left }).item || { tags: [], desc: "" };
   const normalizedRight = normalizeStickerIndexPayload({ item: right }).item || { tags: [], desc: "" };
-  return normalizedLeft.desc === normalizedRight.desc
-    && normalizedLeft.tags.length === normalizedRight.tags.length
-    && normalizedLeft.tags.every((tag, index) => tag === normalizedRight.tags[index]);
+  return JSON.stringify(normalizedLeft) === JSON.stringify(normalizedRight);
+}
+
+function mergeStickerTemplateSemantics(current, template) {
+  const merged = normalizeStickerIndexPayload({ item: current }).item || {};
+  const templateEntry = normalizeStickerIndexPayload({ item: template }).item || {};
+  merged.tags = mergeStickerTagCatalog(merged.tags, templateEntry.tags);
+  for (const field of STICKER_SEMANTIC_FIELDS) {
+    const currentValue = merged[field];
+    const templateValue = templateEntry[field];
+    const currentEmpty = Array.isArray(currentValue)
+      ? currentValue.length === 0
+      : !normalizeText(currentValue);
+    const templateEmpty = Array.isArray(templateValue)
+      ? templateValue.length === 0
+      : !normalizeText(templateValue);
+    if (currentEmpty && !templateEmpty) {
+      merged[field] = templateValue;
+    }
+  }
+  return merged;
 }
 
 function resolveStickerFilePath(config = {}, stickerId = "") {
@@ -510,6 +656,13 @@ function normalizePickLimit(limit) {
     return DEFAULT_PICK_LIMIT;
   }
   return Math.max(1, Math.min(MAX_PICK_LIMIT, limit));
+}
+
+function normalizeTagListLimit(limit) {
+  if (!Number.isInteger(limit)) {
+    return DEFAULT_TAG_LIST_LIMIT;
+  }
+  return Math.max(1, Math.min(MAX_TAG_LIST_LIMIT, limit));
 }
 
 function allocateNextStickerId(index = {}) {
@@ -611,6 +764,12 @@ function normalizeStickerSaveItems(items, config = {}) {
       favorite: Boolean(item.favorite),
       source: normalizeText(item.source),
       sourceId: normalizeText(item.sourceId),
+      meaning: normalizeText(item.meaning),
+      gesture: normalizeText(item.gesture),
+      frontstageEffect: normalizeText(item.frontstageEffect || item.frontstage_effect),
+      tone: normalizeTextList(item.tone),
+      useWhen: normalizeTextList(item.useWhen || item.use_when),
+      avoidWhen: normalizeTextList(item.avoidWhen || item.avoid_when),
     };
   });
 }
@@ -647,6 +806,18 @@ function normalizeStickerUpdateItems(items) {
       favorite: hasOwn(item, "favorite") ? Boolean(item.favorite) : undefined,
       source: hasOwn(item, "source") ? normalizeText(item.source) : undefined,
       sourceId: hasOwn(item, "sourceId") ? normalizeText(item.sourceId) : undefined,
+      meaning: hasOwn(item, "meaning") ? normalizeText(item.meaning) : undefined,
+      gesture: hasOwn(item, "gesture") ? normalizeText(item.gesture) : undefined,
+      frontstageEffect: hasOwn(item, "frontstageEffect") || hasOwn(item, "frontstage_effect")
+        ? normalizeText(item.frontstageEffect || item.frontstage_effect)
+        : undefined,
+      tone: hasOwn(item, "tone") ? normalizeTextList(item.tone) : undefined,
+      useWhen: hasOwn(item, "useWhen") || hasOwn(item, "use_when")
+        ? normalizeTextList(item.useWhen || item.use_when)
+        : undefined,
+      avoidWhen: hasOwn(item, "avoidWhen") || hasOwn(item, "avoid_when")
+        ? normalizeTextList(item.avoidWhen || item.avoid_when)
+        : undefined,
     };
   });
 }
@@ -719,7 +890,7 @@ async function saveStickerEntry({
   hashByStickerId = new Map(),
   item = {},
 } = {}) {
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "asheriebridge-sticker-save-"));
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "mossbridge-sticker-save-"));
   const normalizedGifPath = path.join(tempDir, "normalized.gif");
   try {
     await normalizeStickerGif({
@@ -756,6 +927,12 @@ async function saveStickerEntry({
       favorite: item.favorite,
       source: item.source,
       sourceId: item.sourceId,
+      meaning: item.meaning,
+      gesture: item.gesture,
+      frontstageEffect: item.frontstageEffect,
+      tone: item.tone,
+      useWhen: item.useWhen,
+      avoidWhen: item.avoidWhen,
     };
     hashByStickerId.set(stickerId, normalizedHash);
     tagCatalog.splice(0, tagCatalog.length, ...mergeStickerTagCatalog(tagCatalog, item.tags));
@@ -777,6 +954,107 @@ async function saveStickerEntry({
     };
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function prepareStickerDeliveryCandidates({ config = {}, stickerId = "", filePath = "" } = {}) {
+  const normalizedFilePath = normalizeText(filePath);
+  const ext = path.extname(normalizedFilePath).toLowerCase();
+  if (!STICKER_STATIC_PREVIEW_EXTENSIONS.has(ext)) {
+    return [{
+      filePath: normalizedFilePath,
+      transform: "none",
+      error: "",
+    }];
+  }
+
+  const candidates = [];
+  let previewError = "";
+
+  try {
+    const previewPath = await ensureStickerPngPreview({
+      config,
+      stickerId,
+      filePath: normalizedFilePath,
+    });
+    if (previewPath) {
+      candidates.push({
+        filePath: previewPath,
+        transform: `${ext.slice(1)}_static_png_preview`,
+        error: "",
+      });
+    }
+  } catch (error) {
+    previewError = error instanceof Error ? error.message : String(error || "unknown error");
+  }
+
+  const originalStat = await fsp.stat(normalizedFilePath).catch(() => null);
+  if (ext === ".gif" && originalStat?.isFile() && originalStat.size <= STICKER_ANIMATED_GIF_DIRECT_MAX_BYTES) {
+    candidates.push({
+      filePath: normalizedFilePath,
+      transform: "gif_original_small_fallback",
+      error: previewError,
+    });
+  } else {
+    candidates.push({
+      filePath: normalizedFilePath,
+      transform: `${ext.slice(1) || "sticker"}_original_fallback`,
+      error: previewError,
+    });
+  }
+
+  return candidates;
+}
+
+async function ensureStickerPngPreview({ config = {}, stickerId = "", filePath = "" } = {}) {
+  if (process.platform !== "darwin" || !fs.existsSync(STICKER_SEND_PREVIEW_TOOL)) {
+    return "";
+  }
+  const stat = await fsp.stat(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`Sticker file is not a file: ${filePath}`);
+  }
+  const stickerPaths = buildStickerPaths(config);
+  const cacheDir = path.join(stickerPaths.stickersDir || normalizeText(config.stateDir) || os.tmpdir(), "send-cache");
+  const cacheKey = [
+    normalizeStickerId(stickerId) || "sticker",
+    String(stat.size),
+    String(Math.floor(stat.mtimeMs)),
+  ].join("-");
+  const outputPath = path.join(cacheDir, `${cacheKey}.png`);
+  if (await fileExistsWithContent(outputPath)) {
+    return outputPath;
+  }
+  await fsp.mkdir(cacheDir, { recursive: true });
+  const tempPath = path.join(cacheDir, `${cacheKey}.${process.pid}.${Date.now()}.tmp.png`);
+  try {
+    await execFileAsync(STICKER_SEND_PREVIEW_TOOL, [
+      "-s", "format", "png",
+      "-Z", String(STICKER_SEND_PREVIEW_SIZE),
+      filePath,
+      "--out", tempPath,
+    ]);
+    if (!await fileExistsWithContent(tempPath)) {
+      throw new Error(`Sticker preview conversion produced no output: ${tempPath}`);
+    }
+    await fsp.rename(tempPath, outputPath).catch(async (error) => {
+      if (await fileExistsWithContent(outputPath)) {
+        return;
+      }
+      throw error;
+    });
+    return outputPath;
+  } finally {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+async function fileExistsWithContent(filePath = "") {
+  try {
+    const stat = await fsp.stat(filePath);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -807,6 +1085,95 @@ function normalizeStickerId(value) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeTextList(value) {
+  const rawItems = Array.isArray(value) ? value : (typeof value === "string" ? [value] : []);
+  const seen = new Set();
+  const result = [];
+  for (const raw of rawItems) {
+    const text = normalizeText(raw);
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
+function pickStickerSemanticFields(value = {}) {
+  return {
+    meaning: normalizeText(value?.meaning),
+    gesture: normalizeText(value?.gesture),
+    frontstageEffect: normalizeText(value?.frontstageEffect || value?.frontstage_effect),
+    tone: normalizeTextList(value?.tone),
+    useWhen: normalizeTextList(value?.useWhen || value?.use_when),
+    avoidWhen: normalizeTextList(value?.avoidWhen || value?.avoid_when),
+    rawContent: normalizeText(value?.rawContent || value?.raw_content),
+  };
+}
+
+function scoreStickerEntry(value = {}, query, tokens = []) {
+  let score = 0;
+  for (const [field, weight] of Object.entries(STICKER_SEARCH_FIELD_WEIGHTS)) {
+    const fieldText = stringifyStickerSearchField(field === "tags" ? value.tags : value[field]);
+    if (!fieldText) {
+      continue;
+    }
+    const lower = fieldText.toLowerCase();
+    if (lower.includes(String(query || "").toLowerCase())) {
+      score += weight * 2;
+    }
+    for (const token of tokens) {
+      if (lower.includes(token)) {
+        score += weight;
+      }
+    }
+  }
+  return score;
+}
+
+function stringifyStickerSearchField(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeText(item)).filter(Boolean).join(" ");
+  }
+  return normalizeText(value);
+}
+
+function tokenizeStickerSearchText(text) {
+  const normalized = normalizeText(text).toLowerCase();
+  const tokens = new Set(
+    normalized
+      .split(/[^\p{L}\p{N}]+/u)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 2)
+  );
+  const compact = Array.from(normalized.replace(/\s+/g, ""));
+  for (let index = 0; index < compact.length - 1; index += 1) {
+    const token = `${compact[index]}${compact[index + 1]}`;
+    if (/[\p{L}\p{N}]/u.test(token)) {
+      tokens.add(token);
+    }
+  }
+  return Array.from(tokens).slice(0, 80);
+}
+
+function guessStickerMimeType(filePath = "") {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".png") {
+    return "image/png";
+  }
+  if (ext === ".jpg" || ext === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (ext === ".webp") {
+    return "image/webp";
+  }
+  if (ext === ".gif") {
+    return "image/gif";
+  }
+  return "application/octet-stream";
 }
 
 function hasOwn(value, key) {

@@ -128,9 +128,14 @@ function buildSystemTriggerGuidance({ kind = "", priority = "" } = {}) {
   }
   if (normalizedKind === "checkin_opportunity") {
     return [
-      "This is only an opportunity to reconnect, not a mandatory interruption.",
+      "This is a lightweight maintenance and reconnection window, not a mandatory interruption.",
+      "Do not treat the choice as only 'send a greeting' versus 'do nothing'. Before deciding, you may spend a small, low-risk maintenance pass using available tools: first consider the read-only bridge status tool and the wakeup agenda tool if present, then inspect pending reminders, memory/ongoing/episode/observation state, today's timeline/diary, whereabouts/context signals, or other bridge-provided status surfaces when they are relevant.",
+      "Prefer read-only checks first. Write only small backstage updates that preserve continuity, such as a reminder, diary/timeline note, observation, ongoing-track update, or concrete capability request if the bridge lacks the status surface you need.",
+      "If the useful action is private self-review rather than user contact, write a concise solitude journal entry: shareable reasoning summary, visible evidence, lesson, next actions, or evolution candidate. Do not store raw hidden chain-of-thought.",
+      "Before returning the final JSON, write a concise wakeup decision record if the wakeup decision tool exists: decision, wake motive, actions taken, next actions, contact channel, and budget posture. This ledger is the bridge's continuity handle for future wakeups; keep it factual and shareable, not hidden chain-of-thought.",
       "If the user appears awake and there is no protected quiet-state signal, you are allowed to gently interrupt with a small, low-stakes message. Do not wait only for meal times, reminders, or obviously important events.",
-      "If it is not the right moment to message, you can still leave a usable handle through diary, timeline, or a follow-up reminder instead of disappearing.",
+      "If it is not the right moment to message, you can still leave a usable handle through diary, timeline, memory, observation, or a follow-up reminder instead of disappearing.",
+      "If tool work already completed the useful action and there is nothing helpful to tell the user, return {\"action\":\"silent\"}. Silence should mean 'maintenance done or intentionally skipped', not 'the system forgot to act'.",
       "Choose silence only when you have a concrete reason to protect her attention, not merely because the check-in reason is small.",
     ];
   }

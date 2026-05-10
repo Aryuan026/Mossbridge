@@ -7,7 +7,7 @@ const path = require("path");
 const { runSharedModel } = require("../scripts/shared-model");
 
 test("shared model command updates the bound workspace model without a running bridge", () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-shared-model-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-model-"));
   const stateDir = path.join(tempRoot, "state");
   const sessionFile = path.join(stateDir, "sessions.json");
   const envFile = path.join(tempRoot, ".env");
@@ -41,10 +41,10 @@ test("shared model command updates the bound workspace model without a running b
   const output = runSharedModel({
     argv: ["--env-file", envFile, "claude-opus-4-6"],
     env: {
-      ASHERIEBRIDGE_RUNTIME: "claudecode",
-      ASHERIEBRIDGE_STATE_DIR: stateDir,
-      ASHERIEBRIDGE_SESSIONS_FILE: sessionFile,
-      ASHERIEBRIDGE_WORKSPACE_ROOT: workspaceRoot,
+      MOSSBRIDGE_RUNTIME: "claudecode",
+      MOSSBRIDGE_STATE_DIR: stateDir,
+      MOSSBRIDGE_SESSIONS_FILE: sessionFile,
+      MOSSBRIDGE_WORKSPACE_ROOT: workspaceRoot,
     },
     cwd: tempRoot,
   });
@@ -54,7 +54,7 @@ test("shared model command updates the bound workspace model without a running b
     updated.bindings["default:account:user"].codexParamsByWorkspaceRoot[workspaceRoot].model,
     "claude-opus-4-6"
   );
-  assert.match(fs.readFileSync(envFile, "utf8"), /ASHERIEBRIDGE_CLAUDE_MODEL=claude-opus-4-6/);
+  assert.match(fs.readFileSync(envFile, "utf8"), /MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6/);
   assert.match(output, /Model selection updated/);
   assert.match(output, /session_model: claude-opus-4-6/);
 });

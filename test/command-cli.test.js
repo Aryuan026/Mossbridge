@@ -8,7 +8,7 @@ const { resolveBodyInput } = require("../src/services/text-input");
 const { buildTimelineFailureMessage, prepareTimelineInvocation } = require("../src/integrations/timeline");
 
 function createTempFile(name, content) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-command-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-command-test-"));
   const filePath = path.join(dir, name);
   fs.writeFileSync(filePath, content, "utf8");
   return filePath;

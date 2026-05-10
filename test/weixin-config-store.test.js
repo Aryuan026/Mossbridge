@@ -11,7 +11,7 @@ const {
 } = require("../src/adapters/channel/weixin/config-store");
 
 function createConfig(overrides = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyberboss-weixin-config-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-weixin-config-test-"));
   return {
     weixinConfigFile: path.join(dir, "weixin-config.json"),
     ...overrides,

@@ -155,7 +155,9 @@ function buildMemoryRetrievalPacket({
   mode = "",
   warmMemoryPacket = null,
   residentWarmPacket = null,
+  episodeJournalPacket = null,
   observationJournalPacket = null,
+  solitudeJournalPacket = null,
   curatedHits = [],
   liteFallbackHits = [],
   hippocovePacket = null,
@@ -165,14 +167,18 @@ function buildMemoryRetrievalPacket({
 } = {}) {
   const warmPacket = warmMemoryPacket && typeof warmMemoryPacket === "object" ? { ...warmMemoryPacket } : {};
   const residentPacket = residentWarmPacket && typeof residentWarmPacket === "object" ? { ...residentWarmPacket } : {};
+  const episodePacket = episodeJournalPacket && typeof episodeJournalPacket === "object" ? { ...episodeJournalPacket } : {};
   const observationPacket = observationJournalPacket && typeof observationJournalPacket === "object" ? { ...observationJournalPacket } : {};
+  const solitudePacket = solitudeJournalPacket && typeof solitudeJournalPacket === "object" ? { ...solitudeJournalPacket } : {};
   const curated = Array.isArray(curatedHits) ? curatedHits.filter(isObject).map((item) => ({ ...item })) : [];
   const lite = Array.isArray(liteFallbackHits) ? liteFallbackHits.filter(isObject).map((item) => ({ ...item })) : [];
   const coldPacket = hippocovePacket && typeof hippocovePacket === "object" ? { ...hippocovePacket } : {};
 
   const warmHitCount = Array.isArray(warmPacket.hits) ? warmPacket.hits.length : 0;
   const residentHitCount = Array.isArray(residentPacket.hits) ? residentPacket.hits.length : 0;
+  const episodeHitCount = Array.isArray(episodePacket.hits) ? episodePacket.hits.length : 0;
   const observationHitCount = Array.isArray(observationPacket.hits) ? observationPacket.hits.length : 0;
+  const solitudeHitCount = Number(solitudePacket.hit_count) || 0;
   const localHitCount = curated.length + lite.length;
   const coldHitCount = Object.keys(coldPacket).length ? 1 : 0;
   const route = [];
@@ -182,8 +188,14 @@ function buildMemoryRetrievalPacket({
   if (residentHitCount) {
     route.push("resident_warm");
   }
+  if (episodeHitCount) {
+    route.push("episode_journal");
+  }
   if (observationHitCount) {
     route.push("observation_journal");
+  }
+  if (solitudeHitCount) {
+    route.push("solitude_journal");
   }
   if (normalizeText(coldRouteTag)) {
     route.push(normalizeText(coldRouteTag));
@@ -203,7 +215,9 @@ function buildMemoryRetrievalPacket({
     route,
     warm_memory_packet: warmPacket,
     resident_warm_packet: residentPacket,
+    episode_journal_packet: episodePacket,
     observation_journal_packet: observationPacket,
+    solitude_journal_packet: solitudePacket,
     curated_hits: curated,
     lite_fallback_hits: lite,
     hippocove_packet: coldPacket,
@@ -212,7 +226,9 @@ function buildMemoryRetrievalPacket({
     channel_counts: {
       warm_hit_count: warmHitCount,
       resident_hit_count: residentHitCount,
+      episode_hit_count: episodeHitCount,
       observation_hit_count: observationHitCount,
+      solitude_hit_count: solitudeHitCount,
       cold_hit_count: coldHitCount,
       local_archive_hit_count: localHitCount,
     },
@@ -227,7 +243,9 @@ function buildMemoryRetrievalPacket({
       warm_card_carry: {
         warm_hit: warmHitCount > 0,
         resident_hit: residentHitCount > 0,
+        episode_hit: episodeHitCount > 0,
         observation_hit: observationHitCount > 0,
+        solitude_hit: solitudeHitCount > 0,
         cold_hit: Boolean(coldHitCount),
         carried: (warmHitCount > 0 || residentHitCount > 0) && Boolean(coldHitCount),
       },

@@ -7,25 +7,29 @@ Mossbridge has two local guard layers:
 
 This is intentionally a local-first guard. It does not solve WeChat login expiry, ClaudeCode quota/API errors, or memory quality by itself. It makes those failures visible and recoverable instead of letting the bridge silently disappear.
 
+Public Mossbridge defaults to the safe self-check boundary in [safe-self-check.md](./safe-self-check.md): heartbeat checks may inspect and report, but should not silently restart services, rebind accounts, edit files, delete memory, or change credentials.
+
 ## Install On This Mac
 
 ```sh
+npm run service:takeover:codex
+# or
 npm run service:takeover:claudecode
 ```
 
-`takeover` stops a currently manual `npm run shared:start:claudecode` bridge, writes a LaunchAgent plist, and starts the launchd-owned service.
+`takeover` stops a currently manual shared bridge, writes a LaunchAgent plist, and starts the launchd-owned service. Use the runtime that matches the bridge you want to run.
 
 Default plist:
 
 ```text
-~/Library/LaunchAgents/com.asherie.mossbridge.plist
+~/Library/LaunchAgents/com.mossbridge.bridge.plist
 ```
 
 Logs:
 
 ```text
-~/.asheriebridge/logs/launchd.out.log
-~/.asheriebridge/logs/launchd.err.log
+~/.mossbridge/logs/launchd.out.log
+~/.mossbridge/logs/launchd.err.log
 ```
 
 ## Daily Commands
@@ -38,6 +42,11 @@ Mossbridge Status.command
 ```
 
 ```sh
+npm run service:status:codex
+npm run service:restart:codex
+npm run service:stop:codex
+npm run service:uninstall:codex
+
 npm run service:status:claudecode
 npm run service:restart:claudecode
 npm run service:stop:claudecode
@@ -47,9 +56,14 @@ npm run service:uninstall:claudecode
 Normal Bridge status is still useful:
 
 ```sh
+npm run shared:status
 npm run shared:status:claudecode
 npm run diagnostics:travel
 ```
+
+Only one default LaunchAgent label is expected to be active at a time. If you intentionally run both runtimes side by side, give them distinct `MOSSBRIDGE_LAUNCHD_LABEL` and state directories.
+
+`service:status:*` prints both the requested runtime and the runtime currently installed in the plist. If they differ, reinstall/take over with the runtime you intend to run.
 
 ## Failure Shape
 

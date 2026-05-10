@@ -193,6 +193,8 @@ function buildWarmMemoryRecallPacket(
     tags: Array.isArray(item.row.tags) ? item.row.tags : [],
     entities: Array.isArray(item.row.entities) ? item.row.entities : [],
     aliases: Array.isArray(item.row.aliases) ? item.row.aliases : [],
+    episode_refs: Array.isArray(item.row.episode_refs) ? item.row.episode_refs : [],
+    case_refs: Array.isArray(item.row.case_refs) ? item.row.case_refs : [],
     storyline_id: normalizeText(item.row.storyline_id),
     memory_family: normalizeText(item.row.memory_family),
     score: round(item.score),
@@ -257,10 +259,14 @@ function scoreWarmRow(
   const tags = Array.isArray(row.tags) ? row.tags.map((item) => normalizeText(item).toLowerCase()) : [];
   const entities = Array.isArray(row.entities) ? row.entities.map((item) => normalizeText(item).toLowerCase()) : [];
   const aliases = Array.isArray(row.aliases) ? row.aliases.map((item) => normalizeText(item).toLowerCase()) : [];
+  const episodeRefs = Array.isArray(row.episode_refs) ? row.episode_refs.map((item) => normalizeText(item).toLowerCase()) : [];
+  const caseRefs = Array.isArray(row.case_refs) ? row.case_refs.map((item) => normalizeText(item).toLowerCase()) : [];
   const structured = [
     tags.join(" "),
     entities.join(" "),
     aliases.join(" "),
+    episodeRefs.join(" "),
+    caseRefs.join(" "),
     normalizeText(row.storyline_id).toLowerCase(),
     normalizeText(row.memory_family).toLowerCase(),
   ].join(" ");

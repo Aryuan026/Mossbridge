@@ -14,7 +14,7 @@ try {
 }
 
 try {
-  require("dotenv").config({ path: path.join(os.homedir(), ".asheriebridge", ".env") });
+  require("dotenv").config({ path: path.join(os.homedir(), ".mossbridge", ".env") });
 } catch {
   // Optional user-level bridge env.
 }
@@ -23,10 +23,10 @@ const args = process.argv.slice(2);
 const includePreviews = hasFlag("--include-previews");
 const writeOutput = hasFlag("--write");
 const stateDir = readValueFlag("--state-dir")
-  || process.env.ASHERIEBRIDGE_STATE_DIR
-  || path.join(os.homedir(), ".asheriebridge");
+  || process.env.MOSSBRIDGE_STATE_DIR
+  || path.join(os.homedir(), ".mossbridge");
 const dataRoot = readValueFlag("--data-root")
-  || process.env.ASHERIEBRIDGE_DATA_ROOT
+  || process.env.MOSSBRIDGE_DATA_ROOT
   || path.join(stateDir, "asherie_gateway");
 const homeHealthUrl = readValueFlag("--home-health-url") || "http://127.0.0.1:8089/health";
 
@@ -123,6 +123,7 @@ function buildMemoryStorageSection() {
     cache_root: summarizeDir(cacheRoot, 1),
     warm_memory: summarizeDir(path.join(storageRoot, "warm_memory"), 3),
     observation_journal: summarizeJsonlDir(path.join(storageRoot, "observation_journal")),
+    episode_journal: summarizeDir(path.join(storageRoot, "episode_journal"), 3),
     ongoing_tracks: summarizeJsonFile(path.join(storageRoot, "ongoing_tracks.json")),
     conversation_cache: summarizeJsonlDir(path.join(cacheRoot, "conversation_cache")),
     wakeup_journal: summarizeJsonFile(path.join(cacheRoot, "wakeup_journal.json")),
@@ -178,10 +179,116 @@ function summarizeRuntimeUsage(runtimeUsage) {
       threshold_usage_ratio: thresholdTokens ? round(currentTokens / thresholdTokens, 4) : 0,
       updated_at: claudecode.updatedAt || "",
     },
+    token_pressure_by_day: summarizeRuntimeTokenPressureByDay(runtimeUsage),
     auto_compact_events: Array.isArray(runtimeUsage.autoCompactEvents)
       ? runtimeUsage.autoCompactEvents.slice(-8)
       : [],
   };
+}
+
+function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
+  const contexts = Object.values(runtimeUsage?.contextsByThreadId || {})
+    .filter((item) => item && typeof item === "object");
+  const byDay = {};
+  for (const row of contexts) {
+    const runtimeId = normalizeString(row.runtimeId).toLowerCase();
+    if (runtimeId !== "claudecode" && runtimeId !== "codex") {
+      continue;
+    }
+    const day = toShanghaiDay(row.updatedAt);
+    const currentTokens = Number(row.currentTokens) || 0;
+    const bucket = byDay[day] || {
+      thread_count: 0,
+      nonzero_thread_count: 0,
+      zero_usage_thread_count: 0,
+      total_current_tokens: 0,
+      input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 0,
+      current_token_samples: [],
+      max_context: null,
+      by_kind: {},
+    };
+    const kind = classifyRuntimeUsageKind(row);
+    const kindBucket = bucket.by_kind[kind] || {
+      thread_count: 0,
+      nonzero_thread_count: 0,
+      total_current_tokens: 0,
+      max_current_tokens: 0,
+    };
+
+    bucket.thread_count += 1;
+    bucket.nonzero_thread_count += currentTokens > 0 ? 1 : 0;
+    bucket.zero_usage_thread_count += currentTokens > 0 ? 0 : 1;
+    bucket.total_current_tokens += currentTokens;
+    bucket.input_tokens += Number(row.inputTokens) || 0;
+    bucket.cache_creation_input_tokens += Number(row.cacheCreationInputTokens) || 0;
+    bucket.cache_read_input_tokens += Number(row.cacheReadInputTokens) || 0;
+    bucket.output_tokens += Number(row.outputTokens) || 0;
+    bucket.current_token_samples.push(currentTokens);
+    if (!bucket.max_context || currentTokens > bucket.max_context.current_tokens) {
+      bucket.max_context = {
+        thread_id: normalizeString(row.threadId),
+        kind,
+        current_tokens: currentTokens,
+        cache_creation_input_tokens: Number(row.cacheCreationInputTokens) || 0,
+        cache_read_input_tokens: Number(row.cacheReadInputTokens) || 0,
+        output_tokens: Number(row.outputTokens) || 0,
+        updated_at: normalizeString(row.updatedAt),
+      };
+    }
+
+    kindBucket.thread_count += 1;
+    kindBucket.nonzero_thread_count += currentTokens > 0 ? 1 : 0;
+    kindBucket.total_current_tokens += currentTokens;
+    kindBucket.max_current_tokens = Math.max(kindBucket.max_current_tokens, currentTokens);
+    bucket.by_kind[kind] = kindBucket;
+    byDay[day] = bucket;
+  }
+
+  return Object.fromEntries(
+    Object.entries(byDay)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([day, bucket]) => {
+        const samples = bucket.current_token_samples;
+        delete bucket.current_token_samples;
+        return [day, {
+          ...bucket,
+          average_current_tokens: Math.round(bucket.total_current_tokens / Math.max(1, bucket.thread_count)),
+          p50_current_tokens: percentile(samples, 0.5),
+          p90_current_tokens: percentile(samples, 0.9),
+          system_share: round(
+            (bucket.by_kind.system?.total_current_tokens || 0) / Math.max(1, bucket.total_current_tokens),
+            4
+          ),
+        }];
+      })
+  );
+}
+
+function classifyRuntimeUsageKind(row = {}) {
+  const bindingKey = normalizeString(row.bindingKey);
+  return bindingKey.includes("#asherie-system") ? "system" : "user_or_unbound";
+}
+
+function toShanghaiDay(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  return new Date(date.getTime() + 8 * 60 * 60_000).toISOString().slice(0, 10);
+}
+
+function percentile(values = [], ratio = 0.5) {
+  const sorted = values
+    .map((value) => Number(value) || 0)
+    .sort((left, right) => left - right);
+  if (!sorted.length) {
+    return 0;
+  }
+  const index = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio));
+  return sorted[index];
 }
 
 function summarizeSessions(sessions) {
@@ -480,4 +587,8 @@ function readValueFlag(flag) {
 function round(value, digits = 2) {
   const factor = 10 ** digits;
   return Math.round((Number(value) || 0) * factor) / factor;
+}
+
+function normalizeString(value) {
+  return typeof value === "string" ? value.trim() : "";
 }

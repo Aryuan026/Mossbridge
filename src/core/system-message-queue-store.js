@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const CHECKIN_OPPORTUNITY_TTL_MS = 60 * 60_000;
+
 class SystemMessageQueueStore {
   constructor({ filePath }) {
     this.filePath = filePath;
@@ -18,12 +20,17 @@ class SystemMessageQueueStore {
       const raw = fs.readFileSync(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
       const messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+      const normalizedMessages = messages
+        .map(normalizeSystemMessage)
+        .filter(Boolean);
       this.state = {
-        messages: messages
-          .map(normalizeSystemMessage)
-          .filter(Boolean)
+        messages: normalizedMessages
+          .filter((message) => !isExpiredSystemMessage(message))
           .sort(compareSystemMessages),
       };
+      if (this.state.messages.length !== normalizedMessages.length) {
+        this.save();
+      }
     } catch {
       this.state = { messages: [] };
     }
@@ -72,6 +79,17 @@ class SystemMessageQueueStore {
     const normalizedAccountId = normalizeText(accountId);
     return this.state.messages.some((message) => message.accountId === normalizedAccountId);
   }
+}
+
+function isExpiredSystemMessage(message) {
+  if (normalizeText(message?.kind) !== "checkin_opportunity") {
+    return false;
+  }
+  const createdAtMs = Date.parse(message?.createdAt || "");
+  if (!Number.isFinite(createdAtMs)) {
+    return false;
+  }
+  return Date.now() - createdAtMs > CHECKIN_OPPORTUNITY_TTL_MS;
 }
 
 function normalizeSystemMessage(message) {

@@ -10,6 +10,9 @@ const WEIXIN_MEDIA_TYPE = {
   VIDEO: 2,
   FILE: 3,
 };
+const CDN_UPLOAD_ATTEMPTS = 3;
+const CDN_UPLOAD_TIMEOUT_MS = 20_000;
+const CDN_UPLOAD_RETRY_DELAYS_MS = [350, 900];
 
 function encryptAesEcb(plaintext, key) {
   const cipher = crypto.createCipheriv("aes-128-ecb", key, null);
@@ -27,20 +30,69 @@ function buildCdnUploadUrl({ cdnBaseUrl, uploadParam, filekey }) {
 async function uploadBufferToCdn({ buf, uploadParam, filekey, cdnBaseUrl, aeskey }) {
   const ciphertext = encryptAesEcb(buf, aeskey);
   const cdnUrl = buildCdnUploadUrl({ cdnBaseUrl, uploadParam, filekey });
-  const response = await fetch(cdnUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/octet-stream" },
-    body: new Uint8Array(ciphertext),
-  });
-  if (response.status !== 200) {
-    const errMsg = response.headers.get("x-error-message") || await response.text();
-    throw new Error(`CDN upload failed: ${errMsg || response.status}`);
+  let lastError = null;
+  for (let attempt = 1; attempt <= CDN_UPLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetchCdnUpload(cdnUrl, ciphertext);
+      if (response.status !== 200) {
+        const errMsg = response.headers.get("x-error-message") || await response.text();
+        const error = new Error(`CDN upload failed status=${response.status}: ${errMsg || response.status}`);
+        error.status = response.status;
+        if (!isRetryableCdnError(error) || attempt >= CDN_UPLOAD_ATTEMPTS) {
+          throw error;
+        }
+        lastError = error;
+      } else {
+        const downloadParam = response.headers.get("x-encrypted-param") || "";
+        if (!downloadParam) {
+          throw new Error("CDN upload response missing x-encrypted-param header");
+        }
+        return { downloadParam };
+      }
+    } catch (error) {
+      if (!isRetryableCdnError(error) || attempt >= CDN_UPLOAD_ATTEMPTS) {
+        throw error;
+      }
+      lastError = error;
+    }
+    await sleep(CDN_UPLOAD_RETRY_DELAYS_MS[Math.min(attempt - 1, CDN_UPLOAD_RETRY_DELAYS_MS.length - 1)]);
   }
-  const downloadParam = response.headers.get("x-encrypted-param") || "";
-  if (!downloadParam) {
-    throw new Error("CDN upload response missing x-encrypted-param header");
+  throw lastError || new Error("CDN upload failed");
+}
+
+async function fetchCdnUpload(cdnUrl, ciphertext) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CDN_UPLOAD_TIMEOUT_MS);
+  try {
+    return await fetch(cdnUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: new Uint8Array(ciphertext),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
   }
-  return { downloadParam };
+}
+
+function isRetryableCdnError(error) {
+  const status = Number(error?.status || 0);
+  if (status >= 500 && status < 600) {
+    return true;
+  }
+  const name = String(error?.name || "");
+  const message = String(error?.message || "").toLowerCase();
+  return name === "AbortError"
+    || message.includes("fetch failed")
+    || message.includes("network")
+    || message.includes("econnreset")
+    || message.includes("etimedout")
+    || message.includes("socket")
+    || message.includes("aborted");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function uploadMediaToWeixin({ filePath, toUserId, opts, cdnBaseUrl, mediaType }) {

@@ -87,7 +87,7 @@ function buildRecallFocus({ query = "", recentRecords = [], recentRecordLimit = 
   const recallQuery = buildRecallQuery({
     currentQuery,
     recentTurns,
-    shouldExpand: trigger.should_trigger && (trigger.hanging_signal || currentQuery.length <= 8),
+    shouldExpand: shouldExpandWithRecentContext(currentQuery, trigger),
   });
   return {
     current_query: currentQuery,
@@ -160,6 +160,19 @@ function shouldTriggerLongTermRecall({ query = "", recentTurns = [] } = {}) {
   };
 }
 
+function shouldExpandWithRecentContext(currentQuery, trigger = {}) {
+  if (!trigger.should_trigger) {
+    return false;
+  }
+  if (trigger.explicit_recall_signal) {
+    return true;
+  }
+  if (!trigger.hanging_signal) {
+    return false;
+  }
+  return isUnderspecifiedContinuation(currentQuery);
+}
+
 function buildRecallQuery({ currentQuery = "", recentTurns = [], shouldExpand = false } = {}) {
   const base = normalizeText(currentQuery);
   if (!base) {
@@ -189,6 +202,15 @@ function isPhaticMessage(text) {
     return true;
   }
   return PHATIC_PATTERNS.some((pattern) => pattern.test(lowered));
+}
+
+function isUnderspecifiedContinuation(text) {
+  const normalized = normalizeText(text);
+  const compact = normalized.replace(/\s+/g, "");
+  if (!compact || compact.length > 28) {
+    return false;
+  }
+  return /(这个|那个|这事|那事|这样|那样|还没|还要|还能|也行|也不|不行|可以|算了|继续|接着|先这样|就这样|它|他|她)/i.test(normalized);
 }
 
 function looksLikeTechnicalMeta(text) {

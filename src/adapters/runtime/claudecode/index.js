@@ -22,7 +22,7 @@ function createClaudeCodeRuntimeAdapter(config) {
   const pendingApprovals = new Map();
   let globalListener = null;
   const ipcSocketPath = path.join(
-    config.stateDir || path.join(os.homedir(), ".asheriebridge"),
+    config.stateDir || path.join(os.homedir(), ".mossbridge"),
     "claudecode-runtime.sock",
   );
   const ipcServer = new ClaudeCodeIpcServer({ socketPath: ipcSocketPath });
@@ -49,7 +49,7 @@ function createClaudeCodeRuntimeAdapter(config) {
     const resolvedModel = normalizeModelId(modelOverride) || normalizeModelId(config.claudeModel);
     const projectSettings = ensureClaudeProjectMcpConfig({
       workspaceRoot,
-      asheriebridgeHome: process.env.ASHERIEBRIDGE_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
+      mossbridgeHome: process.env.MOSSBRIDGE_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
     });
     console.log(
       `[claudecode-runtime] workspace=${workspaceRoot} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`

@@ -2,6 +2,102 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
+const QUERY_STOP_TERMS = new Set([
+  "一个",
+  "一下",
+  "一说",
+  "不适",
+  "不适合",
+  "不饿",
+  "不会",
+  "不是",
+  "不用",
+  "个手",
+  "之前",
+  "之后",
+  "今天",
+  "今晚",
+  "今年",
+  "他",
+  "以前",
+  "以及",
+  "但是",
+  "你",
+  "你说",
+  "到家",
+  "刚刚",
+  "home",
+  "前面",
+  "前台",
+  "可以",
+  "可怜",
+  "后来",
+  "哎",
+  "哎嘿",
+  "哪个",
+  "哪条",
+  "哪里",
+  "多久",
+  "好多",
+  "宝宝",
+  "已经",
+  "应该",
+  "弄长",
+  "弄长篇",
+  "微信",
+  "怎么",
+  "怎样",
+  "想着",
+  "想不",
+  "想不起来",
+  "意思",
+  "感觉",
+  "打算",
+  "接着",
+  "晚上",
+  "明天",
+  "是否",
+  "是不是",
+  "时候",
+  "有没有",
+  "来得",
+  "比较",
+  "没有",
+  "ongoing",
+  "然后",
+  "现在",
+  "直接",
+  "算了",
+  "系统",
+  "自己",
+  "行记",
+  "要不",
+  "要是",
+  "觉得",
+  "记忆",
+  "说一",
+  "这么",
+  "这个",
+  "这里",
+  "还是",
+  "进行",
+  "适合",
+  "那就",
+  "那个",
+  "需要",
+  "起来",
+]);
+
+const ONGOING_OVERVIEW_PATTERNS = [
+  /挂着什么/u,
+  /脑子里.*挂/u,
+  /还有什么/u,
+  /还有哪/u,
+  /哪条线/u,
+  /最近.*(?:忙|挂|推进|进展|待办)/u,
+  /(?:待办|悬挂|挂起|未解决|没解决|跟进|收尾|进展)/u,
+];
+
 class OngoingTrackStore {
   constructor(activeFilePath, archiveFilePath, maxActiveRecords = 400) {
     this.activeFilePath = path.resolve(activeFilePath);
@@ -333,9 +429,12 @@ function scoreTrack(track = {}, query = "") {
   if (!normalizedQuery) {
     return 0;
   }
-  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const tokens = queryTerms(normalizedQuery);
   const title = String(track.title || "").toLowerCase();
   const summary = String(track.summary || "").toLowerCase();
+  const strongLabels = [
+    ...(Array.isArray(track.tags) ? track.tags : []),
+  ].map((item) => normalizeText(item).toLowerCase()).filter(Boolean);
   const detail = [
     track.target_window,
     track.why_it_matters,
@@ -357,11 +456,76 @@ function scoreTrack(track = {}, query = "") {
     if (summary.includes(token)) {
       score += 3;
     }
-    if (detail.includes(token)) {
+    if (strongLabels.includes(token)) {
+      score += 5;
+    }
+    if (isSpecificDetailToken(token) && detail.includes(token)) {
       score += 2;
     }
   });
   return score;
+}
+
+function isSpecificDetailToken(token = "") {
+  const normalized = normalizeText(token).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (/^[a-z0-9][a-z0-9_-]*$/iu.test(normalized)) {
+    return normalized.length >= 3;
+  }
+  if (/^[\u4e00-\u9fff]+$/u.test(normalized)) {
+    return normalized.length >= 3;
+  }
+  return normalized.length >= 4;
+}
+
+function queryTerms(query = "") {
+  const normalized = normalizeText(query).toLowerCase();
+  const terms = new Set();
+  normalized.split(/[^\p{L}\p{N}\u4e00-\u9fff_-]+/u)
+    .map((token) => normalizeQueryTerm(token))
+    .filter(Boolean)
+    .forEach((token) => terms.add(token));
+  const cjkRuns = normalized.match(/[\u4e00-\u9fff]{2,}/gu) || [];
+  cjkRuns.forEach((run) => {
+    for (let size = 2; size <= Math.min(4, run.length); size += 1) {
+      for (let index = 0; index <= run.length - size; index += 1) {
+        const term = normalizeQueryTerm(run.slice(index, index + size));
+        if (term) {
+          terms.add(term);
+        }
+      }
+    }
+  });
+  return Array.from(terms);
+}
+
+function normalizeQueryTerm(value) {
+  const token = normalizeText(value)
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}\u4e00-\u9fff]+|[^\p{L}\p{N}\u4e00-\u9fff]+$/gu, "");
+  if (!token || QUERY_STOP_TERMS.has(token)) {
+    return "";
+  }
+  if (token.includes("记忆") || token.includes("系统")) {
+    return "";
+  }
+  if (/^[a-z0-9][a-z0-9_-]*$/iu.test(token)) {
+    return token.length >= 3 ? token : "";
+  }
+  if (/^[\u4e00-\u9fff]+$/u.test(token)) {
+    return token.length >= 2 ? token : "";
+  }
+  return token.length >= 3 ? token : "";
+}
+
+function isOngoingOverviewQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return ONGOING_OVERVIEW_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function rankTime(value) {
@@ -409,4 +573,5 @@ function createRecordId(prefix) {
 module.exports = {
   OngoingTrackStore,
   normalizeTrack,
+  isOngoingOverviewQuery,
 };

@@ -65,6 +65,22 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
   const storylineId = normalizeText(payload.storyline_id || payload.storylineId);
   const memoryFamily = normalizeText(payload.memory_family || payload.memoryFamily);
   const provenanceRefs = stringList(payload.provenance_refs || payload.provenanceRefs || [], 24);
+  const episodeRefs = stringList(
+    payload.episode_refs
+      || payload.episodeRefs
+      || payload.related_episode_refs
+      || payload.relatedEpisodeRefs
+      || [],
+    24,
+  );
+  const caseRefs = stringList(
+    payload.case_refs
+      || payload.caseRefs
+      || payload.related_case_refs
+      || payload.relatedCaseRefs
+      || [],
+    24,
+  );
   let accessLog = isoStringList(payload.access_log || payload.accessLog || [], 128);
   if (!accessLog.length) {
     accessLog = isoStringList([payload.updated_at || payload.updatedAt || payload.created_at || payload.createdAt || now], 128);
@@ -76,7 +92,7 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
     thread_id: normalizeText(payload.thread_id || payload.threadId),
     source_path: normalizeText(payload.source_path || payload.sourcePath),
   };
-  const routingText = [tags.join(" "), entities.join(" "), aliases.join(" "), storylineId, memoryFamily].join(" ");
+  const routingText = [tags.join(" "), entities.join(" "), aliases.join(" "), storylineId, memoryFamily, episodeRefs.join(" "), caseRefs.join(" ")].join(" ");
   const keywords = tokenize([title, summary, bodyMarkdown.slice(0, 400), routingText].join(" "));
   const ngrams = charNgrams([title, summary, bodyMarkdown.slice(0, 400), routingText].join(" "));
   const storageStrength = floatOrNull(
@@ -110,6 +126,8 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
     storyline_id: storylineId,
     memory_family: memoryFamily,
     provenance_refs: provenanceRefs,
+    episode_refs: episodeRefs,
+    case_refs: caseRefs,
     source,
     keywords,
     ngrams,
@@ -170,6 +188,12 @@ function buildMaterialMarkdown(record = {}) {
   }
   if (Array.isArray(record.provenance_refs) && record.provenance_refs.length) {
     lines.push(`provenance_refs: ${record.provenance_refs.join(", ")}`);
+  }
+  if (Array.isArray(record.episode_refs) && record.episode_refs.length) {
+    lines.push(`episode_refs: ${record.episode_refs.join(", ")}`);
+  }
+  if (Array.isArray(record.case_refs) && record.case_refs.length) {
+    lines.push(`case_refs: ${record.case_refs.join(", ")}`);
   }
   const source = record.source && typeof record.source === "object" ? record.source : {};
   if (normalizeText(source.source_client)) {

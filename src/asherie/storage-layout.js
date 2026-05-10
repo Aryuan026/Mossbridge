@@ -9,6 +9,8 @@ function buildGatewayStorageLayout(dataRoot, {
   memoryTreeDirOverride = "",
   caseIndexDirOverride = "",
   observationJournalDirOverride = "",
+  episodeJournalDirOverride = "",
+  solitudeJournalDirOverride = "",
   notionSyncDirOverride = "",
   memoryVersionBankDirOverride = "",
   warmMemoryDirOverride = "",
@@ -22,6 +24,8 @@ function buildGatewayStorageLayout(dataRoot, {
   appDailyCaptureDirOverride = "",
   rawTranscriptActiveDirOverride = "",
   hotCacheDirOverride = "",
+  runtimeId = "codex",
+  startupId = "",
   runtimeStateDirOverride = "",
   startupStateDirOverride = "",
   wechatTransportStateDirOverride = "",
@@ -34,6 +38,8 @@ function buildGatewayStorageLayout(dataRoot, {
   const storageRoot = resolveOverridePath(storageRootOverride, path.join(base, "storage"));
   const cacheRoot = resolveOverridePath(cacheRootOverride, path.join(base, "cache"));
   const hotCacheDir = resolveOverridePath(hotCacheDirOverride, path.join(cacheRoot, "hot"));
+  const runtimeSegment = normalizeStorageSegment(runtimeId) || "codex";
+  const startupSegment = normalizeStorageSegment(startupId) || `shared_${runtimeSegment}`;
   const curatedStorePath = curatedStoreOverride
     ? path.resolve(curatedStoreOverride)
     : path.join(storageRoot, "curated_memories.json");
@@ -46,6 +52,8 @@ function buildGatewayStorageLayout(dataRoot, {
     memoryTreeDir: resolveOverridePath(memoryTreeDirOverride, path.join(storageRoot, "memory_tree")),
     caseIndexDir: resolveOverridePath(caseIndexDirOverride, path.join(storageRoot, "case_index")),
     observationJournalDir: resolveOverridePath(observationJournalDirOverride, path.join(storageRoot, "observation_journal")),
+    episodeJournalDir: resolveOverridePath(episodeJournalDirOverride, path.join(storageRoot, "episode_journal")),
+    solitudeJournalDir: resolveOverridePath(solitudeJournalDirOverride, path.join(storageRoot, "solitude_journal")),
     notionSyncDir: resolveOverridePath(notionSyncDirOverride, path.join(storageRoot, "notion_sync")),
     memoryVersionBankDir: resolveOverridePath(memoryVersionBankDirOverride, path.join(storageRoot, "memory_versions")),
     warmMemoryDir: resolveOverridePath(warmMemoryDirOverride, path.join(storageRoot, "warm_memory")),
@@ -63,8 +71,8 @@ function buildGatewayStorageLayout(dataRoot, {
     hotContextBasinDir: path.join(hotCacheDir, "context_basin"),
     hotContextProjectionDir: path.join(hotCacheDir, "projections"),
     hotContextSnapshotDir: path.join(hotCacheDir, "snapshots"),
-    runtimeStateDir: resolveOverridePath(runtimeStateDirOverride, path.join(cacheRoot, "runtimes", "codex")),
-    startupStateDir: resolveOverridePath(startupStateDirOverride, path.join(cacheRoot, "startup", "shared_codex")),
+    runtimeStateDir: resolveOverridePath(runtimeStateDirOverride, path.join(cacheRoot, "runtimes", runtimeSegment)),
+    startupStateDir: resolveOverridePath(startupStateDirOverride, path.join(cacheRoot, "startup", startupSegment)),
     wechatTransportStateDir: resolveOverridePath(wechatTransportStateDirOverride, path.join(cacheRoot, "transports", "wechat")),
     wechatTransportThreadDir: resolveOverridePath(wechatTransportThreadDirOverride, path.join(cacheRoot, "transports", "wechat", "threads")),
     wakeupStorePath: resolveOverridePath(wakeupStorePathOverride, path.join(cacheRoot, "wakeup_journal.json")),
@@ -81,6 +89,8 @@ function ensureGatewayStorageLayout(layout) {
     "memoryTreeDir",
     "caseIndexDir",
     "observationJournalDir",
+    "episodeJournalDir",
+    "solitudeJournalDir",
     "notionSyncDir",
     "memoryVersionBankDir",
     "warmMemoryDir",
@@ -131,6 +141,8 @@ function buildGatewayStorageHealth(layout) {
     memory_tree_dir: layout.memoryTreeDir,
     case_index_dir: layout.caseIndexDir,
     observation_journal_dir: layout.observationJournalDir,
+    episode_journal_dir: layout.episodeJournalDir,
+    solitude_journal_dir: layout.solitudeJournalDir,
     notion_sync_dir: layout.notionSyncDir,
     raw_transcript_archive_dir: layout.rawTranscriptArchiveDir,
     dreaming_mutation_log_dir: layout.dreamingMutationLogDir,
@@ -176,4 +188,12 @@ module.exports = {
 function resolveOverridePath(overrideValue, fallback) {
   const normalized = typeof overrideValue === "string" ? overrideValue.trim() : "";
   return normalized ? path.resolve(normalized) : fallback;
+}
+
+function normalizeStorageSegment(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
 }

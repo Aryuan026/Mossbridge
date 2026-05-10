@@ -125,6 +125,114 @@ test("StickerService keeps archive stickers searchable but out of default pickin
   assert.equal(listed.stickers[0].sourceId, "demo-1");
 });
 
+test("StickerService searches semantic sticker catalog entries", async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["抱抱", "安慰"],
+    desc: "软软抱抱安慰。",
+    meaning: "给你抱抱",
+    raw_content: "一只小狗把哭哭猫抱进怀里，适合难过时软着陆。",
+    use_when: ["用户难过、委屈、需要被接住的时候。"],
+    avoid_when: ["严肃决策或需要先解释事实的时候。"],
+    frontstage_effect: "温柔收尾",
+    status: "active",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  fs.writeFileSync(path.join(config.stickerAssetsDir, "stk_012.gif"), "GIF89a-soft-hug");
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: null,
+  });
+
+  const searched = await service.search({ query: "难过的时候给她一个软软抱抱", limit: 3 });
+
+  assert.equal(searched.candidates[0].stickerId, "stk_012");
+  assert.equal(searched.candidates[0].rawContent, "一只小狗把哭哭猫抱进怀里，适合难过时软着陆。");
+});
+
+test("StickerService sends gif stickers as static png previews first for WeChat stability", {
+  skip: process.platform !== "darwin" || !fs.existsSync("/usr/bin/sips"),
+}, async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["挥手"],
+    desc: "一张会动的挥手测试表情。",
+    status: "active",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    resolveStickerFilePath(config, "stk_012"),
+    Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICRAEAOw==", "base64")
+  );
+  const sentFiles = [];
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: {
+      async sendToCurrentChat(args, context) {
+        sentFiles.push({ args, context });
+        return { ok: true };
+      },
+    },
+  });
+
+  const delivery = await service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" });
+
+  assert.equal(delivery.mimeType, "image/gif");
+  assert.equal(delivery.deliveryMimeType, "image/png");
+  assert.equal(delivery.deliveryTransform, "gif_static_png_preview");
+  assert.equal(sentFiles.length, 1);
+  assert.match(sentFiles[0].args.filePath, /send-cache\/stk_012-\d+-\d+\.png$/);
+  assert.ok(fs.existsSync(sentFiles[0].args.filePath));
+});
+
+test("StickerService falls back to animated gif only if static png preview delivery fails", {
+  skip: process.platform !== "darwin" || !fs.existsSync("/usr/bin/sips"),
+}, async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["挥手"],
+    desc: "一张会动的挥手测试表情。",
+    status: "active",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    resolveStickerFilePath(config, "stk_012"),
+    Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICRAEAOw==", "base64")
+  );
+  const sentFiles = [];
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: {
+      async sendToCurrentChat(args, context) {
+        sentFiles.push({ args, context });
+        if (sentFiles.length === 1) {
+          throw new Error("CDN upload failed: 500");
+        }
+        return { ok: true };
+      },
+    },
+  });
+
+  const delivery = await service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" });
+
+  assert.equal(delivery.mimeType, "image/gif");
+  assert.equal(delivery.deliveryMimeType, "image/gif");
+  assert.equal(delivery.deliveryTransform, "gif_original_small_fallback");
+  assert.equal(delivery.attemptedDeliveries.length, 1);
+  assert.match(sentFiles[0].args.filePath, /send-cache\/stk_012-\d+-\d+\.png$/);
+  assert.ok(fs.existsSync(sentFiles[0].args.filePath));
+  assert.equal(sentFiles[1].args.filePath, resolveStickerFilePath(config, "stk_012"));
+});
+
 test("ensureStickerCatalogFilesSync merges presets without overwriting custom ids", () => {
   const config = createTempStickerConfig();
   fs.mkdirSync(config.stickersDir, { recursive: true });
@@ -174,7 +282,7 @@ test("allocateNextStickerId uses the next numeric sticker id", () => {
 });
 
 function createTempStickerConfig() {
-  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-sticker-test-"));
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-sticker-test-"));
   const stateDir = path.join(testRoot, "state");
   const workspaceRoot = path.join(testRoot, "workspace");
   return {

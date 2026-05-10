@@ -20,13 +20,13 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
   Random check-ins and scheduled reminders are treated as model wakeups, not just alarm messages. Wakeups can carry recent context and relevant warm/ongoing memory so they do not feel detached from the relationship history.
 
 - **Multi-window data posture**
-  The code can point its memory data root at a shared store, so WeChat, terminal, Home frontends, or other chat windows can eventually write into one memory metabolism pipeline while still remaining separate channels.
+  The code can point its memory data root at a shared store, so WeChat, terminal, ChatGPT web/app captures, or other chat windows can eventually write into one memory metabolism pipeline while still remaining separate channels. Mossbridge should ingest those sources as data, not bridge to private external executors.
 
 - **Ongoing-track layer**
   Near-term living threads, such as health tracking, writing tasks, family updates, purchases, and unresolved cases, can stay suspended near the front of memory without being prematurely frozen into permanent cold memory.
 
 - **Optional cold-tree compatibility**
-  Mossbridge can read or patch cold-memory structures through configured providers, but the current recommendation is not to make the WeChat bridge depend on a personal Home cold tree for daily continuity.
+  Mossbridge can read or patch cold-memory structures through configured providers, but the current recommendation is not to make the WeChat bridge depend on a personal external cold tree for daily continuity.
 
 - **Sticker and attachment workflow**
   Incoming WeChat images and attachments can be saved into an inbox, summarized for context, and, when suitable, registered into a local sticker catalog. The model gets sticker tools instead of needing brittle text substitutions like `[微笑]`.
@@ -37,20 +37,22 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 - **Runtime flexibility**
   Codex and Claude Code are both supported. Shared mode is the preferred daily workflow, with commands for opening the same thread from terminal and WeChat and for switching Claude models when supported by the local runtime.
 
-## Current Naming State
+- **Safe self-check by default**
+  Heartbeat maintenance can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
 
-The repository is named `Mossbridge`, but many internal entrypoints still use the working name `asheriebridge`.
+## Public Naming And Runtime Posture
 
-That is intentional for now. The command name, MCP tool namespace, environment variables, test fixtures, and local state directory are connected to each other. Renaming them safely should happen as a release-cleanup pass, not in the middle of live WeChat testing.
+The public surface is now Mossbridge:
 
-Current internal names you will still see:
+- package and CLI: `mossbridge`
+- environment prefix: `MOSSBRIDGE_*`
+- default state directory: `${HOME}/.mossbridge`
+- launchd label: `com.mossbridge.bridge`
+- MCP server/tool namespace: `mossbridge_tools` / `mossbridge_*`
 
-- command: `asheriebridge`
-- environment prefix: `ASHERIEBRIDGE_*`
-- default state directory: `${HOME}/.asheriebridge`
-- MCP server/tool namespace: `asheriebridge_tools` / `asheriebridge_*`
+Codex and Claude Code are both first-class runtimes. Shared bridge behavior belongs in bridge core; runtime adapters should only carry protocol-specific details such as Codex RPC/session handling or Claude Code process/session/model handling.
 
-Before any public release, the repo should be scanned and renamed consistently so the public package, CLI, MCP tools, docs, and local state directory all match `mossbridge`.
+Some memory internals still use historical Asherie terms. Treat those as cleanup debt unless they are part of the explicit upstream acknowledgement, migration notes, or memory-domain vocabulary.
 
 ## Requirements
 
@@ -67,33 +69,49 @@ cd Mossbridge
 npm install
 ```
 
+For the full first-run path, including QR login and `/bind`, see [docs/quickstart.md](./docs/quickstart.md).
+
 ## Minimal Configuration
 
 Create a local `.env` in the project directory. Private `.env` files and runtime state are intentionally ignored by git.
 
 ```dotenv
-ASHERIEBRIDGE_USER_NAME=YourName
-ASHERIEBRIDGE_ALLOWED_USER_IDS=your_wechat_user_id
-ASHERIEBRIDGE_WORKSPACE_ROOT=/absolute/path/to/your/workspace
-ASHERIEBRIDGE_RUNTIME=claudecode
-ASHERIEBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+MOSSBRIDGE_RUNTIME=codex
+MOSSBRIDGE_WORKSPACE_ROOT=/absolute/path/to/your/workspace
+MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
+MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
+MOSSBRIDGE_ALLOWED_USER_IDS=
 ```
 
-Optional memory/data settings:
+For Claude Code, set:
 
 ```dotenv
-ASHERIEBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
-ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
-ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
-ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+MOSSBRIDGE_RUNTIME=claudecode
+MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
 ```
 
-For new deployments, prefer setting only `ASHERIEBRIDGE_DATA_ROOT` first. The more specific paths are mainly for compatibility with an existing memory warehouse or a migration from AsherieHome.
+Optional memory/data migration settings:
+
+```dotenv
+MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
+MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
+MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+```
+
+For new deployments, prefer setting only `MOSSBRIDGE_DATA_ROOT` first. The more specific paths are for intentional migration or sharing with an existing memory warehouse.
 
 ## Daily Commands
 
 ```bash
 npm run login
+npm run shared:start
+npm run shared:open
+npm run shared:status
+```
+
+Claude Code equivalents:
+
+```bash
 npm run shared:start:claudecode
 npm run shared:open:claudecode
 npm run shared:status:claudecode
@@ -121,8 +139,8 @@ Useful WeChat commands:
 Mossbridge is designed so code and personal data can be separated.
 
 - Git should contain source code, templates, tests, and docs.
-- Runtime account data should stay in `${HOME}/.asheriebridge` or another ignored state directory.
-- Personal memory data should stay under `ASHERIEBRIDGE_DATA_ROOT` or explicitly configured memory paths.
+- Runtime account data should stay in `${HOME}/.mossbridge` or another ignored state directory.
+- Personal memory data should stay under `MOSSBRIDGE_DATA_ROOT` or explicitly configured memory paths.
 - Test data should be removable without touching stable personal memory.
 - A future public release should not include private memory cards, account tokens, local logs, QR data, or personal workspace bindings.
 
@@ -156,15 +174,14 @@ The model-facing capabilities are exposed as local project tools. Current tool f
 - ongoing-track upsert/read/list/close
 - cold-memory read/search/patch/version operations
 
-The exact tool names still use the `asheriebridge_*` namespace until the public rename pass.
+The model-facing namespace is `mossbridge_tools`, with tools named `mossbridge_*`.
 
 ## Public-Release Cleanup Checklist
 
 Before making this repository public, do a final naming and privacy pass:
 
-- rename CLI/package/MCP namespace from `asheriebridge` to `mossbridge`
-- rename `ASHERIEBRIDGE_*` docs or provide a compatibility layer
-- decide whether old state directory `${HOME}/.asheriebridge` remains as a migration alias
+- keep historical `ASHERIEBRIDGE_*` and Cyberboss names out of runtime entrypoints; mention them only in migration or upstream-lineage notes
+- decide whether any old state directory aliases should be supported or explicitly rejected
 - scan source, tests, docs, templates, screenshots, and fixtures for personal paths or private names
 - remove or replace private screenshots and memory examples
 - verify that the bridge can run with an empty data warehouse
@@ -173,13 +190,16 @@ Before making this repository public, do a final naming and privacy pass:
 ## Docs
 
 - [docs/commands.md](./docs/commands.md)
+- [docs/quickstart.md](./docs/quickstart.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
+- [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
+- [docs/runtime-neutral-readiness.md](./docs/runtime-neutral-readiness.md)
 - [docs/notion-memory-interop.md](./docs/notion-memory-interop.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
 - [docs/public-release-readiness.md](./docs/public-release-readiness.md)
 
-Some docs still preserve Cyberboss or AsherieBridge wording because the internal rename has not been done yet.
+Some docs still preserve Cyberboss wording where they describe upstream lineage or older architecture notes. Public setup docs should otherwise use Mossbridge names.
 
 ## License
 

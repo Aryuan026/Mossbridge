@@ -4,7 +4,13 @@ const path = require("path");
 function readConfig() {
   const argv = process.argv.slice(2);
   const mode = argv[0] || "";
-  const stateDir = readBridgeTextEnv("STATE_DIR") || path.join(os.homedir(), ".asheriebridge");
+  const stateDir = readBridgeTextEnv("STATE_DIR") || path.join(os.homedir(), ".mossbridge");
+  const configuredAsherieDataRoot = readTextEnv("MOSSBRIDGE_DATA_ROOT");
+  const asherieDataRoot = configuredAsherieDataRoot || path.join(stateDir, "asherie_gateway");
+  const stickersDir = readBridgeTextEnv("STICKERS_DIR")
+    || (configuredAsherieDataRoot
+      ? path.join(asherieDataRoot, "storage", "stickers")
+      : path.join(stateDir, "stickers"));
 
   return {
     mode,
@@ -21,6 +27,8 @@ function readConfig() {
     channel: readBridgeTextEnv("CHANNEL") || "weixin",
     runtime: readBridgeTextEnv("RUNTIME") || "codex",
     timelineCommand: readBridgeTextEnv("TIMELINE_COMMAND") || "timeline-for-agent",
+    maintenanceProfile: readBridgeTextEnv("MAINTENANCE_PROFILE") || "safe_self_check",
+    maintenanceAllowSelfRepair: readBridgeOptionalBoolEnv("MAINTENANCE_ALLOW_SELF_REPAIR") ?? false,
     accountId: readBridgeTextEnv("ACCOUNT_ID"),
     weixinBaseUrl: readBridgeTextEnv("WEIXIN_BASE_URL") || "https://ilinkai.weixin.qq.com",
     weixinCdnBaseUrl: readBridgeTextEnv("WEIXIN_CDN_BASE_URL") || "https://novac2c.cdn.weixin.qq.com/c2c",
@@ -32,14 +40,27 @@ function readConfig() {
     systemMessageQueueFile: path.join(stateDir, "system-message-queue.json"),
     deferredSystemReplyQueueFile: path.join(stateDir, "deferred-system-replies.json"),
     checkinConfigFile: path.join(stateDir, "checkin-config.json"),
+    checkinContextTokenMaxAgeMinutes: readBridgeIntEnv("CHECKIN_CONTEXT_TOKEN_MAX_AGE_MINUTES"),
+    checkinRuntimeTextMaxChars: readBridgeIntEnv("CHECKIN_RUNTIME_TEXT_MAX_CHARS"),
+    checkinTokenBackoffPercent: readBridgeIntEnv("CHECKIN_TOKEN_BACKOFF_PERCENT"),
+    checkinTokenSevereBackoffPercent: readBridgeIntEnv("CHECKIN_TOKEN_SEVERE_BACKOFF_PERCENT"),
+    checkinTokenBackoffMultiplier: readBridgeIntEnv("CHECKIN_TOKEN_BACKOFF_MULTIPLIER"),
+    checkinTokenSevereBackoffMultiplier: readBridgeIntEnv("CHECKIN_TOKEN_SEVERE_BACKOFF_MULTIPLIER"),
+    checkinMaxBackoffMinutes: readBridgeIntEnv("CHECKIN_MAX_BACKOFF_MINUTES"),
+    checkinDailyTokenBudget: readBridgeIntEnv("CHECKIN_DAILY_TOKEN_BUDGET"),
+    checkinDailyThreadBudget: readBridgeIntEnv("CHECKIN_DAILY_THREAD_BUDGET"),
+    checkinHotWindowMinutes: readBridgeIntEnv("CHECKIN_HOT_WINDOW_MINUTES"),
+    checkinHotRecentMinutes: readBridgeIntEnv("CHECKIN_HOT_RECENT_MINUTES"),
+    checkinHotMinEvents: readBridgeIntEnv("CHECKIN_HOT_MIN_EVENTS"),
     runtimeContextUsageFile: path.join(stateDir, "runtime-context-usage.json"),
+    runtimeCooldownFile: path.join(stateDir, "runtime-cooldowns.json"),
     weixinIngressAuditFile: path.join(stateDir, "weixin-ingress-audit.json"),
     timelineScreenshotQueueFile: path.join(stateDir, "timeline-screenshot-queue.json"),
     projectToolContextFile: path.join(stateDir, "project-tool-runtime-context.json"),
-    stickersDir: path.join(stateDir, "stickers"),
-    stickerAssetsDir: path.join(stateDir, "stickers", "assets"),
-    stickersIndexFile: path.join(stateDir, "stickers", "index.json"),
-    stickerTagsFile: path.join(stateDir, "stickers", "tags.json"),
+    stickersDir,
+    stickerAssetsDir: readBridgeTextEnv("STICKER_ASSETS_DIR") || path.join(stickersDir, "assets"),
+    stickersIndexFile: readBridgeTextEnv("STICKERS_INDEX_FILE") || path.join(stickersDir, "index.json"),
+    stickerTagsFile: readBridgeTextEnv("STICKER_TAGS_FILE") || path.join(stickersDir, "tags.json"),
     stickersTemplateDir: path.resolve(__dirname, "..", "..", "templates", "stickers"),
     stickersTemplateIndexFile: path.resolve(__dirname, "..", "..", "templates", "stickers", "index.json"),
     stickerTagsTemplateFile: path.resolve(__dirname, "..", "..", "templates", "stickers", "tags.json"),
@@ -84,15 +105,17 @@ function readConfig() {
     claudeExtraArgs: readBridgeListEnv("CLAUDE_EXTRA_ARGS"),
     sessionsFile: path.join(stateDir, "sessions.json"),
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBridgeBoolEnv("ENABLE_CHECKIN"),
-    asherieDataRoot: readTextEnv("ASHERIEBRIDGE_DATA_ROOT") || path.join(stateDir, "asherie_gateway"),
-    asherieTruthLayerDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_TRUTH_LAYER_DIR"),
-    asherieMemoryTreeDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_MEMORY_TREE_DIR"),
-    asherieCaseIndexDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_CASE_INDEX_DIR"),
-    asherieObservationJournalDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR"),
-    asherieNotionSyncDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_NOTION_SYNC_DIR"),
-    asherieAppDailyCaptureDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_APP_DAILY_CAPTURE_DIR"),
-    asherieWarmMemoryDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_WARM_MEMORY_DIR"),
-    asherieMemoryVersionBankDir: readTextEnv("ASHERIEBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR"),
+    asherieDataRoot,
+    asherieTruthLayerDir: readTextEnv("MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR"),
+    asherieMemoryTreeDir: readTextEnv("MOSSBRIDGE_ASHERIE_MEMORY_TREE_DIR"),
+    asherieCaseIndexDir: readTextEnv("MOSSBRIDGE_ASHERIE_CASE_INDEX_DIR"),
+    asherieObservationJournalDir: readTextEnv("MOSSBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR"),
+    asherieEpisodeJournalDir: readTextEnv("MOSSBRIDGE_ASHERIE_EPISODE_JOURNAL_DIR"),
+    asherieSolitudeJournalDir: readTextEnv("MOSSBRIDGE_ASHERIE_SOLITUDE_JOURNAL_DIR"),
+    asherieNotionSyncDir: readTextEnv("MOSSBRIDGE_ASHERIE_NOTION_SYNC_DIR"),
+    asherieAppDailyCaptureDir: readTextEnv("MOSSBRIDGE_ASHERIE_APP_DAILY_CAPTURE_DIR"),
+    asherieWarmMemoryDir: readTextEnv("MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR"),
+    asherieMemoryVersionBankDir: readTextEnv("MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR"),
     asherieContextCacheLimit: readBridgeIntEnv("ASHERIE_CONTEXT_CACHE_LIMIT") || 50,
     asherieProactiveContextCacheLimit: readBridgeIntEnv("ASHERIE_PROACTIVE_CONTEXT_CACHE_LIMIT") || 50,
     asherieRecallRecentRecordLimit: readBridgeIntEnv("ASHERIE_RECALL_RECENT_RECORD_LIMIT") || 8,
@@ -107,23 +130,23 @@ function readConfig() {
 }
 
 function readBridgeTextEnv(suffix) {
-  return readTextEnv(`ASHERIEBRIDGE_${suffix}`);
+  return readTextEnv(`MOSSBRIDGE_${suffix}`);
 }
 
 function readBridgeListEnv(suffix) {
-  return readListEnv(`ASHERIEBRIDGE_${suffix}`);
+  return readListEnv(`MOSSBRIDGE_${suffix}`);
 }
 
 function readBridgeBoolEnv(suffix) {
-  return readBoolEnv(`ASHERIEBRIDGE_${suffix}`);
+  return readBoolEnv(`MOSSBRIDGE_${suffix}`);
 }
 
 function readBridgeOptionalBoolEnv(suffix) {
-  return readOptionalBoolEnv(`ASHERIEBRIDGE_${suffix}`);
+  return readOptionalBoolEnv(`MOSSBRIDGE_${suffix}`);
 }
 
 function readBridgeIntEnv(suffix) {
-  return readIntEnv(`ASHERIEBRIDGE_${suffix}`);
+  return readIntEnv(`MOSSBRIDGE_${suffix}`);
 }
 
 function readListEnv(name) {
@@ -224,10 +247,10 @@ function readIntEnvAny(names) {
 }
 
 function readKnownPlacesEnv() {
-  const fromJson = parseKnownPlacesJson(readTextEnv("ASHERIEBRIDGE_LOCATION_KNOWN_PLACES"));
+  const fromJson = parseKnownPlacesJson(readTextEnv("MOSSBRIDGE_LOCATION_KNOWN_PLACES"));
   const fromCenters = [
-    parseKnownPlaceCenter("home", readTextEnv("ASHERIEBRIDGE_LOCATION_HOME_CENTER")),
-    parseKnownPlaceCenter("work", readTextEnv("ASHERIEBRIDGE_LOCATION_WORK_CENTER")),
+    parseKnownPlaceCenter("home", readTextEnv("MOSSBRIDGE_LOCATION_HOME_CENTER")),
+    parseKnownPlaceCenter("work", readTextEnv("MOSSBRIDGE_LOCATION_WORK_CENTER")),
   ].filter(Boolean);
   return [...fromJson, ...fromCenters];
 }

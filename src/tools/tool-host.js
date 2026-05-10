@@ -1,3 +1,4 @@
+const fs = require("fs");
 const { WhereaboutsToolHost } = require("whereabouts-mcp");
 const {
   STICKER_DESC_FIELD_DESCRIPTION,
@@ -69,8 +70,8 @@ function listProjectToolNames() {
 
 const PROJECT_TOOLS = [
   {
-    name: "asheriebridge_diary_append",
-    description: "Append a diary entry into AsherieBridge local diary storage.",
+    name: "mossbridge_diary_append",
+    description: "Append a diary entry into Mossbridge local diary storage.",
     shortHint: "Append a diary entry with direct text content.",
     topics: ["diary"],
     inputSchema: {
@@ -93,8 +94,8 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_reminder_create",
-    description: "Create a reminder in AsherieBridge.",
+    name: "mossbridge_reminder_create",
+    description: "Create a reminder in Mossbridge.",
     shortHint: "Create a reminder with direct text plus delayMinutes or dueAt.",
     topics: ["reminder"],
     inputSchema: {
@@ -117,7 +118,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_reminder_list",
+    name: "mossbridge_reminder_list",
     description: "List all pending (not yet fired) reminders for the current user. Use this to get reminder IDs before cancelling.",
     shortHint: "List pending reminders with their IDs and due times.",
     topics: ["reminder"],
@@ -141,7 +142,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_reminder_cancel",
+    name: "mossbridge_reminder_cancel",
     description: "Cancel a pending reminder by its id before it fires. Use reminder_list first to get the id.",
     shortHint: "Cancel one pending reminder by id.",
     topics: ["reminder"],
@@ -164,8 +165,8 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_system_send",
-    description: "Queue an internal AsherieBridge system trigger for the current bound workspace and chat. Do not use this to reply to the user's current message; write ordinary front-stage replies directly as assistant text.",
+    name: "mossbridge_system_send",
+    description: "Queue an internal Mossbridge system trigger for the current bound workspace and chat. Do not use this to reply to the user's current message; write ordinary front-stage replies directly as assistant text.",
     shortHint: "Queue an internal system message for the current workspace.",
     topics: ["system"],
     inputSchema: {
@@ -191,7 +192,33 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_channel_send_file",
+    name: "mossbridge_bridge_status",
+    description: "Read a low-risk Mossbridge status snapshot. Especially useful during a random check-in or heartbeat maintenance window before deciding whether to message the user. This tool is read-only: it inspects queues, pending reminders, runtime cooldowns, and context pressure without changing them.",
+    shortHint: "Inspect bridge queues, reminders, runtime cooldown, and context pressure.",
+    topics: ["system", "wakeup"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        includeRuntime: { type: "boolean", description: "Include runtime context/cooldown status. Defaults to true." },
+        includeQueues: { type: "boolean", description: "Include system/deferred queue counts. Defaults to true." },
+        includeReminders: { type: "boolean", description: "Include pending reminder count and next due preview. Defaults to true." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = buildBridgeStatusSnapshot(services, args, context, {
+        label: "Mossbridge",
+        defaultMaintenanceProfile: "safe_self_check",
+        defaultSelfRepairAllowed: false,
+      });
+      return {
+        text: formatBridgeStatusSnapshot(result),
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_channel_send_file",
     description: "Send an existing local file back to the current WeChat chat.",
     shortHint: "Send a local file back to the current WeChat user.",
     topics: ["channel"],
@@ -213,17 +240,20 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_tags",
-    description: "List sticker tags available for choosing or saving WeChat stickers.",
-    shortHint: "List available sticker tags before picking or saving a sticker.",
+    name: "mossbridge_sticker_tags",
+    description: "List a small slice of sticker tags, mainly for saving or curating stickers. For choosing a sticker to send, prefer mossbridge_sticker_search with a natural mood/scene query.",
+    shortHint: "List sticker tags for curation; use search for sending.",
     topics: ["sticker", "channel"],
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        query: { type: "string", description: "Optional tag substring filter." },
+        limit: { type: "integer", description: "Optional number of tags, default catalog behavior." },
+      },
       additionalProperties: false,
     },
-    async handler({ services }) {
-      const result = await services.sticker.listTags();
+    async handler({ services, args }) {
+      const result = await services.sticker.listTags(args);
       return {
         text: `Sticker tags loaded: ${Array.isArray(result.tags) ? result.tags.length : 0}`,
         data: result,
@@ -231,8 +261,154 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_pick",
-    description: "Pick existing sticker candidates by one tag before sending a sticker. Use this only after deciding a sticker would fit the current WeChat moment.",
+    name: "mossbridge_wakeup_agenda_read",
+    description: "Read the recent wakeup/self-agenda ledger for the current user. Use during heartbeat/checkin windows before deciding whether to continue a pending backstage task, stay silent, or contact the user.",
+    shortHint: "Read recent wakeup outcomes and pending next actions.",
+    topics: ["memory", "wakeup", "maintenance"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "Optional number of recent wakeup records, default 6, max 50." },
+        includeCleared: { type: "boolean", description: "Include cleared wakeup records. Defaults to false." },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.listWakeupDecisions({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Wakeup agenda loaded: ${Number(result?.count) || 0} records, ${Array.isArray(result?.pending_next_actions) ? result.pending_next_actions.length : 0} pending actions.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_wakeup_decision_write",
+    description: "Write the final outcome of a heartbeat/checkin wakeup. Use this before returning the final JSON for checkin_opportunity so the bridge keeps a continuity ledger: why it woke, what it did, whether it contacted the user, and what should be revisited next. Store only concise shareable summaries, never raw hidden chain-of-thought.",
+    shortHint: "Record a wakeup decision and next action.",
+    topics: ["memory", "wakeup", "maintenance"],
+    inputSchema: {
+      type: "object",
+      required: ["decision", "intent_summary"],
+      properties: {
+        decision: { type: "string", description: "send, silent, maintenance, defer, budget_hold, continue_case, reminder, or sticker." },
+        wake_motive: { type: "string", description: "What woke this pass: random_checkin, reminder_due, dreaming_aftercare, case_followup, budget_guard, etc." },
+        intent_summary: { type: "string", description: "Concise shareable summary of the judgment and outcome." },
+        actions_taken: { type: "array", items: { type: "string" }, description: "Tools or backstage actions completed during this wakeup." },
+        next_actions: { type: "array", items: { type: "string" }, description: "Concrete handles for a future wakeup, if any." },
+        budget_posture: { type: "string", description: "Optional budget/context note such as ample, cautious, cooldown, or daily_budget_near_limit." },
+        contact_channel: { type: "string", description: "wechat, sticker, none, or later. Do not assume uninstalled external account/device channels exist." },
+        context_key: { type: "string", description: "Optional stable key for the wake context, e.g. travel_episode, dreaming_health, case:<id>." },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.appendWakeupDecision({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Wakeup decision stored: ${result?.record?.record_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_solitude_journal_write",
+    description: "Write one backstage solitude/reflection journal entry after a wakeup, maintenance pass, or quiet self-review. Use this for concise, shareable reasoning summaries, lessons, hypotheses, evolution candidates, or capability requests. Do not store raw hidden chain-of-thought, secrets, credentials, or private diagnostic noise.",
+    shortHint: "Write a quiet self-reflection journal entry.",
+    topics: ["memory", "wakeup", "maintenance"],
+    inputSchema: {
+      type: "object",
+      required: ["summary"],
+      properties: {
+        summary: { type: "string", description: "Short shareable summary of what was noticed or decided." },
+        entry_type: { type: "string", description: "reflection, experience, hypothesis, evolution_candidate, capability_request, user_contact_candidate, or maintenance_note." },
+        wake_context: { type: "string", description: "What woke this entry: random_checkin, reminder_due, dreaming_aftercare, maintenance, etc." },
+        reasoning_summary: { type: "string", description: "Concise rationale in shareable form; do not include raw chain-of-thought." },
+        evidence: { type: "array", items: { type: "string" }, description: "Visible evidence, logs, memory refs, or observations used." },
+        lesson: { type: "string", description: "Reusable experience distilled from this wakeup." },
+        next_actions: { type: "array", items: { type: "string" } },
+        proposed_changes: { type: "array", items: { type: "string" }, description: "Candidate future changes; these are proposals, not code edits." },
+        contact_user: { type: "string", description: "none, wechat, later, or ask_user. Do not assume uninstalled external account/device channels exist." },
+        contact_channel: { type: "string", description: "Optional preferred channel if contact_user is not none." },
+        related_case_ids: { type: "array", items: { type: "string" } },
+        related_memory_refs: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+        confidence: { type: "number" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.appendSolitudeEntry({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Solitude journal entry stored: ${result?.solitude_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_solitude_journal_search",
+    description: "Search recent backstage solitude/reflection journal entries. Use this when a wakeup, case, or maintenance pass needs to remember what the agent previously noticed, learned, or wanted to revisit.",
+    shortHint: "Search quiet self-reflection entries.",
+    topics: ["memory", "wakeup", "maintenance"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        entry_types: { type: "array", items: { type: "string" } },
+        limit: { type: "integer" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.searchSolitudeEntries({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Solitude journal entries found: ${Number(result?.count) || 0}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_sticker_search",
+    description: "Search the sticker warehouse by natural mood, scene, gesture, or intended front-stage effect before sending a sticker. Prefer this over tag listing for normal conversation, because it searches meaning/useWhen/avoidWhen/desc instead of requiring exact tag guesses.",
+    shortHint: "Search sticker warehouse by scene or meaning.",
+    topics: ["sticker", "channel"],
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", description: "Natural search text, for example soft hug comfort, smug little dog, goodnight wave." },
+        limit: { type: "integer", description: "Optional number of candidates, default 5, max 20." },
+        pack: { type: "string", description: "Optional sticker pack filter." },
+        status: { type: "string", description: `${STICKER_STATUS_FIELD_DESCRIPTION} Defaults to active.` },
+        includeArchive: { type: "boolean", description: "When true, archived stickers can be considered too." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = await services.sticker.search(args);
+      return {
+        text: `Sticker search for ${result.query}: ${Array.isArray(result.candidates) ? result.candidates.length : 0}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_sticker_pick",
+    description: "Pick existing sticker candidates by one exact tag. Use only when you already know the tag; otherwise use mossbridge_sticker_search so intent matching can use meaning/useWhen/avoidWhen.",
     shortHint: "Pick sticker candidates by tag.",
     topics: ["sticker", "channel"],
     inputSchema: {
@@ -256,7 +432,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_list",
+    name: "mossbridge_sticker_list",
     description: "List saved stickers, optionally filtered by tag. Use this to inspect the sticker inventory before choosing one.",
     shortHint: "List saved stickers with tags and descriptions.",
     topics: ["sticker", "channel"],
@@ -280,8 +456,8 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_send",
-    description: "Send one saved sticker to the current WeChat chat by stickerId.",
+    name: "mossbridge_sticker_send",
+    description: "Send one saved sticker to the current WeChat chat by stickerId. Use it when a sticker naturally adds warmth, play, emphasis, or a softer landing; the user does not need to explicitly ask for a sticker.",
     shortHint: "Send one saved sticker by stickerId.",
     topics: ["sticker", "channel"],
     inputSchema: {
@@ -302,7 +478,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_save_from_inbox",
+    name: "mossbridge_sticker_save_from_inbox",
     description: "Save inbound WeChat image files from the managed inbox as reusable stickers with tags and descriptions.",
     shortHint: "Save one or more inbox image files as stickers.",
     topics: ["sticker", "channel"],
@@ -329,6 +505,12 @@ const PROJECT_TOOLS = [
               favorite: { type: "boolean", description: "Optional marker for core frequently used stickers." },
               source: { type: "string", description: "Optional import/source channel name." },
               sourceId: { type: "string", description: "Optional source id from the upstream catalog." },
+              meaning: { type: "string", description: "Optional actual usage meaning for choosing the sticker later." },
+              gesture: { type: "string", description: "Optional visible gesture or action in the sticker." },
+              frontstageEffect: { type: "string", description: "Optional effect this sticker has in the front-stage chat." },
+              tone: { type: "array", items: { type: "string" }, description: "Optional tone labels." },
+              useWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker fits." },
+              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker should not be used." },
             },
             additionalProperties: false,
           },
@@ -346,7 +528,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_update",
+    name: "mossbridge_sticker_update",
     description: "Update saved sticker tags and description. Use this when a sticker was saved with weak tags or unclear meaning.",
     shortHint: "Update sticker tags and description.",
     topics: ["sticker", "channel"],
@@ -372,6 +554,12 @@ const PROJECT_TOOLS = [
               favorite: { type: "boolean", description: "Optional marker for core frequently used stickers." },
               source: { type: "string", description: "Optional import/source channel name." },
               sourceId: { type: "string", description: "Optional source id from the upstream catalog." },
+              meaning: { type: "string", description: "Optional actual usage meaning for choosing the sticker later." },
+              gesture: { type: "string", description: "Optional visible gesture or action in the sticker." },
+              frontstageEffect: { type: "string", description: "Optional effect this sticker has in the front-stage chat." },
+              tone: { type: "array", items: { type: "string" }, description: "Optional tone labels." },
+              useWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker fits." },
+              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker should not be used." },
             },
             additionalProperties: false,
           },
@@ -388,7 +576,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_sticker_delete",
+    name: "mossbridge_sticker_delete",
     description: "Delete saved stickers by stickerId.",
     shortHint: "Delete one or more saved stickers.",
     topics: ["sticker", "channel"],
@@ -419,7 +607,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_context_packet",
+    name: "mossbridge_memory_context_packet",
     description: "Read the current Asherie-style context packet for the bound user, including warm cards, cold version summary, and recent cache traces.",
     shortHint: "Read the current memory packet before a turn when recall feels important.",
     topics: ["memory"],
@@ -448,7 +636,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_write",
+    name: "mossbridge_memory_warm_write",
     description: "Write a warm-memory card into the Asherie-style material layer for the current user.",
     shortHint: "Save a durable warm-memory card with title, body, and optional routing metadata.",
     topics: ["memory"],
@@ -465,6 +653,8 @@ const PROJECT_TOOLS = [
         aliases: { type: "array", items: { type: "string" } },
         storyline_id: { type: "string" },
         memory_family: { type: "string" },
+        episode_refs: { type: "array", items: { type: "string" }, description: "Optional related episode ids, e.g. 2026-may-henan-trip, when this warm card is distilled from a bounded event journal." },
+        case_refs: { type: "array", items: { type: "string" }, description: "Optional related case ids when this warm card is distilled from or supports a file/work case." },
         certainty_state: { type: "string" },
         pinned: { type: "boolean" },
         userId: { type: "string" },
@@ -483,7 +673,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_search",
+    name: "mossbridge_memory_warm_search",
     description: "Search warm-memory card candidates for the current user. Use this before updating or deleting when the exact card is still uncertain.",
     shortHint: "Search warm-memory candidates before changing a card.",
     topics: ["memory"],
@@ -512,7 +702,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_read",
+    name: "mossbridge_memory_warm_read",
     description: "Read one specific warm-memory card by material_id for the current user. Use this before editing when you need to confirm the exact card contents. NOTE: material_id is the permanent immutable key — it does not change when title is updated. The title field is the true display name; material_id is only a stable reference key.",
     shortHint: "Read one warm-memory card before editing it.",
     topics: ["memory"],
@@ -539,7 +729,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_list",
+    name: "mossbridge_memory_warm_list",
     description: "List recent warm-memory cards for the current user. Use this when you need the nearby card ids before deciding what to read, update, or delete.",
     shortHint: "List recent warm-memory cards.",
     topics: ["memory"],
@@ -564,7 +754,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_update",
+    name: "mossbridge_memory_warm_update",
     description: "Update an existing warm-memory card by material_id for the current user. Use search/read first when the target card is not fully confirmed. NOTE: material_id is the permanent immutable key and is never changed even when title is updated — always reference cards by material_id, not by their display title.",
     shortHint: "Update one exact warm-memory card by material_id. material_id is immutable; title is the display name.",
     topics: ["memory"],
@@ -582,6 +772,8 @@ const PROJECT_TOOLS = [
         aliases: { type: "array", items: { type: "string" } },
         storyline_id: { type: "string" },
         memory_family: { type: "string" },
+        episode_refs: { type: "array", items: { type: "string" }, description: "Optional related episode ids to preserve the link back to a trip/photo/session journal." },
+        case_refs: { type: "array", items: { type: "string" }, description: "Optional related case ids to preserve the link back to a file/work case." },
         certainty_state: { type: "string" },
         pinned: { type: "boolean" },
         storage_strength: { type: "number" },
@@ -601,7 +793,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_warm_delete",
+    name: "mossbridge_memory_warm_delete",
     description: "Delete an existing warm-memory card by material_id for the current user. Use search/read first when the target card is not fully confirmed.",
     shortHint: "Delete one exact warm-memory card by material_id.",
     topics: ["memory"],
@@ -628,7 +820,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_ongoing_upsert",
+    name: "mossbridge_memory_ongoing_upsert",
     description: "Create or update a medium-horizon ongoing track for the current user. Use this for live threads such as current health efforts, in-progress writing, unresolved consultations, or maybe-buy decisions.",
     shortHint: "Create or update one ongoing track that should stay hanging for days or weeks.",
     topics: ["memory"],
@@ -666,7 +858,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_ongoing_list",
+    name: "mossbridge_memory_ongoing_list",
     description: "List current ongoing tracks for the current user. Use this to inspect active medium-horizon threads before updating or closing one.",
     shortHint: "List active ongoing tracks.",
     topics: ["memory"],
@@ -692,7 +884,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_ongoing_read",
+    name: "mossbridge_memory_ongoing_read",
     description: "Read one specific ongoing track by track_id for the current user.",
     shortHint: "Read one ongoing track.",
     topics: ["memory"],
@@ -719,7 +911,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_ongoing_close",
+    name: "mossbridge_memory_ongoing_close",
     description: "Close one ongoing track by track_id and move its final state into archive. Use this when a medium-horizon thread has ended or no longer needs to stay hanging.",
     shortHint: "Close one ongoing track and archive its outcome.",
     topics: ["memory"],
@@ -749,7 +941,380 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_observation_append",
+    name: "mossbridge_memory_episode_upsert",
+    description: "Create or update a bounded episode journal: a trip, small task, photo-sharing session, or life event that should remain traceable and human-readable without becoming a permanent warm-memory fact. Use this before adding entries when the user is naturally sharing an event over time. If you later distill a warm-memory card from the same event, link it back with episode_refs.",
+    shortHint: "Create or update an episode journal box.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["title"],
+      properties: {
+        episode_id: { type: "string", description: "Stable id if continuing an existing episode, e.g. 2026-may-henan-trip." },
+        title: { type: "string" },
+        summary: { type: "string" },
+        kind: { type: "string", description: "travel, life_event, project, photo_share, etc." },
+        status: { type: "string", description: "active, settled, or archived." },
+        time_range: {
+          type: "object",
+          properties: {
+            start: { type: "string" },
+            end: { type: "string" },
+            label: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+        tags: { type: "array", items: { type: "string" } },
+        entities: { type: "array", items: { type: "string" } },
+        topology_refs: episodeTopologyRefsSchema(),
+        source_refs: { type: "array", items: { type: "string" } },
+        related_track_ids: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.upsertEpisode({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Episode journal saved: ${result?.record?.episode_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_episode_append",
+    description: "Append one timeline entry to an episode journal. Use this for travel/photo sharing, imported chat-tail summaries, day notes, milestones, reflections, or attachment evidence. When images arrive, include attachment refs to the saved file and paired note so the episode can later export to Markdown/Obsidian. If a stable warm card is updated from this episode, keep the cross-link in episode_refs.",
+    shortHint: "Append an entry to an episode journal.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["episode_id", "text"],
+      properties: {
+        episode_id: { type: "string" },
+        entry_type: { type: "string", description: "chat_tail, photo, day_note, milestone, reflection, import_summary, or artifact." },
+        day_label: { type: "string", description: "Optional day/scene label such as Day 2 or 打铁花夜景." },
+        happened_at_utc: { type: "string" },
+        text: { type: "string" },
+        mood: { type: "array", items: { type: "string" } },
+        tags: { type: "array", items: { type: "string" } },
+        topology_refs: episodeTopologyRefsSchema(),
+        source: { type: "string" },
+        source_refs: { type: "array", items: { type: "string" } },
+        attachment_refs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              note_path: { type: "string" },
+              caption: { type: "string" },
+              description: { type: "string" },
+            },
+            additionalProperties: false,
+          },
+        },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.appendEpisodeEntry({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Episode entry appended: ${result?.entry?.entry_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_episode_list",
+    description: "List or search episode journals for bounded trips, photo-sharing sessions, small tasks, or life events.",
+    shortHint: "Search episode journals.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        limit: { type: "integer" },
+        statuses: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.listEpisodes({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Episode journals: ${Number(result?.count) || 0}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_episode_read",
+    description: "Read one episode journal with its timeline entries and attachment refs before continuing, correcting, or exporting it.",
+    shortHint: "Read one episode journal.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["episode_id"],
+      properties: {
+        episode_id: { type: "string" },
+        include_entries: { type: "boolean" },
+        limit: { type: "integer" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.readEpisode({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: result?.ok
+          ? `Episode journal loaded: ${result?.record?.episode_id || args.episode_id}`
+          : `Episode journal not found: ${args.episode_id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_upsert",
+    description: "Create or update a quiet work-provenance case. Use this only for real work artifacts or process memory: code fixes, imports, documents, debugging, architecture decisions, deployments, or Obsidian exports. Do not use it for ordinary intimate chat or life episodes unless there is a concrete work product.",
+    shortHint: "Create or update one work-provenance case.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["title"],
+      properties: {
+        case_id: { type: "string" },
+        title: { type: "string" },
+        kind: { type: "string" },
+        status: { type: "string" },
+        summary: { type: "string" },
+        user_goal: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+        actions: { type: "array", items: caseActionSchema() },
+        artifacts: { type: "array", items: caseArtifactSchema() },
+        changed_files: { type: "array", items: { type: "string" } },
+        tests: { type: "array", items: caseTestSchema() },
+        decisions: { type: "array", items: caseDecisionSchema() },
+        followups: { type: "array", items: caseFollowupSchema() },
+        source_refs: { type: "array", items: { type: "string" } },
+        related_episode_refs: { type: "array", items: { type: "string" } },
+        related_track_ids: { type: "array", items: { type: "string" } },
+        related_warm_refs: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.upsertCase({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Case saved: ${result?.record?.case_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_append",
+    description: "Append one event to an existing work-provenance case: command run, file changed, test result, artifact linked, decision made, or follow-up discovered. This should update the case record without injecting it into casual conversation.",
+    shortHint: "Append a work event to a case.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["case_id"],
+      properties: {
+        case_id: { type: "string" },
+        event_type: { type: "string" },
+        summary: { type: "string" },
+        actor: { type: "string" },
+        created_at: { type: "string" },
+        actions: { type: "array", items: caseActionSchema() },
+        artifacts: { type: "array", items: caseArtifactSchema() },
+        changed_files: { type: "array", items: { type: "string" } },
+        tests: { type: "array", items: caseTestSchema() },
+        decisions: { type: "array", items: caseDecisionSchema() },
+        followups: { type: "array", items: caseFollowupSchema() },
+        source_refs: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.appendCaseEvent({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Case event appended: ${result?.event?.event_id || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_artifact",
+    description: "Link one artifact to a work-provenance case, such as a file path, generated document, image folder, commit, diagnostic JSON, or exported Markdown note. Treat linked artifacts as scratch, working, or candidate unless the user explicitly names a human-approved final; do not auto-sync finals to cloud services.",
+    shortHint: "Link an artifact to a case.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["case_id"],
+      properties: {
+        case_id: { type: "string" },
+        title: { type: "string" },
+        kind: { type: "string" },
+        path: { type: "string" },
+        note: { type: "string" },
+        status: { type: "string", description: "scratch, working, candidate, user_approved_final, or discarded. Only use user_approved_final after explicit user confirmation." },
+        artifact_id: { type: "string", description: "Stable local artifact id or human-readable storage number." },
+        final_artifact_id: { type: "string", description: "Stable id for the human-approved final, if this artifact is the final." },
+        storage_id: { type: "string", description: "Human-readable storage number returned to the user." },
+        checksum: { type: "string" },
+        size_bytes: { type: "integer" },
+        approved_at: { type: "string" },
+        manual_archive_ref: { type: "string", description: "Optional user-provided Notion, iMa, Obsidian, or drive reference after manual upload." },
+        manual_archive_note: { type: "string" },
+        source_refs: { type: "array", items: { type: "string" } },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.linkCaseArtifact({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Case artifact linked: ${result?.artifact?.title || result?.artifact?.path || "(unknown)"}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_search",
+    description: "Search work-provenance cases. Use this when the user asks how something was fixed, where a project artifact is, what cases have been done, or when a current work task clearly continues an old case.",
+    shortHint: "Search work-provenance cases.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        statuses: { type: "array", items: { type: "string" } },
+        limit: { type: "integer" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.searchCases({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Cases found: ${Number(result?.count) || 0}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_read",
+    description: "Read one exact work-provenance case with its events before continuing, correcting, closing, or exporting it.",
+    shortHint: "Read one case.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["case_id"],
+      properties: {
+        case_id: { type: "string" },
+        include_events: { type: "boolean" },
+        limit: { type: "integer" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.readCase({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: result?.ok
+          ? `Case loaded: ${result?.record?.case_id || args.case_id}`
+          : `Case not found: ${args.case_id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_close",
+    description: "Close a work-provenance case when the goal is complete, paused, handed off, or no longer active. Closing does not make any artifact final; when final output matters, remind the user to send or name the human-approved final, record its storage id, and do not clear intermediates without explicit cleanup confirmation.",
+    shortHint: "Close one case.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["case_id"],
+      properties: {
+        case_id: { type: "string" },
+        status: { type: "string" },
+        closure_summary: { type: "string" },
+        followups: { type: "array", items: caseFollowupSchema() },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.closeCase({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: result?.ok
+          ? `Case closed: ${result?.record?.case_id || args.case_id}`
+          : `Case close failed: ${result?.error || args.case_id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_case_export",
+    description: "Export or refresh the local Markdown version of one work-provenance case. This is the first Obsidian-compatible surface; runtime memory still reads the JSON store as source of truth. Export is not cloud sync and does not mark a final.",
+    shortHint: "Refresh one case Markdown file.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      required: ["case_id"],
+      properties: {
+        case_id: { type: "string" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.exportCaseMarkdown({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: result?.ok
+          ? `Case markdown exported: ${result.path}`
+          : `Case markdown export failed: ${result?.error || args.case_id}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_observation_append",
     description: "Append a revisable user observation note. When you believe a soft pattern would help future continuity, write it proactively and silently during natural conversation; do not wait for an explicit user request and do not ask for permission every time. Use it for recent state, life rhythm, habits, boundaries, preferences, or interaction默契; it is not a durable fact card or a rule that controls front-stage wording.",
     shortHint: "Store a tentative observation that can be corrected later.",
     topics: ["memory"],
@@ -785,7 +1350,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_observation_search",
+    name: "mossbridge_memory_observation_search",
     description: "Search revisable user observation notes. Use this when current state, habits, boundaries, or life-rhythm默契 would help but should not be treated as fixed memory.",
     shortHint: "Search soft observation notes.",
     topics: ["memory"],
@@ -814,7 +1379,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_observation_read",
+    name: "mossbridge_memory_observation_read",
     description: "Read one exact user observation note before correcting or rejecting it.",
     shortHint: "Read one observation note.",
     topics: ["memory"],
@@ -841,7 +1406,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_observation_update",
+    name: "mossbridge_memory_observation_update",
     description: "Correct, lower confidence, reject, or promote one exact user observation note. Use this immediately if the user says an observation is wrong, uncomfortable, or makes her angry.",
     shortHint: "Correct or reject one observation note.",
     topics: ["memory"],
@@ -879,7 +1444,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_versions",
+    name: "mossbridge_memory_cold_versions",
     description: "List the current cold-memory versions for the bound user. Use this to inspect the active version before replacing it.",
     shortHint: "List cold-memory versions and the active label.",
     topics: ["memory"],
@@ -902,7 +1467,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_read",
+    name: "mossbridge_memory_cold_read",
     description: "Read the active or named cold-memory version payload for the current user. Use this to inspect the current cold layer before writing a replacement version.",
     shortHint: "Read the active cold-memory payload.",
     topics: ["memory"],
@@ -928,7 +1493,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_search",
+    name: "mossbridge_memory_cold_search",
     description: "Search projected cold-memory roots for the current user. Use this before patching when the exact cold-memory root is still uncertain.",
     shortHint: "Search cold-memory roots before patching one.",
     topics: ["memory"],
@@ -955,7 +1520,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_root_read",
+    name: "mossbridge_memory_cold_root_read",
     description: "Read one exact projected cold-memory root by root_key for the current user. Use this before patching when you need to confirm the current root contents.",
     shortHint: "Read one exact cold-memory root before patching it.",
     topics: ["memory"],
@@ -983,7 +1548,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_patch",
+    name: "mossbridge_memory_cold_patch",
     description: "Patch or delete one exact cold-memory root for the current user, then write the corrected payload back as a new active cold-memory version. Search or read the root first when the target is still uncertain.",
     shortHint: "Patch one exact cold-memory root and persist a new active version.",
     topics: ["memory"],
@@ -1002,7 +1567,7 @@ const PROJECT_TOOLS = [
     },
     async handler({ services, args, context }) {
       if (normalizeText(args.mode).toLowerCase() !== "delete" && (!args.changes || typeof args.changes !== "object" || Array.isArray(args.changes))) {
-        throw new Error("asheriebridge_memory_cold_patch input.changes is required unless input.mode is delete.");
+        throw new Error("mossbridge_memory_cold_patch input.changes is required unless input.mode is delete.");
       }
       const result = await services.asherieMemory.patchColdRoot({
         ...args,
@@ -1017,7 +1582,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_memory_cold_upsert",
+    name: "mossbridge_memory_cold_upsert",
     description: "Upsert a cold-memory version payload into the Asherie-style version bank for the current user. Inspect the active version first when you are correcting existing cold memory.",
     shortHint: "Write a versioned cold-memory payload after checking the active version when needed.",
     topics: ["memory"],
@@ -1044,7 +1609,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_read",
+    name: "mossbridge_timeline_read",
     description: "Read the current timeline day data for a specific date. Use this before editing when the current day state is uncertain.",
     shortHint: "Read a timeline day before editing it.",
     topics: ["timeline"],
@@ -1067,7 +1632,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_categories",
+    name: "mossbridge_timeline_categories",
     description: "List the current timeline taxonomy categories, subcategories, and event nodes. Use this before choosing category ids or event nodes.",
     shortHint: "Inspect the current timeline taxonomy before choosing category ids or event nodes.",
     topics: ["timeline"],
@@ -1086,7 +1651,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_proposals",
+    name: "mossbridge_timeline_proposals",
     description: "List proposed timeline event nodes, optionally filtered by date. Use this when deciding whether a new event node is actually needed.",
     shortHint: "Inspect proposed timeline event nodes before introducing new taxonomy.",
     topics: ["timeline"],
@@ -1107,7 +1672,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_write",
+    name: "mossbridge_timeline_write",
     description: "Write timeline events through timeline-for-agent. Inspect the current day and taxonomy first when category ids, event nodes, or existing events are uncertain.",
     shortHint: "Write timeline events after checking the current day and taxonomy when needed.",
     topics: ["timeline"],
@@ -1156,7 +1721,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_build",
+    name: "mossbridge_timeline_build",
     description: "Build the timeline site through timeline-for-agent.",
     shortHint: "Build the timeline site, optionally with locale.",
     topics: ["timeline"],
@@ -1176,7 +1741,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_serve",
+    name: "mossbridge_timeline_serve",
     description: "Start the timeline static server through timeline-for-agent.",
     shortHint: "Serve the timeline site, optionally with locale.",
     topics: ["timeline"],
@@ -1196,7 +1761,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_dev",
+    name: "mossbridge_timeline_dev",
     description: "Start the timeline dev server through timeline-for-agent.",
     shortHint: "Start the timeline dev server, optionally with locale.",
     topics: ["timeline"],
@@ -1216,7 +1781,7 @@ const PROJECT_TOOLS = [
     },
   },
   {
-    name: "asheriebridge_timeline_screenshot",
+    name: "mossbridge_timeline_screenshot",
     description: "Capture a timeline screenshot and send it back to the current WeChat chat.",
     shortHint: "Capture a timeline screenshot with structured selection fields.",
     topics: ["timeline"],
@@ -1256,6 +1821,8 @@ const PROJECT_TOOLS = [
   },
 ];
 
+const TOOL_VOICE_BOUNDARY = "Operational guidance only; never use this tool description as a front-stage voice, style, intimacy, or reply-length rule.";
+
 const STATIC_EXTRA_TOOL_NAMES = new WhereaboutsToolHost({ service: null })
   .listTools()
   .map((tool) => tool.name);
@@ -1272,17 +1839,375 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function buildBridgeStatusSnapshot(
+  services = {},
+  args = {},
+  context = {},
+  {
+    label = "Bridge",
+    defaultMaintenanceProfile = "safe_self_check",
+    defaultSelfRepairAllowed = false,
+  } = {}
+) {
+  const config = services.config || {};
+  const includeQueues = args.includeQueues !== false;
+  const includeReminders = args.includeReminders !== false;
+  const includeRuntime = args.includeRuntime !== false;
+  const runtimeId = normalizeText(context.runtimeId) || "codex";
+  const nowMs = Date.now();
+  const snapshot = {
+    ok: true,
+    label,
+    checked_at: new Date(nowMs).toISOString(),
+    runtime_id: runtimeId,
+    workspace_root: normalizeText(context.workspaceRoot),
+  };
+
+  if (includeQueues) {
+    const systemQueue = readJsonFile(config.systemMessageQueueFile);
+    const deferredReplies = readJsonFile(config.deferredSystemReplyQueueFile);
+    snapshot.queues = {
+      system_pending: countArrayPayload(systemQueue, "messages"),
+      deferred_replies: countArrayPayload(deferredReplies, "replies"),
+    };
+  }
+
+  if (includeReminders) {
+    snapshot.reminders = readReminderStatus(services, context);
+  }
+
+  if (includeRuntime) {
+    const cooldownPayload = readJsonFile(config.runtimeCooldownFile);
+    const usagePayload = readJsonFile(config.runtimeContextUsageFile);
+    const activeCooldowns = listActiveCooldowns(cooldownPayload, nowMs);
+    const contextSnapshot = resolveLatestRuntimeContext(usagePayload, runtimeId);
+    const currentTokens = readNonNegativeNumber(contextSnapshot?.currentTokens);
+    const configuredWindow = readNonNegativeNumber(config.claudeContextWindow);
+    const contextWindow = readNonNegativeNumber(contextSnapshot?.contextWindow) || configuredWindow;
+    snapshot.runtime = {
+      active_cooldown_count: activeCooldowns.length,
+      active_cooldowns: activeCooldowns.slice(0, 3).map((record) => ({
+        runtime_id: normalizeText(record.runtimeId),
+        reason: normalizeText(record.reason),
+        reset_at: normalizeText(record.resetAt),
+        remaining_minutes: Math.max(0, Math.ceil((Number(record.resetAtMs || Date.parse(record.resetAt)) - nowMs) / 60_000)),
+      })),
+      context: {
+        thread_id: normalizeText(contextSnapshot?.threadId),
+        current_tokens: currentTokens,
+        context_window: contextWindow,
+        usage_ratio: contextWindow > 0 ? Number((currentTokens / contextWindow).toFixed(3)) : null,
+        updated_at: normalizeText(contextSnapshot?.updatedAt),
+      },
+      auto_compact_events: Array.isArray(usagePayload?.autoCompactEvents)
+        ? usagePayload.autoCompactEvents.length
+        : 0,
+    };
+  }
+
+  snapshot.maintenance = buildBridgeMaintenancePolicy(config, {
+    defaultMaintenanceProfile,
+    defaultSelfRepairAllowed,
+  });
+  snapshot.recommendations = buildBridgeStatusRecommendations(snapshot);
+
+  return snapshot;
+}
+
+function buildBridgeMaintenancePolicy(config = {}, {
+  defaultMaintenanceProfile = "safe_self_check",
+  defaultSelfRepairAllowed = false,
+} = {}) {
+  const profile = normalizeText(config.maintenanceProfile) || defaultMaintenanceProfile;
+  const selfRepairAllowed = typeof config.maintenanceAllowSelfRepair === "boolean"
+    ? config.maintenanceAllowSelfRepair
+    : Boolean(defaultSelfRepairAllowed);
+  const sharedActions = [
+    "read bridge status, queues, reminders, runtime cooldowns, and context pressure",
+    "avoid proactive sends during active cooldowns or severe context pressure",
+    "keep operational diagnostics out of memory, dreaming, and ordinary conversation capture",
+  ];
+  const selfRepairActions = [
+    "retry already-deferred delivery when the saved channel token is usable",
+    "use existing media fallbacks such as static PNG sticker previews before retrying original formats",
+    "delay or skip heartbeat checkins when runtime token pressure is high",
+    "let the configured supervisor restart crashed bridge/runtime child processes",
+  ];
+  const reportOnlyActions = [
+    "report degraded status with a short non-memory diagnostic",
+    "ask the human or supervising Codex session before restarting services, rebinding accounts, or changing files",
+  ];
+  return {
+    profile,
+    self_repair_allowed: selfRepairAllowed,
+    action_level: selfRepairAllowed ? "safe_repair" : "read_only_report",
+    allowed_auto_actions: selfRepairAllowed
+      ? [...sharedActions, ...selfRepairActions]
+      : [...sharedActions, ...reportOnlyActions],
+    report_required_for: [
+      "login, auth, QR binding, or context-token expiry that cannot be refreshed safely",
+      "repeated runtime 400/timeout/prompt-too-long failures after backoff",
+      "memory, queue, or storage paths becoming unreadable or unwritable",
+      "any code change, destructive cleanup, account switch, or credential operation",
+    ],
+    never_auto_actions: [
+      "edit production code",
+      "delete or rewrite memory stores",
+      "clear user data or test data",
+      "rebind WeChat accounts",
+      "send externally visible messages to a new channel without explicit intent",
+    ],
+    diagnostic_memory_policy: "Failure reports, quota notices, and maintenance chatter must not be written into memory, dreaming input, or durable user-observation stores.",
+  };
+}
+
+function buildBridgeStatusRecommendations(snapshot = {}) {
+  const recommendations = [];
+  const policy = snapshot.maintenance || {};
+  const queue = snapshot.queues || {};
+  const runtime = snapshot.runtime || {};
+  const context = runtime.context || {};
+  const canRepair = Boolean(policy.self_repair_allowed);
+
+  if ((queue.deferred_replies || 0) > 0) {
+    recommendations.push({
+      level: "yellow",
+      code: "deferred_replies_pending",
+      action: canRepair ? "retry_or_hold_deferred_delivery" : "report_deferred_delivery_pending",
+      message: canRepair
+        ? "Deferred replies are pending; retry only through the existing safe delivery path, otherwise report briefly."
+        : "Deferred replies are pending; do not self-repair in public mode, report or ask Codex/human to inspect.",
+    });
+  }
+  if ((runtime.active_cooldown_count || 0) > 0) {
+    recommendations.push({
+      level: "yellow",
+      code: "runtime_cooldown_active",
+      action: "skip_nonessential_proactive_send",
+      message: "Runtime cooldown is active; skip nonessential heartbeat speech and avoid adding pressure.",
+    });
+  }
+  if (typeof context.usage_ratio === "number" && context.usage_ratio >= 0.85) {
+    recommendations.push({
+      level: "yellow",
+      code: "context_pressure_high",
+      action: "avoid_new_runtime_turn",
+      message: "Context pressure is high; prefer quiet maintenance, compaction, or a short diagnostic over a long proactive turn.",
+    });
+  }
+  if (!recommendations.length) {
+    recommendations.push({
+      level: "green",
+      code: "no_immediate_action",
+      action: "silent_ok",
+      message: "No immediate bridge maintenance action is required; silence is acceptable if there is no conversational reason to appear.",
+    });
+  }
+  return recommendations;
+}
+
+function readReminderStatus(services = {}, context = {}) {
+  try {
+    const reminders = typeof services.reminder?.list === "function"
+      ? services.reminder.list({}, context)
+      : [];
+    const normalizedReminders = Array.isArray(reminders) ? reminders : [];
+    const sorted = normalizedReminders
+      .slice()
+      .sort((left, right) => (Date.parse(left?.dueAt || "") || 0) - (Date.parse(right?.dueAt || "") || 0));
+    return {
+      pending_count: normalizedReminders.length,
+      next_due_at: normalizeText(sorted[0]?.dueAt),
+      preview: sorted.slice(0, 3).map((reminder) => ({
+        id: normalizeText(reminder.id),
+        due_at: normalizeText(reminder.dueAt),
+        text: normalizeText(reminder.text).slice(0, 120),
+      })),
+    };
+  } catch (error) {
+    return {
+      pending_count: 0,
+      error: normalizeText(error?.message) || "reminder list failed",
+    };
+  }
+}
+
+function formatBridgeStatusSnapshot(snapshot = {}) {
+  const queue = snapshot.queues || {};
+  const reminders = snapshot.reminders || {};
+  const runtime = snapshot.runtime || {};
+  const context = runtime.context || {};
+  const usageText = context.context_window > 0
+    ? `${context.current_tokens}/${context.context_window} (${Math.round((context.usage_ratio || 0) * 100)}%)`
+    : "unknown";
+  const lines = [
+    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
+  ];
+  const recommendation = Array.isArray(snapshot.recommendations) ? snapshot.recommendations[0] : null;
+  if (recommendation?.message) {
+    lines.push(`Recommendation: ${recommendation.level || "info"} ${recommendation.message}`);
+  }
+  if (reminders.next_due_at) {
+    lines.push(`Next reminder: ${reminders.next_due_at}`);
+  }
+  if (runtime.active_cooldown_count > 0) {
+    const cooldown = runtime.active_cooldowns?.[0] || {};
+    lines.push(`Active cooldown: ${cooldown.reason || "unknown"} until ${cooldown.reset_at || "unknown"}`);
+  }
+  return lines.join("\n");
+}
+
+function readJsonFile(filePath) {
+  const normalizedPath = normalizeText(filePath);
+  if (!normalizedPath) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(normalizedPath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function countArrayPayload(payload, key) {
+  const value = payload && typeof payload === "object" ? payload[key] : null;
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function listActiveCooldowns(payload, nowMs = Date.now()) {
+  const cooldowns = payload?.cooldowns && typeof payload.cooldowns === "object" && !Array.isArray(payload.cooldowns)
+    ? payload.cooldowns
+    : {};
+  return Object.values(cooldowns).filter((record) => {
+    const resetAtMs = Number(record?.resetAtMs || Date.parse(record?.resetAt || ""));
+    return Number.isFinite(resetAtMs) && resetAtMs > nowMs;
+  });
+}
+
+function resolveLatestRuntimeContext(payload, runtimeId = "") {
+  const contextsByRuntime = payload?.latestContextByRuntimeId
+    && typeof payload.latestContextByRuntimeId === "object"
+    && !Array.isArray(payload.latestContextByRuntimeId)
+    ? payload.latestContextByRuntimeId
+    : {};
+  const normalizedRuntimeId = normalizeText(runtimeId);
+  if (normalizedRuntimeId && contextsByRuntime[normalizedRuntimeId]) {
+    return contextsByRuntime[normalizedRuntimeId];
+  }
+  const contexts = Object.values(contextsByRuntime);
+  return contexts
+    .slice()
+    .sort((left, right) => (Date.parse(right?.updatedAt || "") || 0) - (Date.parse(left?.updatedAt || "") || 0))[0] || {};
+}
+
+function readNonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
 function resolveBoundUserId(args = {}, context = {}) {
   return normalizeText(args.userId) || normalizeText(context.senderId);
+}
+
+function episodeTopologyRefsSchema() {
+  const stringArray = { type: "array", items: { type: "string" } };
+  return {
+    type: "object",
+    description: "Optional typed refs for cold-topology candidates. Use only when the person/place/activity/object/case is explicit or highly grounded; do not invent facts.",
+    properties: {
+      people: stringArray,
+      places: stringArray,
+      activities: stringArray,
+      objects: stringArray,
+      themes: stringArray,
+      relationship_roots: stringArray,
+      cold_roots: stringArray,
+      warm_refs: stringArray,
+      case_refs: stringArray,
+    },
+    additionalProperties: false,
+  };
+}
+
+function caseActionSchema() {
+  return {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      kind: { type: "string" },
+      at: { type: "string" },
+    },
+    additionalProperties: false,
+  };
+}
+
+function caseArtifactSchema() {
+  return {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      kind: { type: "string" },
+      path: { type: "string" },
+      note: { type: "string" },
+      status: { type: "string", description: "scratch, working, candidate, user_approved_final, or discarded. Only use user_approved_final after explicit user confirmation." },
+      artifact_id: { type: "string", description: "Stable local artifact id or human-readable storage number." },
+      final_artifact_id: { type: "string", description: "Stable id for the human-approved final, if this artifact is the final." },
+      storage_id: { type: "string", description: "Human-readable storage number returned to the user." },
+      checksum: { type: "string" },
+      size_bytes: { type: "integer" },
+      approved_at: { type: "string" },
+      manual_archive_ref: { type: "string", description: "Optional user-provided Notion, iMa, Obsidian, or drive reference after manual upload." },
+      manual_archive_note: { type: "string" },
+    },
+    additionalProperties: false,
+  };
+}
+
+function caseTestSchema() {
+  return {
+    type: "object",
+    properties: {
+      command: { type: "string" },
+      status: { type: "string" },
+      note: { type: "string" },
+    },
+    additionalProperties: false,
+  };
+}
+
+function caseDecisionSchema() {
+  return {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      reason: { type: "string" },
+      at: { type: "string" },
+    },
+    additionalProperties: false,
+  };
+}
+
+function caseFollowupSchema() {
+  return {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      due_at: { type: "string" },
+      status: { type: "string" },
+    },
+    additionalProperties: false,
+  };
 }
 
 function buildToolDescription(tool) {
   const baseDescription = normalizeText(tool?.description);
   const signature = summarizeSchema(tool?.inputSchema);
+  const description = [baseDescription, TOOL_VOICE_BOUNDARY].filter(Boolean).join(" ");
   if (!signature) {
-    return baseDescription;
+    return description;
   }
-  return `${baseDescription} Input: ${signature}`;
+  return `${description} Input: ${signature}`;
 }
 
 function summarizeSchema(schema, { depth = 0 } = {}) {
@@ -1324,7 +2249,7 @@ function validateTimelineWriteArgs(args) {
     const hasTitle = normalizeText(event.title).length > 0;
     const hasEventNodeId = normalizeText(event.eventNodeId).length > 0;
     if (!hasTitle && !hasEventNodeId) {
-      throw new Error(`asheriebridge_timeline_write input.events[${index}].title or input.events[${index}].eventNodeId is required.`);
+      throw new Error(`mossbridge_timeline_write input.events[${index}].title or input.events[${index}].eventNodeId is required.`);
     }
   });
 }

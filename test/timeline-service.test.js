@@ -7,8 +7,8 @@ function createService() {
   const calls = [];
   const service = new TimelineService({
     config: {
-      stateDir: "/tmp/cyberboss-state",
-      timelineScreenshotQueueFile: "/tmp/cyberboss-timeline-service-test.json",
+      stateDir: "/tmp/mossbridge-state",
+      timelineScreenshotQueueFile: "/tmp/mossbridge-timeline-service-test.json",
     },
     timelineIntegration: {
       async runSubcommand(subcommand, args) {

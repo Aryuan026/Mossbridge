@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { CyberbossApp } = require("../src/core/app");
+const { MossbridgeApp } = require("../src/core/app");
 const { TurnGateStore } = require("../src/core/turn-gate-store");
 
 test("turn gate tracks pending scopes until the turn is released", () => {
@@ -65,12 +65,12 @@ test("handlePreparedMessage queues a normal inbound message while the scope is b
     bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared }) {
       queued.push({ bindingKey, workspaceRoot, ...prepared });
     },
-    isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
-    hasPendingImageInbound: CyberbossApp.prototype.hasPendingImageInbound,
-    routePreparedInbound: CyberbossApp.prototype.routePreparedInbound,
+    isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    routePreparedInbound: MossbridgeApp.prototype.routePreparedInbound,
   };
 
-  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
     workspaceId: "default",
     accountId: "acc-1",
     senderId: "user-1",
@@ -134,10 +134,10 @@ test("dispatchSystemMessage yields when a local pending turn already owns the wo
     async handlePreparedMessage() {
       handled = true;
     },
-    isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
+    isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
   };
 
-  const dispatched = await CyberbossApp.prototype.dispatchSystemMessage.call(appLike, {
+  const dispatched = await MossbridgeApp.prototype.dispatchSystemMessage.call(appLike, {
     senderId: "user-1",
     id: "system-1",
     text: "ping",
@@ -195,12 +195,12 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
     bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared }) {
       queued.push({ bindingKey, workspaceRoot, ...prepared });
     },
-    isTurnDispatchBlocked: CyberbossApp.prototype.isTurnDispatchBlocked,
-    hasPendingImageInbound: CyberbossApp.prototype.hasPendingImageInbound,
-    routePreparedInbound: CyberbossApp.prototype.routePreparedInbound,
+    isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    routePreparedInbound: MossbridgeApp.prototype.routePreparedInbound,
   };
 
-  await CyberbossApp.prototype.handlePreparedMessage.call(appLike, {
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
     workspaceId: "default",
     accountId: "acc-1",
     senderId: "user-1",
@@ -257,7 +257,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
     scheduleRuntimeEventWatchdog() {},
   };
 
-  const dispatched = await CyberbossApp.prototype.dispatchPreparedTurn.call(appLike, {
+  const dispatched = await MossbridgeApp.prototype.dispatchPreparedTurn.call(appLike, {
     bindingKey: "binding-1",
     workspaceRoot: "/workspace",
     prepared: {
@@ -326,7 +326,7 @@ test("dispatchPreparedTurn marks claudecode opening turns for a slower watchdog"
     rememberTurnWritebackContext() {},
   };
 
-  const dispatched = await CyberbossApp.prototype.dispatchPreparedTurn.call(appLike, {
+  const dispatched = await MossbridgeApp.prototype.dispatchPreparedTurn.call(appLike, {
     bindingKey: "binding-1",
     workspaceRoot: "/workspace",
     prepared: {
@@ -390,7 +390,7 @@ test("completed turns flush queued inbound work before system messages", async (
     },
   };
 
-  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+  await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
     type: "runtime.turn.completed",
     payload: { threadId: "thread-1", turnId: "turn-1" },
   });
@@ -443,7 +443,7 @@ test("completed turns keep the boundary closed until queued inbound work has bee
     },
   };
 
-  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+  await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
     type: "runtime.turn.completed",
     payload: { threadId: "thread-1", turnId: "turn-1" },
   });
@@ -495,7 +495,7 @@ test("completed turns flush queued inbound work before system messages", async (
     },
   };
 
-  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+  await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
     type: "runtime.turn.completed",
     payload: { threadId: "thread-1", turnId: "turn-1" },
   });
@@ -549,7 +549,7 @@ test("failed turns still send error back when thread binding lookup is missing",
     },
     async writebackRuntimeTurn() {},
     async sendFailureToThread(threadId, text, fallbackTarget) {
-      return CyberbossApp.prototype.sendFailureToThread.call(this, threadId, text, fallbackTarget);
+      return MossbridgeApp.prototype.sendFailureToThread.call(this, threadId, text, fallbackTarget);
     },
     async stopTypingForThread() {},
     async flushPendingInboundMessages() {},
@@ -559,7 +559,7 @@ test("failed turns still send error back when thread binding lookup is missing",
     },
   };
 
-  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+  await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
     type: "runtime.turn.failed",
     payload: {
       threadId: "thread-1",
@@ -623,7 +623,7 @@ test("claudecode failed turns clear the saved workspace thread binding before re
     async flushPendingSystemMessages() {},
   };
 
-  await CyberbossApp.prototype.handleRuntimeEvent.call(appLike, {
+  await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
     type: "runtime.turn.failed",
     payload: {
       threadId: "thread-1",
@@ -678,7 +678,7 @@ test("writebackRuntimeTurn keeps runtime failure notices out of assistant memory
     },
   };
 
-  await CyberbossApp.prototype.writebackRuntimeTurn.call(appLike, {
+  await MossbridgeApp.prototype.writebackRuntimeTurn.call(appLike, {
     event: {
       type: "runtime.turn.failed",
       payload: {
@@ -694,6 +694,70 @@ test("writebackRuntimeTurn keeps runtime failure notices out of assistant memory
   assert.deepEqual(captured.outboundMessages, []);
   assert.equal(captured.status, "error");
   assert.equal(captured.error, "❌ Runtime process exited unexpectedly");
+});
+
+test("writebackRuntimeTurn keeps attachment references with caption-only image turns", async () => {
+  let captured = null;
+  const appLike = {
+    projectDomains: {
+      memory: {
+        async writebackTurn(args) {
+          captured = args;
+          return { ok: true };
+        },
+      },
+    },
+    consumeTurnWritebackContext() {
+      return {
+        bindingKey: "binding-1",
+        dispatchedAtMs: Date.now() - 1000,
+        prepared: {
+          senderId: "user-1",
+          accountId: "account-1",
+          provider: "weixin",
+          originalText: "你看我拍照厉害吗😌",
+          runtimeText: "runtime text with attachment instructions",
+          text: "runtime text with attachment instructions",
+          receivedAt: "2026-05-05T08:42:19.820Z",
+          memoryContextPacket: null,
+          attachments: [{
+            kind: "image",
+            relativePath: "wechat/inbox/2026-05-05/attachment-4.jpg",
+            noteRelativePath: "context/attachment-notes/2026-05-05/attachment-4.md",
+          }],
+          attachmentFailures: [],
+        },
+        model: "claude-opus-4-6",
+      };
+    },
+    threadStateStore: {
+      getThreadState() {
+        return { lastReplyText: "拍得很好。" };
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+  };
+
+  await MossbridgeApp.prototype.writebackRuntimeTurn.call(appLike, {
+    event: {
+      type: "runtime.turn.completed",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        text: "拍得很好。",
+      },
+    },
+    linked: { bindingKey: "binding-1" },
+  });
+
+  assert.match(captured.query, /你看我拍照厉害吗/);
+  assert.match(captured.query, /attachment-4\.jpg/);
+  assert.match(captured.query, /attachment-4\.md/);
+  assert.match(captured.incomingMessages[0].content, /attachment-4\.jpg/);
 });
 
 test("flushPendingInboundMessages batches queued messages from the same scope into one turn", async () => {
@@ -738,7 +802,7 @@ test("flushPendingInboundMessages batches queued messages from the same scope in
     },
   };
 
-  await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);
+  await MossbridgeApp.prototype.flushPendingInboundMessages.call(appLike);
 
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].prepared.contextToken, "ctx-1");
@@ -750,7 +814,7 @@ test("flushPendingInboundMessages rebuilds one fresh memory prelude for queued m
   const dispatched = [];
   const memoryInputs = [];
   const scopeKey = "binding-1::/workspace";
-  const oldPrelude = "[AsherieBridge memory context]\n- warm: stale card\n\n===== Current Inbound Message =====\n";
+  const oldPrelude = "[Mossbridge memory context]\n- warm: stale card\n\n===== Current Inbound Message =====\n";
   const appLike = {
     pendingInboundByScope: new Map([[
       scopeKey,
@@ -801,7 +865,7 @@ test("flushPendingInboundMessages rebuilds one fresh memory prelude for queued m
     },
   };
 
-  await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);
+  await MossbridgeApp.prototype.flushPendingInboundMessages.call(appLike);
 
   assert.equal(memoryInputs.length, 1);
   assert.doesNotMatch(memoryInputs[0], /stale card/);
@@ -810,7 +874,7 @@ test("flushPendingInboundMessages rebuilds one fresh memory prelude for queued m
   assert.match(dispatched[0].prepared.text, /^\[fresh memory\]/);
   assert.deepEqual(dispatched[0].prepared.memoryContextPacket, { ok: true, fresh: true });
   assert.equal(dispatched[0].prepared.originalText, "第一条\n\n第二条");
-  assert.doesNotMatch(dispatched[0].prepared.originalText, /AsherieBridge memory context/);
+  assert.doesNotMatch(dispatched[0].prepared.originalText, /Mossbridge memory context/);
 });
 
 test("flushPendingInboundMessages falls back to messageId ordering when receivedAt ties", async () => {
@@ -864,7 +928,7 @@ test("flushPendingInboundMessages falls back to messageId ordering when received
     },
   };
 
-  await CyberbossApp.prototype.flushPendingInboundMessages.call(appLike);
+  await MossbridgeApp.prototype.flushPendingInboundMessages.call(appLike);
 
   assert.equal(dispatched.length, 1);
   assert.equal(dispatched[0].prepared.contextToken, "ctx-200");

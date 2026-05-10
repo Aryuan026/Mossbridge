@@ -6,6 +6,7 @@ const { resolveWorkspaceOfficePaths } = require("../../../core/workspace-office-
 const MAX_FILE_NAME_LENGTH = 120;
 const MAX_AUTO_NOTE_SUMMARY_CHARS = 700;
 const MAX_AUTO_NOTE_DETAILS_CHARS = 4000;
+const ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS = [0, 500, 1_500];
 
 async function persistIncomingWeixinAttachments({
   attachments,
@@ -129,28 +130,65 @@ async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
   let lastError = null;
   for (const candidate of candidates) {
     try {
-      const response = await fetch(candidate, {
-        method: "GET",
-        headers: {
-          Accept: "*/*",
-        },
-      });
-      if (!response.ok) {
-        lastError = new Error(`download failed with HTTP ${response.status}`);
-        continue;
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      return {
-        bytes: Buffer.from(arrayBuffer),
-        contentType: normalizeContentType(response.headers.get("content-type")),
-      };
+      return await downloadCandidateWithRetries(candidate);
     } catch (error) {
       lastError = error;
     }
   }
 
   throw lastError || new Error("attachment download failed");
+}
+
+async function downloadCandidateWithRetries(candidate) {
+  let lastError = null;
+  for (let index = 0; index < ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS.length; index += 1) {
+    const delayMs = ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS[index];
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+    try {
+      return await downloadCandidateOnce(candidate);
+    } catch (error) {
+      lastError = error;
+      if (!isRetriableAttachmentDownloadError(error)) {
+        break;
+      }
+    }
+  }
+  throw lastError || new Error("attachment download failed");
+}
+
+async function downloadCandidateOnce(candidate) {
+  const response = await fetch(candidate, {
+    method: "GET",
+    headers: {
+      Accept: "*/*",
+    },
+  });
+  if (!response.ok) {
+    const error = new Error(`download failed with HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return {
+    bytes: Buffer.from(arrayBuffer),
+    contentType: normalizeContentType(response.headers.get("content-type")),
+  };
+}
+
+function isRetriableAttachmentDownloadError(error) {
+  const status = Number(error?.status);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+  const message = String(error?.message || error || "");
+  return /fetch failed|network|socket|timeout|timed out|econnreset|etimedout|eai_again|aborted/i.test(message);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildDownloadCandidates(attachment, cdnBaseUrl) {

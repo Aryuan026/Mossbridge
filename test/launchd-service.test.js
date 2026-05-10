@@ -18,8 +18,8 @@ test("launchd service plist points at shared-start with claudecode runtime", () 
   assert.match(plist, /<key>Label<\/key>\n\s+<string>com\.example\.mossbridge<\/string>/);
   assert.match(plist, /<string>\/opt\/node<\/string>/);
   assert.match(plist, /scripts\/shared-start\.js<\/string>/);
-  assert.match(plist, /<key>ASHERIEBRIDGE_RUNTIME<\/key>\n\s+<string>claudecode<\/string>/);
-  assert.match(plist, /<key>ASHERIEBRIDGE_SHARED_SUPERVISE<\/key>\n\s+<string>1<\/string>/);
+  assert.match(plist, /<key>MOSSBRIDGE_RUNTIME<\/key>\n\s+<string>claudecode<\/string>/);
+  assert.match(plist, /<key>MOSSBRIDGE_SHARED_SUPERVISE<\/key>\n\s+<string>1<\/string>/);
   assert.match(plist, /<key>RunAtLoad<\/key>\n\s+<true\/>/);
   assert.match(plist, /<key>SuccessfulExit<\/key>\n\s+<false\/>/);
 });

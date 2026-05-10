@@ -12,7 +12,7 @@ const {
 } = require("../src/asherie/single-identity");
 
 test("asherie memory service writes warm/cold/cache layers and recalls them", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -85,7 +85,7 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
     query: "How should I start today?",
     assistantTextFinal: "Maybe start with coffee and a quiet plan.",
     threadId: "thread-1",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
     wakeupRecord: {
       scoped_user_id: "wrong-scope",
       decision: "send",
@@ -99,6 +99,27 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
     fs.readFileSync(path.join(tempRoot, "gateway-data", "cache", "wakeup_journal.json"), "utf8"),
   );
   assert.equal(wakeupRows[0].scoped_user_id, SINGLE_USER_ID);
+
+  const wakeupDecision = await service.appendWakeupDecision({
+    userId: "demo-user",
+    decision: "maintenance",
+    wakeMotive: "random_checkin",
+    intentSummary: "Checked status and saved the next handle instead of messaging.",
+    actionsTaken: ["read bridge status"],
+    nextActions: ["check dreaming after quiet time"],
+    contextKey: "dreaming_health",
+  });
+  assert.equal(wakeupDecision.ok, true);
+  assert.equal(wakeupDecision.record.scoped_user_id, SINGLE_USER_ID);
+  assert.equal(wakeupDecision.record.decision, "maintenance");
+  const wakeupAgenda = await service.listWakeupDecisions({
+    userId: "demo-user",
+    limit: 3,
+    includeCleared: true,
+  });
+  assert.equal(wakeupAgenda.count, 2);
+  assert.equal(wakeupAgenda.latest.decision, "maintenance");
+  assert.equal(wakeupAgenda.pending_next_actions[0].action, "check dreaming after quiet time");
 
   const observation = await service.appendObservation({
     observation: "User tends to prefer gentle, low-pressure morning continuity over abrupt task pressure.",
@@ -120,7 +141,7 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
   assert.equal(recalled.observation_journal_packet.hit_count || recalled.observation_journal_packet.count, 1);
   assert.equal(recalled.cold_memory.active_version, coldWrite.version);
   assert.equal(recalled.conversation_cache.stats.returned_records, 1);
-  assert.match(recalled.runtime_prelude, /AsherieBridge memory context/);
+  assert.match(recalled.runtime_prelude, /\[记忆参考\]/);
   assert.match(recalled.runtime_prelude, /observation:/);
 
   const corrected = await service.updateObservation({
@@ -137,7 +158,7 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
 });
 
 test("asherie memory service honors configured recent context cache limit by default", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-cache-limit-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-cache-limit-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -151,22 +172,28 @@ test("asherie memory service honors configured recent context cache limit by def
     await service.writebackTurn({
       query: `recent message ${index}`,
       assistantTextFinal: `recent reply ${index}`,
-      sourceClient: "asheriebridge_wechat",
+      sourceClient: "mossbridge_wechat",
       tsUtc: new Date(Date.UTC(2026, 0, 1, 0, index, 0)).toISOString(),
     });
   }
 
   const packet = await service.captureContextPacket({
     query: "recent message",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
   });
 
   assert.equal(packet.conversation_cache.stats.returned_records, 3);
-  assert.match(packet.runtime_prelude, /recent-thread/);
+  assert.doesNotMatch(packet.runtime_prelude, /recent-thread/);
+
+  const explicitPacket = await service.captureContextPacket({
+    query: "还记得 recent message 吗",
+    sourceClient: "mossbridge_wechat",
+  });
+  assert.match(explicitPacket.runtime_prelude, /recent-thread/);
 });
 
 test("asherie observation journal search requires intent or lexical activation", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-observation-filter-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-observation-filter-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -189,8 +216,66 @@ test("asherie observation journal search requires intent or lexical activation",
   assert.equal(intent.count, 1);
 });
 
+test("asherie memory service carries solitude digest only for wakeup or explicit self-review", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-solitude-runtime-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 0,
+    },
+  });
+
+  await service.appendSolitudeEntry({
+    ts_utc: "2026-05-09T13:00:00.000Z",
+    entry_type: "experience",
+    wake_context: "random_checkin",
+    summary: "睡前一小时内不打扰，先补 timeline 等 dreaming。",
+    lesson: "如果 dreaming 已经临近，优先静默维护，不要为了证明醒着而打扰。",
+    next_actions: ["临近 dreaming 时先观察队列和日记，不主动寒暄"],
+    tags: ["pre-sleep", "maintenance"],
+    confidence: 0.82,
+  });
+  await service.appendSolitudeEntry({
+    ts_utc: "2026-05-09T14:00:00.000Z",
+    entry_type: "experience",
+    wake_context: "random_checkin",
+    summary: "第二次睡前心跳也选择沉默维护。",
+    lesson: "如果 dreaming 已经临近，优先静默维护，不要为了证明醒着而打扰。",
+    next_actions: ["临近 dreaming 时先观察队列和日记，不主动寒暄"],
+    tags: ["pre-sleep", "maintenance"],
+    confidence: 0.8,
+  });
+
+  const ordinary = await service.captureContextPacket({
+    query: "今天吃面要不要加蛋",
+    residentLimit: 0,
+  });
+  assert.equal(ordinary.solitude_journal_packet.hit_count, 0);
+  assert.doesNotMatch(ordinary.runtime_prelude, /solitude-digest/);
+
+  const proactive = await service.captureContextPacket({
+    query: "random_checkin",
+    recallMode: "proactive",
+    runtimeProfile: "proactive_lite",
+    residentLimit: 0,
+  });
+  assert.ok(proactive.solitude_journal_packet.hit_count > 0);
+  assert.match(proactive.retrieval.route.join(","), /solitude_journal/);
+  assert.match(proactive.runtime_prelude, /solitude-digest/);
+  assert.match(proactive.runtime_prelude, /pre-sleep/);
+  assert.match(proactive.runtime_prelude, /不是前台语气模板/);
+
+  const explicit = await service.captureContextPacket({
+    query: "独处笔记里最近有什么唤醒经验",
+    residentLimit: 0,
+  });
+  assert.ok(explicit.solitude_journal_packet.hit_count > 0);
+  assert.match(explicit.runtime_prelude, /solitude-digest/);
+});
+
 test("asherie memory runtime prelude redacts private identity seed paths", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -200,8 +285,8 @@ test("asherie memory runtime prelude redacts private identity seed paths", async
 
   await service.writeWarmMaterial({
     title: "Persona pointer",
-    summary: "soul_ref: /Users/mac/Documents/AI/Aji-Memory/00_System/soul.md",
-    body_markdown: "memory_ref: /Users/mac/Documents/AI/Aji-Memory",
+    summary: "soul_ref: /tmp/mossbridge-memory/00_System/soul.md",
+    body_markdown: "memory_ref: /tmp/mossbridge-memory",
     tags: ["identity", "anchor"],
     pinned: true,
     certainty_state: "anchor",
@@ -213,11 +298,11 @@ test("asherie memory runtime prelude redacts private identity seed paths", async
   });
 
   assert.match(packet.runtime_prelude, /\[private_identity_seed\]/);
-  assert.doesNotMatch(packet.runtime_prelude, /\/Users\/mac\/Documents\/AI\/Aji-Memory/);
+  assert.doesNotMatch(packet.runtime_prelude, /\/tmp\/mossbridge-memory/);
 });
 
 test("asherie memory service keeps memory data separable and allows custom agent identity", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-share-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-share-"));
   const runtimeStateDir = path.join(tempRoot, "runtime-state");
   const stableDataRoot = path.join(tempRoot, "stable-memory");
   const service = new AsherieMemoryService({
@@ -258,7 +343,7 @@ test("asherie memory service keeps memory data separable and allows custom agent
 });
 
 test("asherie memory service can search, read, update, delete warm cards and inspect cold versions", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-crud-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-crud-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -402,7 +487,7 @@ test("asherie memory service can search, read, update, delete warm cards and ins
 });
 
 test("asherie memory service can recall legacy truth-layer roots even when cold manifest has no active version", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-legacy-cold-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-legacy-cold-"));
   const truthLayerRoot = path.join(tempRoot, "legacy-truth-layer");
   const snapshotDir = path.join(
     truthLayerRoot,
@@ -504,7 +589,7 @@ test("asherie memory service can recall legacy truth-layer roots even when cold 
 });
 
 test("asherie memory service expands cold roots through truth-layer vines", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-vines-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-vines-"));
   const truthLayerRoot = path.join(tempRoot, "legacy-truth-layer");
   const rootSnapshotDir = path.join(
     truthLayerRoot,
@@ -666,7 +751,7 @@ test("asherie memory service expands cold roots through truth-layer vines", asyn
 });
 
 test("asherie memory service expands short daily lines with recent context so recall stays usable", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-focus-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-focus-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -700,14 +785,14 @@ test("asherie memory service expands short daily lines with recent context so re
     userId: "demo-user",
     query: "昨晚又熬到三点",
     assistantTextFinal: "那你今天大概率会很钝，先别硬扛。",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
     threadId: "thread-focus",
   });
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
     query: "还没缓过来",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
   });
 
   assert.equal(packet.recall_focus.should_trigger, true);
@@ -721,7 +806,7 @@ test("asherie memory service expands short daily lines with recent context so re
 });
 
 test("asherie memory service keeps broad-basis taste questions focused on their landing point", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-routing-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-routing-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -759,7 +844,7 @@ test("asherie memory service keeps broad-basis taste questions focused on their 
 });
 
 test("asherie memory service lets proactive recall surface symbolic relationship objects before the candidate window clips them", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-symbolic-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-symbolic-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -815,7 +900,7 @@ test("asherie memory service lets proactive recall surface symbolic relationship
 });
 
 test("asherie memory service routes family-gossip continuations to the existing warm story card", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-family-story-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-family-story-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -862,7 +947,7 @@ test("asherie memory service routes family-gossip continuations to the existing 
 });
 
 test("asherie memory service surfaces sticky calendar and recent wakeup context without forcing front-stage style", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-sticky-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-sticky-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -894,7 +979,7 @@ test("asherie memory service surfaces sticky calendar and recent wakeup context 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
     query: "我晚上是不是还有事",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
   });
 
   assert.equal(packet.calendar_packet.counts.upcoming, 1);
@@ -904,7 +989,7 @@ test("asherie memory service surfaces sticky calendar and recent wakeup context 
 });
 
 test("asherie memory service gives proactive turns resident anchors and a recent-thread snapshot", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-proactive-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-proactive-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -940,7 +1025,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
 
   const residentOnlyPacket = await service.captureContextPacket({
     userId: "demo-user",
-    sourceClient: "asheriebridge_system_turn",
+    sourceClient: "mossbridge_system_turn",
     recallMode: "proactive",
     query: "User comes to mind again.",
   });
@@ -958,7 +1043,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
     userId: "demo-user",
     query: "昨晚又熬到三点",
     assistantTextFinal: "那你今天早上会钝一点。",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
     threadId: "thread-proactive",
   });
 
@@ -966,7 +1051,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
     userId: "demo-user",
     query: "明天10点记得来问我起床没",
     assistantTextFinal: "好，10点来戳你。",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
     threadId: "thread-proactive",
   });
 
@@ -974,23 +1059,26 @@ test("asherie memory service gives proactive turns resident anchors and a recent
     userId: "demo-user",
     query: "宝宝你到时候别失约",
     assistantTextFinal: "不跑，记着呢。",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
     threadId: "thread-proactive",
   });
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    sourceClient: "asheriebridge_system_turn",
+    sourceClient: "mossbridge_system_turn",
     recallMode: "proactive",
     query: "User comes to mind again.",
   });
 
   assert.ok(packet.warm_memory_packet.hit_count >= 0);
-  assert.match(packet.runtime_prelude, /recent-thread: 用户: 宝宝你到时候别失约 \| 你: 不跑，记着呢|recent-thread: 用户: 明天10点记得来问我起床没 \| 你: 好，10点来戳你/);
+  assert.match(packet.recall_focus.current_query, /宝宝你到时候别失约|明天10点记得来问我起床没/);
+  assert.match(packet.runtime_prelude, /主动唤醒当前态/);
+  assert.match(packet.runtime_prelude, /相对时间校准/);
+  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 宝宝你到时候别失约 \| 你: 不跑，记着呢|latest-thread: .*用户: 明天10点记得来问我起床没 \| 你: 好，10点来戳你/);
 });
 
-test("asherie memory service keeps short relational turns in recent-thread when the reply carries continuity", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-recent-thread-"));
+test("asherie memory service keeps recent-thread only for discourse-continuation turns", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-recent-thread-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1001,22 +1089,37 @@ test("asherie memory service keeps short relational turns in recent-thread when 
 
   await service.writebackTurn({
     userId: "demo-user",
-    query: "宝宝～",
-    assistantTextFinal: "我在。\n\n过来，让我抱一下。",
-    sourceClient: "asheriebridge_wechat",
+    query: "昨晚又熬到三点",
+    assistantTextFinal: "那你今天早上会钝一点。",
+    sourceClient: "mossbridge_wechat",
     threadId: "thread-rel",
   });
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    query: "今天累瘫了",
+    query: "还没缓过来",
   });
 
-  assert.match(packet.runtime_prelude, /recent-thread: 用户: 宝宝～ \| 你: 我在。 过来，让我抱一下。/);
+  assert.match(packet.runtime_prelude, /recent-thread: 用户: 昨晚又熬到三点 \| 你: 那你今天早上会钝一点。/);
+
+  await service.writebackTurn({
+    userId: "demo-user",
+    query: "bridge 刚才又在调试 claudecode 和 runtime 状态",
+    assistantTextFinal: "我去看后台。",
+    sourceClient: "mossbridge_wechat",
+    threadId: "thread-rel",
+  });
+
+  const topicShiftPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "我最近想看看美甲灵感",
+  });
+  assert.doesNotMatch(topicShiftPacket.runtime_prelude, /recent-thread/);
+  assert.doesNotMatch(topicShiftPacket.runtime_prelude, /bridge 刚才又在调试/);
 });
 
 test("resident anchor cards survive later warm-memory writes when they are pinned", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-anchor-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1047,7 +1150,7 @@ test("resident anchor cards survive later warm-memory writes when they are pinne
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    sourceClient: "asheriebridge_system_turn",
+    sourceClient: "mossbridge_system_turn",
     recallMode: "proactive",
     query: "User comes to mind again.",
   });
@@ -1057,7 +1160,7 @@ test("resident anchor cards survive later warm-memory writes when they are pinne
 });
 
 test("resident anchor recall still surfaces multiple old pinned anchors after many newer writes", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-anchor-many-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-many-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1108,7 +1211,7 @@ test("resident anchor recall still surfaces multiple old pinned anchors after ma
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    sourceClient: "asheriebridge_system_turn",
+    sourceClient: "mossbridge_system_turn",
     recallMode: "proactive",
     query: "User comes to mind again.",
   });
@@ -1120,7 +1223,7 @@ test("resident anchor recall still surfaces multiple old pinned anchors after ma
 });
 
 test("asherie memory service injects ongoing tracks and cold case updates into the runtime prelude", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-ongoing-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-ongoing-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1187,10 +1290,187 @@ test("asherie memory service injects ongoing tracks and cold case updates into t
   assert.match(packet.runtime_prelude, /active-entity: 腰痛/);
   assert.match(packet.runtime_prelude, /shadow: 减重: .*昨晚忍住了夜宵/);
   assert.match(packet.runtime_prelude, /case-update: 有篇稿子两周内要收尾/);
+
+  const unrelatedPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "我最近想看看美甲灵感",
+  });
+  assert.equal(unrelatedPacket.ongoing_track_packet.hit_count, 0);
+  assert.doesNotMatch(unrelatedPacket.runtime_prelude, /ongoing: 减重/);
+  assert.doesNotMatch(unrelatedPacket.runtime_prelude, /open-loop: 减重/);
+});
+
+test("proactive recall uses the latest natural tail instead of the internal trigger text", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-proactive-tail-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asherieProactiveContextCacheLimit: 20,
+      asheriePreludeRecentThreadLimit: 4,
+      asheriePreludeOngoingLimit: 3,
+    },
+  });
+
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "装修决策与交房前准备",
+    summary: "装修还在推进，但这一轮不是它。",
+    tags: ["装修"],
+    related_entities: ["房子", "交房"],
+    shadow_snippets: ["之前聊过台盆和柜子。"],
+  });
+
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "替尔泊肽减重与吃饭不香",
+    summary: "最近吃东西容易早饱，蛋白粉是可选补充。",
+    tags: ["减重", "饮食"],
+    related_entities: ["苹果", "蛋白粉"],
+  });
+
+  await service.upsertColdVersion({
+    userId: "demo-user",
+    payload: {
+      persona_memos: [],
+      hard_facts: [],
+      case_updates: [{
+        id: "case-1",
+        summary: "有篇稿子两周内要收尾。",
+        next_action: "这周先把提纲补齐。",
+      }],
+    },
+  });
+
+  await service.writebackTurn({
+    userId: "demo-user",
+    query: "到家啦到家啦，晚上吃了一个苹果就饱了，打算20点如果饿了再喝一杯蛋白粉，不饿就算了",
+    assistantTextFinal: "一个苹果就饱了呀，饿了再喝蛋白粉，不饿就别硬灌。",
+    sourceClient: "mossbridge_wechat",
+    threadId: "thread-proactive-ongoing",
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    sourceClient: "mossbridge_system_turn",
+    recallMode: "proactive",
+    query: "User comes to mind again.",
+  });
+
+  assert.match(packet.recall_focus.current_query, /苹果|蛋白粉/);
+  assert.match(packet.runtime_prelude, /主动唤醒当前态/);
+  assert.match(packet.runtime_prelude, /相对时间校准/);
+  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 到家啦到家啦，晚上吃了一个苹果/);
+  assert.doesNotMatch(packet.runtime_prelude, /ongoing: 装修决策与交房前准备/);
+
+  const coldNoisePacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "今天吃面要不要加蛋",
+  });
+  assert.equal(coldNoisePacket.cold_root_packet.hit_count, 0);
+  assert.doesNotMatch(coldNoisePacket.runtime_prelude, /case-update: 有篇稿子两周内要收尾/);
+});
+
+test("asherie memory service keeps bounded event episodes with attachment refs", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-episode-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  const upsert = await service.upsertEpisode({
+    userId: "demo-user",
+    episode_id: "2026-may-henan-trip",
+    title: "2026 五一河南旅行",
+    summary: "三天旅行，有打铁花、照片、顺利和麻烦。",
+    kind: "travel",
+    tags: ["旅行", "打铁花"],
+    topology_refs: {
+      places: ["河南"],
+      activities: ["看打铁花"],
+    },
+    time_range: { label: "2026-05-01 到 2026-05-03" },
+  });
+  assert.equal(upsert.ok, true);
+  assert.equal(upsert.record.episode_id, "2026-may-henan-trip");
+
+  const append = await service.appendEpisodeEntry({
+    userId: "demo-user",
+    episode_id: "2026-may-henan-trip",
+    entry_type: "photo",
+    day_label: "Day 2",
+    text: "打铁花现场照片，适合后面收成旅行小记。",
+    attachment_refs: [{
+      path: "wechat/inbox/2026-05-05/attachment.jpg",
+      note_path: "context/attachment-notes/2026-05-05/attachment.md",
+      caption: "打铁花小船",
+    }],
+    source_refs: ["wechat:7457348926094522000"],
+    topology_refs: {
+      objects: ["打铁花小船"],
+      themes: ["旅行照片整理"],
+    },
+  });
+  assert.equal(append.ok, true);
+  assert.equal(append.record.attachment_count, 1);
+  assert.ok(append.record.topology_edge_count >= 4);
+  assert.equal(
+    append.record.topology_candidate.edges.some((edge) => edge.relation === "visited_place" && edge.to_ref.label === "河南"),
+    true,
+  );
+
+  const warm = await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "河南旅行照片小记",
+    body_markdown: "这次旅行照片线索后面适合收成一篇小记。",
+    summary: "旅行照片整理线索。",
+    material_type: "memo",
+    tags: ["旅行", "照片"],
+    episode_refs: ["2026-may-henan-trip"],
+    case_refs: ["travel-photo-note-case"],
+  });
+  assert.deepEqual(warm.record.episode_refs, ["2026-may-henan-trip"]);
+  assert.deepEqual(warm.record.case_refs, ["travel-photo-note-case"]);
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "河南旅行照片整理",
+    currentTurnSignals: {
+      source_client: "mossbridge_wechat",
+      has_text: true,
+      attachment_count: 2,
+      image_count: 2,
+    },
+  });
+  assert.equal(packet.episode_journal_packet.hit_count, 1);
+  assert.equal(packet.episode_journal_packet.hits[0].topology_candidate, undefined);
+  assert.ok(packet.episode_journal_packet.hits[0].query_score > 0);
+  assert.ok(JSON.stringify(packet.episode_journal_packet).length < 4000);
+  assert.deepEqual(packet.retrieval.route.includes("episode_journal"), true);
+  assert.match(packet.runtime_prelude, /小事记：2026 五一河南旅行/);
+  assert.match(packet.runtime_prelude, /小事记提醒：/);
+  assert.match(packet.runtime_prelude, /episode_refs=2026-may-henan-trip/);
+  assert.match(packet.runtime_prelude, /case_refs=travel-photo-note-case/);
+  assert.match(packet.runtime_prelude, /小事记/);
+  assert.equal(packet.episode_attention.active, true);
+
+  const markdownPath = path.join(
+    tempRoot,
+    "gateway-data",
+    "storage",
+    "episode_journal",
+    SINGLE_USER_ID,
+    "2026-may-henan-trip",
+    "episode.md",
+  );
+  assert.equal(fs.existsSync(markdownPath), true);
+  assert.match(fs.readFileSync(markdownPath, "utf8"), /打铁花小船/);
 });
 
 test("asherie memory service recalls conversation cache by temporal window", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-temporal-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-temporal-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1204,14 +1484,14 @@ test("asherie memory service recalls conversation cache by temporal window", asy
     query: "昨天那张图是签证路线截图",
     assistantTextFinal: "我先把它当成签证路线材料记在上下文里。",
     ts_utc: "2026-04-28T02:30:00.000Z",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
   });
   await service.writebackTurn({
     userId: "demo-user",
     query: "很久以前的无关测试",
     assistantTextFinal: "这条不应该被昨天召回。",
     ts_utc: "2026-04-25T02:30:00.000Z",
-    sourceClient: "asheriebridge_wechat",
+    sourceClient: "mossbridge_wechat",
   });
 
   const packet = await service.captureContextPacket({
@@ -1229,7 +1509,7 @@ test("asherie memory service recalls conversation cache by temporal window", asy
 });
 
 test("asherie memory service gives the frontstage model memory self-maintenance agency", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "asheriebridge-memory-agency-"));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-agency-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1241,17 +1521,32 @@ test("asherie memory service gives the frontstage model memory self-maintenance 
     userId: "demo-user",
     query: "帮我看看脑子里现在有什么",
   });
-  assert.match(readPacket.runtime_prelude, /memory-self-maintenance/);
-  assert.match(readPacket.runtime_prelude, /part of your own continuity/);
-  assert.match(readPacket.runtime_prelude, /memory-system-feedback/);
-  assert.match(readPacket.runtime_prelude, /make a concrete request for the missing capability/);
-  assert.match(readPacket.runtime_prelude, /memory-frontstage-freedom/);
+  assert.match(readPacket.runtime_prelude, /记忆自维护/);
+  assert.match(readPacket.runtime_prelude, /自然闲聊或换话题/);
+  assert.match(readPacket.runtime_prelude, /系统反馈/);
+  assert.match(readPacket.runtime_prelude, /提出具体需要/);
+  assert.match(readPacket.runtime_prelude, /前台自由/);
   assert.doesNotMatch(readPacket.runtime_prelude, /memory-action-required/);
 
   const casualPacket = await service.captureContextPacket({
     userId: "demo-user",
     query: "今天好冷啊",
   });
-  assert.match(casualPacket.runtime_prelude, /memory-self-maintenance/);
+  assert.match(casualPacket.runtime_prelude, /记忆自维护/);
   assert.doesNotMatch(casualPacket.runtime_prelude, /memory-action-required/);
+
+  await service.writebackTurn({
+    userId: "demo-user",
+    query: "今天一个人扛了保活、episode 仓位和 bridge 稳定性，想讨一个亲亲。",
+    assistantTextFinal: "那当然亲。",
+    sourceClient: "mossbridge_wechat",
+  });
+
+  const goodnightPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "（搂住大亲）mua！宝宝晚安🌙\n\n希望明天人就不那么肿了",
+  });
+  assert.equal(goodnightPacket.recall_focus.used_recent_context, false);
+  assert.doesNotMatch(goodnightPacket.runtime_prelude, /recall-focus: expanded from recent context/);
+  assert.doesNotMatch(goodnightPacket.recall_focus.recall_query, /bridge 稳定性/);
 });

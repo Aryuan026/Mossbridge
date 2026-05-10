@@ -3,10 +3,6 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const {
-  buildCodexMcpConfigArgs,
-  resolveCodexProjectToolMcpServerConfig,
-} = require("../src/adapters/runtime/codex/mcp-config");
 
 try {
   require("dotenv").config({ path: path.join(process.cwd(), ".env") });
@@ -15,21 +11,21 @@ try {
 }
 
 try {
-  require("dotenv").config({ path: path.join(os.homedir(), ".asheriebridge", ".env") });
+  require("dotenv").config({ path: path.join(os.homedir(), ".mossbridge", ".env") });
 } catch {
   // ignore
 }
 
 const rootDir = path.resolve(__dirname, "..");
-const port = String(process.env.ASHERIEBRIDGE_SHARED_PORT || "8765");
+const port = String(process.env.MOSSBRIDGE_SHARED_PORT || "8765");
 const listenUrl = `ws://127.0.0.1:${port}`;
-const stateDir = process.env.ASHERIEBRIDGE_STATE_DIR || path.join(os.homedir(), ".asheriebridge");
+const stateDir = process.env.MOSSBRIDGE_STATE_DIR || path.join(os.homedir(), ".mossbridge");
 const logDir = path.join(stateDir, "logs");
 const appServerPidFile = path.join(logDir, "shared-app-server.pid");
 const bridgePidFile = path.join(logDir, "shared-wechat.pid");
 const appServerLogFile = path.join(logDir, "shared-app-server.log");
 const accountsDir = path.join(stateDir, "accounts");
-const sessionFile = process.env.ASHERIEBRIDGE_SESSIONS_FILE || path.join(stateDir, "sessions.json");
+const sessionFile = process.env.MOSSBRIDGE_SESSIONS_FILE || path.join(stateDir, "sessions.json");
 
 function ensureLogDir() {
   fs.mkdirSync(logDir, { recursive: true });
@@ -123,7 +119,7 @@ function spawnDetachedCommand(command, args, { logFile, cwd = rootDir, env = {} 
 }
 
 async function ensureSharedAppServer() {
-  if (process.env.ASHERIEBRIDGE_RUNTIME && process.env.ASHERIEBRIDGE_RUNTIME !== "codex") {
+  if (process.env.MOSSBRIDGE_RUNTIME && process.env.MOSSBRIDGE_RUNTIME !== "codex") {
     return { pid: 0, status: "skipped" };
   }
 
@@ -138,20 +134,24 @@ async function ensureSharedAppServer() {
   }
 
   const env = {
-    ASHERIEBRIDGE_STATE_DIR: stateDir,
+    MOSSBRIDGE_STATE_DIR: stateDir,
     TIMELINE_FOR_AGENT_STATE_DIR: stateDir,
   };
   if (!process.env.TIMELINE_FOR_AGENT_CHROME_PATH) {
     env.TIMELINE_FOR_AGENT_CHROME_PATH =
-      process.env.ASHERIEBRIDGE_SCREENSHOT_CHROME_PATH
+      process.env.MOSSBRIDGE_SCREENSHOT_CHROME_PATH
       || (process.platform === "darwin"
         ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         : "");
   }
 
-  const command = process.env.ASHERIEBRIDGE_CODEX_COMMAND || "codex";
+  const command = process.env.MOSSBRIDGE_CODEX_COMMAND || "codex";
+  const {
+    buildCodexMcpConfigArgs,
+    resolveCodexProjectToolMcpServerConfig,
+  } = require("../src/adapters/runtime/codex/mcp-config");
   const mcpConfigArgs = buildCodexMcpConfigArgs(resolveCodexProjectToolMcpServerConfig({
-    asheriebridgeHome: process.env.ASHERIEBRIDGE_HOME || rootDir,
+    mossbridgeHome: process.env.MOSSBRIDGE_HOME || rootDir,
   }));
   const pid = spawnDetachedCommand(command, [...mcpConfigArgs, "app-server", "--listen", listenUrl], {
     logFile: appServerLogFile,
@@ -207,7 +207,7 @@ function resolveBoundThread(workspaceRoot) {
   if (!fs.existsSync(sessionFile)) {
     throw new Error(`session file not found: ${sessionFile}`);
   }
-  const runtimeId = normalizeText(process.env.ASHERIEBRIDGE_RUNTIME || "codex");
+  const runtimeId = normalizeText(process.env.MOSSBRIDGE_RUNTIME || "codex");
   const data = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
   const currentAccountId = resolveCurrentAccountId();
   const bindings = Object.values(data.bindings || {})

@@ -42,3 +42,16 @@ test("weixin operations explains sticker use without forcing sticker spam", () =
   assert.match(raw, /Archived sticker packs are a larger wardrobe/i);
   assert.match(raw, /Do not spam stickers/i);
 });
+
+test("weixin operations treats random checkins as low-risk maintenance windows", () => {
+  const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
+  const raw = fs.readFileSync(templatePath, "utf8");
+
+  assert.match(raw, /small maintenance and solitude window/i);
+  assert.match(raw, /low-risk backstage state/i);
+  assert.match(raw, /Prefer read-only checks first/i);
+  assert.match(raw, /solitude journal entries/i);
+  assert.match(raw, /Do not store raw hidden chain-of-thought/i);
+  assert.match(raw, /bridge lacks the status surface/i);
+  assert.match(raw, /maintenance pass found nothing useful/i);
+});
