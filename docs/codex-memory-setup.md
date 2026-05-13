@@ -2,7 +2,7 @@
 
 这份文档是给“拿到 Mossbridge 的另一个 Codex”看的施工说明。
 
-Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地记忆仓，但不能默认依赖它。一个新部署应该先能拥有自己的轻量记忆仓：空仓可启动、日常可写入、测试可清理、未来可迁移。
+Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地记忆仓，但不能默认依赖它。一个新部署应该先能拥有自己的轻量 brain：空仓可启动、日常可写入、测试可清理、未来可迁移。
 
 注意：这里的 Codex 是“帮助用户施工的助手”。Mossbridge 自身仍然支持 `codex` 和 `claudecode` 两种 runtime；公开前的验收要覆盖两边，不能把 Codex 只当安装工。
 
@@ -11,7 +11,7 @@ Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地
 如果你在一台新机器上帮助用户部署 Mossbridge，可以先按这句话理解任务：
 
 ```text
-请为 Mossbridge 准备一个独立的本地数据仓，把运行态、稳定记忆、测试数据和工作文件分开；优先只配置 MOSSBRIDGE_DATA_ROOT，不要接入任何私人旧仓路径，除非用户明确要求迁移或共享旧记忆。
+请为 Mossbridge 准备一个独立的本地数据仓，把运行态、热上下文、稳定记忆、小事记、测试数据和工作文件分开；优先只配置 MOSSBRIDGE_DATA_ROOT，不要接入任何私人旧仓路径，除非用户明确要求迁移或共享旧记忆。
 ```
 
 ## 推荐的本地目录
@@ -21,7 +21,7 @@ Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地
 ```text
 ~/Documents/Codex/Mossbridge/          # git 仓库，只放代码
 ~/Documents/MossbridgeState/           # 运行态：账号、session、日志、队列、表情包
-~/Documents/MossbridgeData/            # 轻量记忆仓：温记忆、ongoing、树、case、cache
+~/Documents/MossbridgeData/            # 轻量 brain：hot、notebook、温记忆、ongoing、树、case、cache
 ~/Documents/MossbridgeWorkspace/       # 前台 bot 可读写的办公区和附件区
 ```
 
@@ -89,6 +89,7 @@ MossbridgeData/
     truth_layer/
     memory_tree/
     case_index/
+    notebook/
     observation_journal/
     notion_sync/
     raw_transcript_archive/
@@ -122,10 +123,14 @@ MossbridgeData/
   日常最重要的记忆卡。偏好、关系锚点、象征物、稳定印象都优先写这里。
 - `storage/ongoing_tracks.json`
   近中期仍在发生的事，例如身体追踪、稿子、家族事件、购买决策、系统 bug。
+- `storage/notebook/`
+  小事记、轻量日记、随手备注。它是人可读的原材料层，不自动等于稳定事实。
 - `storage/observation_journal/`
   可修正的观察日记。保存近期状态、生活节律、边界和相处默契，默认不是长期事实。
 - `cache/conversation_cache/`
   最近对话沉淀池。它不是永久记忆，但会喂给 recall 和 dreaming。
+- `cache/hot/`
+  热上下文缓冲层。给跨窗口续聊、未来 ChatGPT 抓取合流、runtime 短投影使用，不直写稳定记忆。
 - `storage/memory_tree/`
   Mossbridge 自己的轻量关系树预留位。第一阶段可以只放 node/edge/evidence JSON，不需要完整图数据库。
 - `storage/truth_layer/`
@@ -143,12 +148,13 @@ MossbridgeData/
 
 ## 轻量记忆仓第一阶段怎么用
 
-第一阶段不需要做完整记忆树。先保证四件事：
+第一阶段不需要做完整记忆树。先保证五件事：
 
 1. 温记忆能写入和召回。
 2. ongoing 能保留近期事件连续性。
 3. conversation cache 能沉淀最近多轮对话。
-4. memory_tree 能保存少量明确关系边。
+4. notebook / 小事记能落在 data root，而不是运行态或 git 仓库。
+5. memory_tree 能保存少量明确关系边。
 
 一条轻量树边可以长这样：
 
@@ -174,6 +180,7 @@ MossbridgeData/
 
 - 稳定记忆写入 `MossbridgeData/storage/`。
 - 近期缓存写入 `MossbridgeData/cache/`。
+- 小事记和轻量日记写入 `MossbridgeData/storage/notebook/`。
 - 微信账号、session、日志、表情包写入 `MossbridgeState/`。
 - 微信图片、用户发来的文件、办公协作文档写入 `MossbridgeWorkspace/`。
 - 测试记忆必须带 `test_run_id` 或放进单独 identity scope。
@@ -250,6 +257,7 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 - `npm run shared:start` 能以 Codex runtime 启动。
 - `npm run shared:start:claudecode` 能以 Claude Code runtime 启动。
 - `MossbridgeData/storage/warm_memory` 自动创建。
+- `MossbridgeData/storage/notebook` 自动创建。
 - `MossbridgeData/storage/memory_tree` 自动创建。
 - `MossbridgeData/storage/case_index` 自动创建。
 - 微信 `/bind` 后可以自然对话。
@@ -257,7 +265,7 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 - 写入一条温记忆后，后续对话能召回。
 - 添加一个 ongoing track 后，主动唤醒能携带它。
 
-如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。第一版先稳定对话和记忆递送；后面再逐步补 dreaming、树边生成、case index 检索和公开版 rename。
+如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。第一版先稳定对话和记忆递送；后面再逐步补 dreaming、树边生成、case index 检索和更完整的外源导入。
 
 后续接入 dreaming 时，Bridge 不能假设某个私人外部 scheduler 一直开着。公开版应该由 Bridge 自己拥有静默窗口入口；Codex / Claude Code 只负责执行同一份整理 prompt 和 JSON 契约，触发、日志、失败回执、写入目录都应归 Bridge 本体管理。
 
@@ -272,7 +280,7 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 推荐方式：
 
 - 官方 app / ChatGPT web 的每日对话抓取进入 `cache/app_daily_captures/`。
-- 归一化后进入 `cache/conversation_cache/`，参与 dreaming。
+- 归一化后进入 `cache/conversation_cache/` 和 `cache/hot/`，参与 dreaming。
 - 固有记忆通过 Notion 的 `memory_entries` / `source_topics` 同步。
 - Mossbridge 周期性把 Notion 稳定记忆导入本地 `warm_memory`、`memory_tree`、`case_index`。
 - 官方 app 通过 Notion 工具读取稳定记忆，不直接读 WeChat 状态目录。

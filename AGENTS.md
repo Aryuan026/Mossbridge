@@ -38,14 +38,14 @@ Do not describe Mossbridge as Claude Code-only.
 Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator layers:
 
 - Heartbeat system: random check-ins, due reminders, deferred replies, wakeup agenda, cooldowns, and safe self-checks are handled as runtime system turns. A heartbeat is a chance for the model to inspect context and decide what useful action exists; it is not just a timer that always sends text.
-- Memory delivery system: warm cards, resident anchors, ongoing tracks, observation journal, episode journal, conversation cache, and cold-version compatibility are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
+- Memory delivery system: hot context, warm cards, resident anchors, notebook notes, ongoing tracks, observation journal, episode journal, conversation cache, case index, and cold-version compatibility are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
 
 ## Why The Main Settings Exist
 
 - `MOSSBRIDGE_STATE_DIR`: local runtime state. It contains account/session/log/queue files and generated WeChat prompts. Never reuse a live private state dir for public smoke tests.
-- `MOSSBRIDGE_DATA_ROOT`: local memory warehouse. It contains stable memory, active tracks, journals, cache, case index, cold-version compatibility, and mutation logs. New deployments should set this once and leave migration-only overrides unset.
+- `MOSSBRIDGE_DATA_ROOT`: local memory warehouse. It contains hot context, stable memory, notebook notes, active tracks, journals, cache, case index, cold-version compatibility, and mutation logs. New deployments should set this once and leave migration-only overrides unset.
 - `MOSSBRIDGE_WORKSPACE_ROOT`: runtime file workspace. This is where attachments, notes, and project files can land; do not bind it to the user's whole home directory.
 - `MOSSBRIDGE_IDENTITY_*`: memory scope. `user_id` identifies the human scope, `realm_id` separates deployments or relationships, and `agent_id` separates assistant/persona lineage. New public examples and defaults use `agent_id=moss`; older private warehouses may still contain historical agent ids, but fresh public code should not seed them.
 - `MOSSBRIDGE_CHECKIN_*`: heartbeat cadence and guardrails. Token/context backoff and hot-chat windows exist to prevent proactive wakeups from interrupting active chat or overloading a near-full runtime context.
@@ -53,6 +53,29 @@ Keep these layers runtime-neutral. Codex and Claude Code should receive the same
 - `MOSSBRIDGE_MAINTENANCE_*`: public maintenance posture. The default is read-only report; self-repair must be an explicit private deployment choice.
 
 Do not rename deep historical memory symbols casually. If you rename `src/asherie/*`, `MOSSBRIDGE_ASHERIE_*`, or legacy `agent_id` defaults, do it as a deliberate migration with tests and docs, not as a partial search/replace.
+
+## Built-In Brain Boundary
+
+Mossbridge's first public version is not an empty bridge that requires a separate private brain service. It carries its own local brain under `MOSSBRIDGE_DATA_ROOT`.
+
+Treat the code areas this way:
+
+- Mouth: `src/adapters/channel/weixin/` receives and sends WeChat messages.
+- Engines: `src/adapters/runtime/codex/` and `src/adapters/runtime/claudecode/` translate runtime protocol details.
+- Hands: `src/tools/` and non-memory `src/services/` expose files, reminders, stickers, timeline, and status work.
+- Brain: `src/asherie/`, `src/services/asherie-memory-service.js`, `src/asherie/storage-layout.js`, and the boundary marker in `src/brain/README.md`.
+
+Mouth, engine, and hand code should not write brain files directly. They should pass durable context through the memory service/domain boundary so storage paths, schemas, scope ids, and future migrations stay stable.
+
+Route memory-like material with this simple map:
+
+- "小事记" and light diary notes: `storage/notebook/`.
+- Unfinished active threads: `storage/ongoing_tracks.json`.
+- Bounded events, trips, photo sessions, and small stories: `storage/episode_journal/`.
+- Code work, deployment work, files, decisions, artifacts, and tests: `storage/case_index/`.
+- Stable reusable continuity: `storage/warm_memory/`.
+- Relationship/evidence topology candidates: `storage/memory_tree/`.
+- Future ChatGPT or app captures: stage in `cache/app_daily_captures/`, `cache/conversation_cache/`, and `cache/hot/`; do not write raw captures straight into warm/cold/case memory.
 
 ## Public Tool Boundary
 

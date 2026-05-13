@@ -4,26 +4,32 @@
 
 一句话说，Mossbridge 是一个本地优先的 WeChat-to-agent bridge：微信负责日常入口，本地 runtime 负责思考和回复，Mossbridge 负责把账号、线程、记忆、文件、提醒、主动唤醒和故障提示这几件事接稳。
 
-它来自 Cyberboss 的桥形态，但这个 fork 的重心不是“把模型接到微信”这么简单，而是让日常对话能沉淀出连续性：今天在微信里说过的事，下一次还能以合适的轻重被递给 Codex 或 Claude Code。
+它来自 Cyberboss 的桥形态，但这个 fork 的重心不是“把模型接到微信”这么简单，而是让日常对话能沉淀出连续性：今天在微信里说过的事，下一次还能以合适的轻重被递给 Codex 或 Claude Code。第一版不是空桥外挂脑，而是让 Mossbridge 自己先带着一套可部署的本地 brain。
 
 ## The Shape
 
-Mossbridge 可以想成三层。
+Mossbridge 可以想成四块。
 
 第一层是嘴：WeChat channel。
 
 它负责扫码登录、拉取消息、发送回复、处理图片和文件、维护 WeChat 的 context token。对应代码主要在 `src/adapters/channel/weixin/`。
 
-第二层是脑：runtime adapter。
+第二块是发动机：runtime adapter。
 
 现在支持 Codex 和 Claude Code。Mossbridge 不把自己写成 Claude Code-only，也不把 Codex 只当部署助手。两边都是一等 runtime。对应代码在：
 
 - `src/adapters/runtime/codex/`
 - `src/adapters/runtime/claudecode/`
 
-第三层是桥自己的身体：core、services、tools、memory。
+第三块是手：tools 和非记忆 services。
 
-这层负责决定什么时候该启动 runtime、什么时候该排队、什么时候该补记忆、什么时候该给用户一个桥层错误提示。它也是 Mossbridge 和原始 Cyberboss 最大的分叉处。
+它负责文件、提醒、贴纸、timeline、状态检查、bridge notice 这类“能做事的接口”。对应代码主要在 `src/tools/` 和 `src/services/`。
+
+第四块是脑：Mossbridge 内置 brain。
+
+它负责记忆布局、热上下文、温记忆、ongoing、小事记、事件簿、case、拓扑候选和上下文包。当前实现仍在历史目录 `src/asherie/`、`src/services/asherie-memory-service.js` 和 `src/asherie/storage-layout.js`，`src/brain/README.md` 是公开线的边界标记。
+
+这四块中，嘴和手可以把材料递给脑，但不应该直接改脑的数据文件；runtime adapter 只负责发动机协议，不拥有记忆策略。
 
 ## The Three Roots
 
@@ -35,7 +41,7 @@ Mossbridge 特别在意把三类东西分开。
 
 `MOSSBRIDGE_DATA_ROOT` 是记忆仓。
 
-这里放 warm memory、ongoing tracks、conversation cache、observation journal、episode journal、case index、cold-version compatibility、mutation log。它像桥的长期笔记本。第一版公开部署先只验证这套本地结构，不接外源记忆导入、不接 Notion、不接 ChatGPT capture sync。
+这里放 hot context、warm memory、notebook、ongoing tracks、conversation cache、observation journal、episode journal、case index、cold-version compatibility、mutation log。它像桥的长期笔记本和短期工作台。第一版公开部署先只验证这套本地结构，不接外源记忆导入、不接 Notion、不接 ChatGPT capture sync。
 
 `MOSSBRIDGE_WORKSPACE_ROOT` 是工作区。
 
@@ -76,6 +82,8 @@ Mossbridge 的记忆系统不是“人设锁”，也不是关键词控制器。
 主要几层是：
 
 - `warm_memory`: 日常关系、偏好、象征物、稳定印象、常驻锚点。
+- `cache/hot`: 刚发生的跨窗口上下文、合流缓冲、短投影和快照。
+- `notebook`: 小事记、轻量日记、随手备注；它是人可读的原材料，不自动等于稳定事实。
 - `ongoing_tracks`: 这段时间还没结束的事，例如项目、身体追踪、家庭动态、购买决策。
 - `conversation_cache`: 最近对话尾巴，不是永久记忆，但能帮模型接住上下文。
 - `observation_journal`: 可修正的观察，不把用户写死成标签。
@@ -85,11 +93,11 @@ Mossbridge 的记忆系统不是“人设锁”，也不是关键词控制器。
 
 记忆递送入口在 `src/services/asherie-memory-service.js`。底层 store 主要在 `src/asherie/`。
 
-第一版公开目标是：空仓也能启动，能写温记忆，能维护 ongoing，能把近期对话和相关记忆递进 runtime。更复杂的多端同步、Notion、ChatGPT capture、自动 nightly dreaming 都先作为后续扩展。
+第一版公开目标是：空仓也能启动，能写温记忆，能维护 ongoing，能留下 notebook/case/episode 的落点，能把近期对话和相关记忆递进 runtime。更复杂的多端同步、Notion、ChatGPT capture、自动 nightly dreaming 都先作为后续扩展。
 
 ## Runtime-Neutral By Design
 
-Mossbridge 的共享能力应该放在 bridge core，而不是塞进某个 runtime adapter。
+Mossbridge 的共享能力应该放在 bridge core / brain service，而不是塞进某个 runtime adapter。
 
 放在 core 的东西包括：
 
@@ -124,7 +132,7 @@ Runtime 能通过 MCP 工具做事。工具定义在 `src/tools/tool-host.js`，
 - timeline 读写和截图
 - 读取 bridge status
 
-公开版不提供私人外部 executor。也就是说，Gmail、小米、Home Assistant、第三方登录权限管理这类能力不会以残留工具提示的方式混进 Mossbridge。
+公开版不提供私人外部 executor。也就是说，第三方账号、设备、权限管理这类能力不会以残留工具提示的方式混进 Mossbridge。
 
 如果一个能力不能只靠 Mossbridge 自己的 public config、state root、data root 和 workspace root 工作，它就不该出现在第一版公开工具面里。
 
@@ -201,7 +209,10 @@ Mossbridge 的主动唤醒不是“隔一段时间发一句你好”。它更像
 9. `src/services/asherie-memory-service.js` 和 `src/asherie/`
    记忆仓、召回、上下文包怎么工作。
 
-10. `src/tools/tool-host.js`
+10. `docs/brain-layer-boundary.md` 和 `src/brain/README.md`
+    嘴、手、runtime engine、brain 的边界怎么划。
+
+11. `src/tools/tool-host.js`
     runtime 能调用哪些手。
 
 ## The Small Philosophy
@@ -215,6 +226,6 @@ Mossbridge 不是云端人格平台，也不是把所有生活工具都接进模
 - Codex 和 Claude Code 都能当 runtime。
 - 微信能自然对话。
 - 记忆递送能工作。
-- 私人账号、私人记忆、私人 Home 能力不混进公开仓。
+- 私人账号、私人记忆、私人外部系统能力不混进公开仓。
 
-后面再长出多端同步、浏览器 capture、Notion、dreaming，都应该长在这个边界清楚的身体上，而不是把第一版变成一团看不清来源的自动化魔法。
+后面再长出多端同步、浏览器 capture、Notion、dreaming，都应该长在这个边界清楚的身体上：先进入 hot/cache/notebook，再由本地 brain 整理成 warm、ongoing、episode、case 或 topology，而不是把第一版变成一团看不清来源的自动化魔法。

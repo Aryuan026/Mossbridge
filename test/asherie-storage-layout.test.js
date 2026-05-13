@@ -21,6 +21,7 @@ test("buildGatewayStorageLayout supports split memory roots", () => {
   assert.equal(layout.observationJournalDir, path.resolve("/tmp/asherie-data/storage/observation_journal"));
   assert.equal(layout.episodeJournalDir, path.resolve("/tmp/shared-storage/episode_journal"));
   assert.equal(layout.solitudeJournalDir, path.resolve("/tmp/shared-storage/solitude_journal"));
+  assert.equal(layout.notebookDir, path.resolve("/tmp/asherie-data/storage/notebook"));
   assert.equal(layout.notionSyncDir, path.resolve("/tmp/asherie-data/storage/notion_sync"));
   assert.equal(layout.appDailyCaptureDir, path.resolve("/tmp/asherie-data/cache/app_daily_captures"));
   assert.equal(layout.warmMemoryDir, path.resolve("/tmp/shared-storage/warm_memory"));

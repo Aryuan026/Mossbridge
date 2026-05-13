@@ -61,7 +61,7 @@ function buildSystemInboundText(text, createdAt = "") {
     ...buildSystemTriggerGuidance({ kind, priority }),
     ...buildSystemTriggerDetails(metadata),
     "Use memory tools when the trigger clearly needs grounded history, preference, or continuity. If a surfaced hint is not enough, search memory instead of bluffing.",
-    "Do any timeline/diary/reminder/whereabouts work that genuinely helps for this trigger.",
+    "Do any timeline/notebook/diary/reminder/whereabouts work that genuinely helps for this trigger.",
     "If you act visibly, end with send_message that naturally reflects what you did or what changed. Keep it WeChat-natural. Let it be as short or as full as the moment actually needs; do not flatten it just to sound efficient when relationship context or continuity genuinely matters.",
     "Return exactly one JSON object after any tool calls:",
     "{\"action\":\"silent\"}",
@@ -123,13 +123,13 @@ function buildSystemTriggerGuidance({ kind = "", priority = "" } = {}) {
   if (normalizedKind === "reminder_due" || normalizedKind === "calendar_due") {
     return [
       "This is a due obligation, not a random thought. Do not re-judge whether it matters.",
-      "Choose the most useful action now: a short message, a timeline/diary update, a follow-up reminder, or another backstage action if that is genuinely better.",
+      "Choose the most useful action now: a short message, a timeline/notebook update, a follow-up reminder, or another backstage action if that is genuinely better.",
     ];
   }
   if (normalizedKind === "checkin_opportunity") {
     return [
       "This is a lightweight maintenance and reconnection window, not a mandatory interruption.",
-      "Do not treat the choice as only 'send a greeting' versus 'do nothing'. Before deciding, you may spend a small, low-risk maintenance pass using available tools: first consider the read-only bridge status tool and the wakeup agenda tool if present, then inspect pending reminders, memory/ongoing/episode/observation state, today's timeline/diary, whereabouts/context signals, or other bridge-provided status surfaces when they are relevant.",
+      "Do not treat the choice as only 'send a greeting' versus 'do nothing'. Before deciding, you may spend a small, low-risk maintenance pass using available tools: first consider the read-only bridge status tool and the wakeup agenda tool if present, then inspect pending reminders, memory/ongoing/episode/observation state, today's timeline/notebook, whereabouts/context signals, or other bridge-provided status surfaces when they are relevant.",
       "Prefer read-only checks first. Write only small backstage updates that preserve continuity, such as a reminder, diary/timeline note, observation, ongoing-track update, or concrete capability request if the bridge lacks the status surface you need.",
       "If the useful action is private self-review rather than user contact, write a concise solitude journal entry: shareable reasoning summary, visible evidence, lesson, next actions, or evolution candidate. Do not store raw hidden chain-of-thought.",
       "Before returning the final JSON, write a concise wakeup decision record if the wakeup decision tool exists: decision, wake motive, actions taken, next actions, contact channel, and budget posture. This ledger is the bridge's continuity handle for future wakeups; keep it factual and shareable, not hidden chain-of-thought.",

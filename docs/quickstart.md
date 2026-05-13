@@ -55,7 +55,7 @@ Leave migration-only memory overrides unset for a first run.
 Why these paths matter:
 
 - `MOSSBRIDGE_STATE_DIR` proves QR login, sessions, logs, queues, and cooldowns can be created without touching another bridge.
-- `MOSSBRIDGE_DATA_ROOT` proves warm memory, ongoing tracks, journals, case index, cold-version compatibility, and mutation logs can start from an empty warehouse.
+- `MOSSBRIDGE_DATA_ROOT` proves hot context, notebook notes, warm memory, ongoing tracks, journals, case index, cold-version compatibility, and mutation logs can start from an empty warehouse.
 - `MOSSBRIDGE_WORKSPACE_ROOT` gives the runtime a safe file area for `/bind`, attachments, and first project work.
 - `MOSSBRIDGE_IDENTITY_*` scopes the memory files. Keep them stable after first deployment so future imports and recalls land in the same identity tree.
 

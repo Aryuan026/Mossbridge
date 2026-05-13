@@ -13,7 +13,8 @@ Bridge 可以作为独立产品运行，不应该默认依赖私人外部冷层�
 - 日常关系、口吻、偏好、象征物、用户固定印象、近期待办，优先进入 `warm_memory/` 和 `ongoing_tracks.json`。
 - 既有私人冷层树可以作为迁移/兼容来源、深层归档、关系拓扑和时间拓扑参考，但不作为 WeChat 日常人格连续性的主要文本召回层。
 - Mossbridge 不提供私人外部执行器接口：不桥接不可公开的外部执行器。公开线需要的简单能力应成为 Mossbridge 本体能力或清晰的可选 adapter。
-- 第一版公开路径是 `WeChat -> Mossbridge memory delivery -> Codex/Claude Code runtime -> WeChat 延续`。ChatGPT 网页/app daily capture、多端同步和 Notion 对齐先作为后续扩展，不进入第一版启动链路。
+- 第一版公开路径是 `WeChat -> Mossbridge built-in brain -> Codex/Claude Code runtime -> WeChat 延续`。ChatGPT 网页/app daily capture、多端同步和 Notion 对齐先作为后续扩展，不进入第一版启动链路。
+- Mossbridge 要准备热记忆层。未来 ChatGPT 端抓取合流时，raw capture 先进 `cache/app_daily_captures/`，再进入 `cache/conversation_cache/` 和 `cache/hot/`，不能直接写成稳定温卡或 case。
 - Bridge 的冷层不应该只是另一套温卡检索器。它更适合保存“卡与卡之间为什么连在一起”：家族分支、关系网、跨时间因果、证据来源，以及 case/file-work provenance。
 - 231 张来自旧冷层、实际语义更像温卡的内容，迁入 bridge 时应作为温层材料处理。
 
@@ -37,9 +38,38 @@ MOSSBRIDGE_ASHERIE_OBSERVATION_JOURNAL_DIR=/absolute/path/to/observation_journal
 MOSSBRIDGE_ASHERIE_EPISODE_JOURNAL_DIR=/absolute/path/to/episode_journal
 MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
 MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+# Optional override for small human-readable notes. New deploys should normally
+# let this default to <MOSSBRIDGE_DATA_ROOT>/storage/notebook.
+MOSSBRIDGE_NOTEBOOK_DIR=/absolute/path/to/notebook
 ```
 
 这些覆盖项用于兼容既有本地记忆仓或迁移旧数据。新部署优先只设置 `MOSSBRIDGE_DATA_ROOT`，让 bridge 自己生成清晰的数据仓。
+
+## Brain 写入边界
+
+Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服务。但它也不能和嘴、手、runtime adapter 缠在一起。
+
+代码边界：
+
+- 嘴：`src/adapters/channel/weixin/`，只负责微信进出和桥层提示。
+- 发动机：`src/adapters/runtime/codex/`、`src/adapters/runtime/claudecode/`，只负责 runtime 协议、session、model catalog、进程/RPC。
+- 手：`src/tools/` 和非记忆 `src/services/`，负责文件、提醒、贴纸、timeline、状态查询。
+- 脑：`src/asherie/`、`src/services/asherie-memory-service.js`、`src/asherie/storage-layout.js`，负责 data root、召回、写入权威、上下文包和记忆代谢。
+
+嘴、手、runtime adapter 不直接写 `MOSSBRIDGE_DATA_ROOT` 下的 brain 文件。它们应该通过 memory service / service domain / project tool 递交意图。这样以后修 WeChat 发送、模型切换、工具描述时，不会顺手改坏保存下来的记忆结构。
+
+### 小事记、笔记本、工作日志怎么分
+
+- `storage/notebook/`: 小事记、轻量日记、随手备注。它是人可读的原材料层，不自动代表稳定事实。
+- `storage/ongoing_tracks.json`: 还没结束、需要继续挂在前台的事。
+- `storage/episode_journal/`: 有起止的小故事、照片分享、旅行、生活事件、小任务。
+- `storage/case_index/`: 工作日志和 case memory。代码、部署、文件、artifact、测试、架构判断都进这里。
+- `storage/warm_memory/`: 已经稳定、可反复用于回复连续性的事实、偏好、关系锚点和象征物。
+- `storage/memory_tree/`: 卡与卡为什么相连、关系分支、证据边和拓扑候选。
+
+一条“小事记”如果只是今天随手记一下，留在 notebook；如果它变成有起止的故事，转进 episode；如果它还没解决，挂到 ongoing；如果它变成未来常用的稳定连续性，再由 dreaming 或前台工具沉淀成 warm card。
+
+一条工作日志只要涉及文件、代码、部署、决策、测试或产物，就进入 case index。Case 可以沉淀温卡，但温卡要保留 `case_refs`，不要把整段工作流水复制进温层或冷层。
 
 ## 分层地图
 
@@ -90,6 +120,32 @@ MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
 
 ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传文件方便才换到另一个窗口，事件本身不应该被拆开。
 
+### `storage/notebook/`
+
+小事记和轻量笔记。它是 Mossbridge 自带 brain 的人可读原材料层，也是旧 `diary` 工具默认写入的位置。
+
+适合放：
+
+- 用户随手说“帮我记一下”的小片段
+- 一天里的轻量日记、备忘、感受、标题
+- 还不确定应该进入 warm / ongoing / episode / case 的材料
+- 后台唤醒时留下的低风险连续性把手
+
+不适合放：
+
+- 已经稳定到会反复影响回复的长期事实；那应进 warm memory
+- 还在推进的任务状态；那应进 ongoing
+- 文件、代码、部署、测试、artifact；那应进 case index
+- 带起止和可回看的故事盒子；那应进 episode journal
+
+目录默认是：
+
+```text
+storage/notebook/YYYY-MM-DD.md
+```
+
+公开版保留工具名 `mossbridge_diary_append` 作为兼容入口，但默认位置已经是 `storage/notebook/`。如果确实要迁移旧日记，可以用 `MOSSBRIDGE_NOTEBOOK_DIR` 或旧别名 `MOSSBRIDGE_DIARY_DIR` 指到旧目录；新部署优先不要设置。
+
 ### `storage/solitude_journal/`
 
 AI 的独处日志。它不是给用户贴标签，也不是普通聊天记录，而是给后台唤醒、维护窗口、dreaming 后检查和 case 复盘留下“我刚刚想明白了什么”的可回看摘要。
@@ -116,7 +172,7 @@ solitude 不会默认塞进每轮自然聊天。Bridge 会在后台唤醒、维�
 
 ### `storage/observation_journal/`
 
-观察日记。它是 `timeline` / `diary` 和 `warm_memory` 中间的一层，用来保存“相处中形成的默契”，而不是给用户贴死标签。
+观察日记。它是 `timeline` / `notebook` / `diary` 和 `warm_memory` 中间的一层，用来保存“相处中形成的默契”，而不是给用户贴死标签。
 
 如果 Bridge 和另一个本地前台共用同一个 `MOSSBRIDGE_DATA_ROOT`，这里就是共享观察簿；微信、其他前台、后台唤醒和 dreaming 都应该把观察投到这一层，而不是各自养一套“用户印象”。Bridge 独立部署时也可以使用同一套目录结构，只是共享仓换成自己的 `MossbridgeData`。
 
@@ -211,6 +267,29 @@ Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是�
 - recent tail snippets
 - 最近少量对话切片
 - 必要时再加 case refs 或冷层引用
+
+### `cache/hot/`
+
+热记忆层。它保存刚发生、还没有被整理成稳定记忆的上下文，专门给跨窗口继续、未来 ChatGPT capture 合流和本轮 runtime 投影使用。
+
+当前目录：
+
+```text
+cache/hot/
+  upstream_context_merge/
+  context_basin/
+  projections/
+  snapshots/
+```
+
+职责：
+
+- `upstream_context_merge/`: 预留给 ChatGPT web/app 或其他窗口的合流材料。
+- `context_basin/`: 临近上下文素材池。
+- `projections/`: 给某一轮 runtime 的短投影。
+- `snapshots/`: 合流或递送前后的快照。
+
+热记忆可以影响下一轮上下文，但不直接等于长期事实。只有经过本地整理、证据保留和用户可纠正路径后，材料才进入 warm、ongoing、episode、case 或 memory_tree。
 
 ### `cache/app_daily_captures/`
 
@@ -447,7 +526,7 @@ MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/shared-data/storage/warm_me
 推荐链路：
 
 ```text
-conversation_cache -> dreaming -> warm_memory / ongoing_tracks / episode_journal / case_index
+app_daily_captures / conversation_cache / notebook / hot -> dreaming -> warm_memory / ongoing_tracks / episode_journal / case_index / memory_tree
 ```
 
 默认规则：
@@ -457,7 +536,8 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / episode_journal
 - 有起止、适合整理成人类小记录的旅行/照片/小任务，进入 episode journal。
 - 近期状态、日常节律和相处默契，先进入 observation journal。
 - 已完成的工程、文件工作、调试结论，进入 case index。
-- 后续如果启用官方 app / ChatGPT web 每日抓取，先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
+- 小事记和轻量日记先留在 `notebook`，由后续整理决定是否晋升。
+- 后续如果启用官方 app / ChatGPT web 每日抓取，先进入 `app_daily_captures`，再归一化进 `conversation_cache` 和 `hot`。
 - 后续如果启用跨端固有记忆，再通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
 - 不要把短期事件默认推进冷层。
@@ -493,12 +573,15 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / episode_journal
 - 示例 `.env`
 - 这份记忆仓文档
 - 不含个人内容的示例卡
+- brain 边界说明，尤其是 mouth / hands / runtime adapter 不直写记忆文件
 
 不应该带：
 
 - 微信账号文件
 - 会话和 thread id
 - `conversation_cache`
+- `notebook`
+- `cache/hot`
 - 真实 warm memory
 - raw transcript
 - dreaming mutation log

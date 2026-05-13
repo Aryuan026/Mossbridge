@@ -21,7 +21,7 @@ Responsible for:
 Not responsible for:
 
 - Codex / Claude Code thread logic
-- reminder / timeline / diary logic
+- reminder / timeline / notebook/diary logic
 
 ## Runtime Adapters
 
@@ -45,7 +45,7 @@ Examples:
 
 - `timeline`
 - `reminder`
-- `diary`
+- `notebook` / `diary`
 
 These capabilities should depend on external standalone projects whenever possible, instead of being folded back into the main repository.
 

@@ -4,14 +4,14 @@ Acknowledgement: Mossbridge is derived from [WenXiaoWendy/cyberboss](https://git
 
 Mossbridge, or 苔藓小桥, is a local-first WeChat bridge for Codex and Claude Code.
 
-It keeps the practical mouth of Cyberboss: one WeChat account, one local runtime, one way for the model to send messages, receive files, wake itself later, and stay attached to a shared thread. On top of that shell, this fork is moving toward a memory-centered companion architecture: warm memory, ongoing tracks, recent context cache, optional cold-tree providers, proactive wakeups with context, and careful separation between code, personal data, and test data.
+It keeps the practical mouth of Cyberboss: one WeChat account, one local runtime, one way for the model to send messages, receive files, wake itself later, and stay attached to a shared thread. On top of that shell, this fork is moving toward a built-in memory-centered companion architecture: hot context, warm memory, notebook notes, ongoing tracks, case memory, optional cold-tree providers, proactive wakeups with context, and careful separation between code, personal data, and test data.
 
 This repository is not the upstream Cyberboss project and is not an official Cyberboss release.
 
 ## What Is Different From Cyberboss?
 
 - **Memory-first design**
-  Mossbridge adds a memory layer around warm cards, ongoing tracks, context packets, cold-version compatibility, and recent conversation cache. The front-stage model can read, write, update, and correct memory through project tools instead of relying only on the current chat window.
+  Mossbridge adds a built-in brain layer around hot context, warm cards, notebook notes, ongoing tracks, context packets, cold-version compatibility, and recent conversation cache. The front-stage model can read, write, update, and correct memory through project tools instead of relying only on the current chat window.
 
 - **Companion continuity instead of fixed persona control**
   The bridge avoids keyword-style behavior cages in the memory-management layer. Prompts should help the model understand context and maintain continuity, not force one rigid speaking style.
@@ -20,7 +20,7 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
   Random check-ins and scheduled reminders are treated as model wakeups, not just alarm messages. Wakeups can carry recent context and relevant warm/ongoing memory so they do not feel detached from the relationship history.
 
 - **Local memory warehouse posture**
-  The first public version keeps the core loop local: WeChat, the selected runtime, and Mossbridge's own memory stores. Future ChatGPT web/app captures or other windows can be added later as data sources, but they are not part of the first deploy path.
+  The first public version keeps the core loop local: WeChat, the selected runtime, and Mossbridge's own memory stores. Future ChatGPT web/app captures or other windows can be added later as data sources, but they are not part of the first deploy path and should stage through hot/recent context before becoming stable memory.
 
 - **Ongoing-track layer**
   Near-term living threads, such as health tracking, writing tasks, family updates, purchases, and unresolved cases, can stay suspended near the front of memory without being prematurely frozen into permanent cold memory.
@@ -45,7 +45,7 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 Mossbridge carries more configuration than the original bridge because it is trying to keep three things separate: the transport account, the assistant's memory warehouse, and the user's working files.
 
 - `MOSSBRIDGE_STATE_DIR` is runtime state: QR login, account files, sessions, logs, queues, cooldowns, and generated WeChat prompt files. It defaults to `${HOME}/.mossbridge`.
-- `MOSSBRIDGE_DATA_ROOT` is memory data: warm cards, ongoing tracks, observation and episode journals, conversation cache, case index, cold-version compatibility, and mutation logs. Fresh deployments should start with one clean data root.
+- `MOSSBRIDGE_DATA_ROOT` is memory data: hot context, warm cards, notebook notes, ongoing tracks, observation and episode journals, conversation cache, case index, cold-version compatibility, and mutation logs. Fresh deployments should start with one clean data root.
 - `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
 - `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context.
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for how much context gets delivered into a turn. Keep these limits modest so memory helps the model land the current reply instead of flooding it.
@@ -154,13 +154,14 @@ Useful WeChat commands:
 
 ## Data Boundaries
 
-Mossbridge is designed so code and personal data can be separated.
+Mossbridge is designed so code and personal data can be separated. The bridge ships with its own brain layer, but that layer must remain separate from the mouth and hands that move messages and files.
 
 - Git should contain source code, templates, tests, and docs.
 - Runtime account data should stay in `${HOME}/.mossbridge` or another ignored state directory.
 - Personal memory data should stay under `MOSSBRIDGE_DATA_ROOT` or explicitly configured memory paths.
 - Test data should be removable without touching stable personal memory.
 - A future public release should not include private memory cards, account tokens, local logs, QR data, or personal workspace bindings.
+- Channel/runtime/tool changes should not write brain files directly. Memory writes should go through the memory service boundary and preserve the documented data layout.
 
 ## Memory Layers
 
@@ -168,6 +169,10 @@ The current memory model is:
 
 - **warm memory**
   Daily relationship continuity, preferences, symbolic objects, stable impressions, and reusable context cards.
+- **hot memory**
+  Short-lived cross-window context basin, projections, and snapshots for future ChatGPT capture merges and active conversation handoff.
+- **notebook**
+  Human-readable small notes and diary-like "小事记". These are source material for memory work, not automatically stable facts.
 - **ongoing tracks**
   Active medium-term threads that need continuity but are not necessarily permanent facts.
 - **conversation cache**
@@ -184,7 +189,7 @@ See [docs/memory-storage.md](./docs/memory-storage.md) for the storage plan.
 The model-facing capabilities are exposed as local project tools. Current tool families include:
 
 - reminders and system wakeups
-- diary and timeline operations
+- notebook/diary and timeline operations
 - file delivery
 - sticker catalog operations
 - memory context packets
@@ -210,6 +215,7 @@ Before making this repository public, do a final naming and privacy pass:
 - [docs/commands.md](./docs/commands.md)
 - [docs/quickstart.md](./docs/quickstart.md)
 - [docs/architecture-for-humans.md](./docs/architecture-for-humans.md)
+- [docs/brain-layer-boundary.md](./docs/brain-layer-boundary.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/runtime-neutral-readiness.md](./docs/runtime-neutral-readiness.md)

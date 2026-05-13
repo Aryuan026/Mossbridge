@@ -4,7 +4,7 @@
 
 它记录当前私有备份已经完成到哪里、为什么现在还不适合直接公开分享、以及未来要把它交给朋友使用前必须补齐哪些东西。这里不记录私人记忆内容、账号 token、测试聊天原文或本地二维码数据。
 
-Last updated: 2026-05-13
+Last updated: 2026-05-14
 
 ## 当前结论
 
@@ -44,6 +44,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 2026-05-07：对齐 dreaming 发布风险：私测可以借外部 scheduler，但公开版必须由 Bridge 自己拥有静默窗口触发、整理日志、写入回执和 runtime 故障提示。
 - 2026-05-08：补入 dreaming completion-gate 提醒：公开版实现 Bridge-owned dreaming 时，不能把“触发过”当成“整理成功”。必须以 mutation/writeback 成功为完成条件；前台活跃、runtime 错误、解析错误或写入失败都要延迟重试同一任务，并留下 retry 回执。
 - 2026-05-13：同步公开版交付说明：README / AGENTS / quickstart / Codex memory setup 解释心跳系统、记忆递送、状态/数据/workspace 隔离和主要参数原因；公开示例 `agent_id` 改为 `moss`，默认未配置 data root 时落到 `mossbridge_data/`；桥提示改成明确 `[Mossbridge]` 运行层通知，避免和主 bot 口吻混淆；`/model` 扩展为 Codex / Claude Code 通用的下一轮模型覆盖命令。
+- 2026-05-14：补入内置 brain 边界：Mossbridge 第一版不是空桥外挂脑，data root 默认携带 hot context、notebook、小事记、warm、ongoing、episode、case、memory_tree 等位置；`diary` 兼容入口默认写入 `storage/notebook/`；嘴、手和 runtime adapter 不应直接写 brain 文件。
 
 ## 当前已经具备的能力
 
@@ -57,7 +58,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 
 ### 记忆与上下文
 
-- 已有 warm memory、ongoing tracks、conversation cache、memory version bank、cold root provider 的代码入口。
+- 已有 hot context、notebook、warm memory、ongoing tracks、conversation cache、episode/observation/solitude journal、case index、memory version bank、cold root provider 的代码入口。
 - 前台模型可以通过工具读写温记忆、修改记忆、读取 context packet、处理 ongoing 追踪。
 - 主动唤醒已经接入记忆上下文，不再只是裸 reminder。
 - 记忆仓可配置到独立 data root，也可在明确迁移时兼容既有本地记忆仓路径。
@@ -188,7 +189,7 @@ GPT / Rikkahub / Driftstone / Notion staging、ChatGPT 网页/app capture、Noti
 
 - 确认空仓能创建完整本地记忆结构。
 - 确认 context packet 能从 warm / resident warm / ongoing / observation / episode / case / conversation cache / cold-version compatibility 组合出可递送上下文。
-- 确认 ongoing tracks、observation、episode、case index 的工具写入和召回入口不依赖私人 Home。
+- 确认 ongoing tracks、observation、episode、case index 的工具写入和召回入口不依赖私人外部系统。
 - 给冷层拓扑定义更稳定的 provider 接口。
 - 明确 case index 的落盘结构和召回入口。
 - 验证主动 wakeup 的 context packet 足够支撑自然对话。

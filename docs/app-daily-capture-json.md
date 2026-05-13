@@ -105,8 +105,8 @@ The intended flow is:
 capture bundle
   -> validate
   -> stage under cache/app_daily_captures
-  -> normalize into cache/conversation_cache
-  -> local review/dreaming extracts warm, ongoing, episode, and case candidates
+  -> normalize into cache/conversation_cache and cache/hot
+  -> local review/dreaming extracts notebook, warm, ongoing, episode, and case candidates
   -> accepted stable memory is written to storage
 ```
 

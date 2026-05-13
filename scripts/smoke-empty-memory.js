@@ -43,6 +43,7 @@ async function main() {
     observation_journal: layout.observationJournalDir,
     episode_journal: layout.episodeJournalDir,
     solitude_journal: layout.solitudeJournalDir,
+    notebook: layout.notebookDir,
     case_index: layout.caseIndexDir,
     memory_tree: layout.memoryTreeDir,
     truth_layer: layout.truthLayerDir,
@@ -82,7 +83,7 @@ async function main() {
       missing_dir_count: missingDirs.length,
     },
     missing_dirs: missingDirs,
-    first_version_policy: "This smoke verifies the local Mossbridge memory warehouse only. External imports, app capture sync, and Notion sync are deferred extension paths.",
+    first_version_policy: "This smoke verifies the local Mossbridge brain only: hot cache, notebook, warm memory, ongoing, journals, case, and topology roots. External imports, app capture sync, and Notion sync are deferred extension paths.",
   };
 
   printResult(result);

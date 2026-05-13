@@ -51,6 +51,7 @@ class AsherieMemoryService {
         observationJournalDirOverride: this.config.asherieObservationJournalDir,
         episodeJournalDirOverride: this.config.asherieEpisodeJournalDir,
         solitudeJournalDirOverride: this.config.asherieSolitudeJournalDir,
+        notebookDirOverride: this.config.notebookDir,
         notionSyncDirOverride: this.config.asherieNotionSyncDir,
         appDailyCaptureDirOverride: this.config.asherieAppDailyCaptureDir,
         warmMemoryDirOverride: this.config.asherieWarmMemoryDir,

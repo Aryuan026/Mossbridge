@@ -71,9 +71,9 @@ function listProjectToolNames() {
 const PROJECT_TOOLS = [
   {
     name: "mossbridge_diary_append",
-    description: "Append a diary entry into Mossbridge local diary storage.",
-    shortHint: "Append a diary entry with direct text content.",
-    topics: ["diary"],
+    description: "Append a small notebook/diary entry into Mossbridge local notebook storage.",
+    shortHint: "Append a notebook entry with direct text content.",
+    topics: ["notebook", "diary"],
     inputSchema: {
       type: "object",
       required: ["text"],
@@ -88,7 +88,7 @@ const PROJECT_TOOLS = [
     async handler({ services, args }) {
       const result = await services.diary.append(args);
       return {
-        text: `Diary appended to ${result.filePath}`,
+        text: `Notebook entry appended to ${result.filePath}`,
         data: result,
       };
     },

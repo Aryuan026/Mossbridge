@@ -21,9 +21,10 @@ Last updated: 2026-05-13
 | Observation journal | Fresh observations can be recalled for unrelated queries. | Observation search must require semantic or route relevance; recency and confidence are boosters, not standalone matches. |
 | Attachments and stickers | Images may arrive in bursts, stickers/CDN paths may fail, and overlong replies can be clipped by WeChat. | Batch nearby attachments before answering, preserve image notes in context, use fallbacks for sticker delivery, and route long-form output away from WeChat when configured. |
 | Data separation | Private memory warehouses, state dirs, and test imports can bleed into a public clone. | Code, runtime state, stable memory, test data, attachments, and workspace files remain separable; clean-clone smoke must pass on an empty data root. |
+| Built-in brain boundary | Public Mossbridge can accidentally look like an empty bridge that needs a private external brain service. | First public version carries its own local brain: hot context, notebook, warm memory, ongoing, episode, case, and topology roots. Mouth, hands, and runtime adapters should not write brain files directly. |
 | Default data root naming | Historical fallback names can make a fresh public clone look tied to a private memory lineage. | Explicit `MOSSBRIDGE_DATA_ROOT` remains recommended; if omitted, public code should use a Mossbridge-named data directory under state. |
 | External imports | Rikkahub/GPT/Notion imports can pollute the live private memory warehouse. | Deferred after the first public version. When reopened, import tests must use an isolated data root, carry source metadata, dedupe before stable write, and remain deleteable/re-runnable. |
-| Cold tree and cases | Cold layer can act like another text recall store instead of a relation network; case index is still skeletal. | Cold memory should express topology and evidence edges; case index should record work cases without becoming daily chat noise. |
+| Cold tree, notebook, and cases | Cold layer can act like another text recall store; small notes and work logs can blur into warm memory. | Notebook stores small human notes, case index stores work provenance, warm memory stores reusable continuity, and cold memory stores topology and evidence edges. |
 
 ## Sync Rule
 

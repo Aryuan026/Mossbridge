@@ -11,6 +11,9 @@ function readConfig() {
     || (configuredAsherieDataRoot
       ? path.join(asherieDataRoot, "storage", "stickers")
       : path.join(stateDir, "stickers"));
+  const notebookDir = readBridgeTextEnv("NOTEBOOK_DIR")
+    || readBridgeTextEnv("DIARY_DIR")
+    || path.join(asherieDataRoot, "storage", "notebook");
 
   return {
     mode,
@@ -70,7 +73,8 @@ function readConfig() {
     identityUserId: readBridgeTextEnv("IDENTITY_USER_ID") || "owner",
     identityRealmId: readBridgeTextEnv("IDENTITY_REALM_ID") || "default",
     identityAgentId: readBridgeTextEnv("IDENTITY_AGENT_ID") || "moss",
-    diaryDir: path.join(stateDir, "diary"),
+    notebookDir,
+    diaryDir: notebookDir,
     locationStoreFile: path.join(stateDir, "locations.json"),
     locationHost: readBridgeTextEnv("LOCATION_HOST") || "0.0.0.0",
     locationPort: readBridgeIntEnv("LOCATION_PORT") || 4318,

@@ -27,7 +27,7 @@ cannot be configured and audited as Mossbridge-native adapters.
 | Status | one status surface shows runtime, pid, workspace, thread, and context health | `npm run shared:status` / `npm run service:status:codex` | `npm run shared:status:claudecode` / `npm run service:status:claudecode` |
 | WeChat login | QR login and allowed-user binding are runtime-independent | same account store | same account store |
 | Workspace bind | `/bind` maps WeChat to a workspace | Codex thread stored in session store | Claude Code session stored in session store |
-| Memory | warm memory, ongoing tracks, observation journal, episode journal, conversation cache use the same data root | same tools/context packet | same tools/context packet via MCP config |
+| Memory | hot context, notebook, warm memory, ongoing tracks, observation journal, episode journal, case index, and conversation cache use the same data root | same tools/context packet | same tools/context packet via MCP config |
 | Deferred app capture | ChatGPT web/app daily captures are a future local data source, not a first-version requirement | Codex can later help inspect/import captures | Claude Code can later read normalized memory once imported |
 | Wakeups | reminders and random checkins use the same system-turn queue and failure throttling | Codex adapter handles thread/RPC failure | Claude Code adapter handles session/API-result failure |
 | Deferred nightly dreaming | quiet-window dreaming completion gate is a future shared bridge feature, not a first-version guarantee | Codex should execute the same future JSON contract | Claude Code should execute the same future JSON contract |
@@ -95,7 +95,7 @@ Pass criteria:
 - Asking "你能看看记忆里有什么吗" does not fail on an empty warehouse.
 - A warm memory write/read path can be exercised through the model tools.
 - A reminder or checkin can be scheduled or triggered without crashing the bridge.
-- Core memory delivery works from an empty local data root: context packet, warm memory, ongoing tracks, observation/episode journals, case index, and cold-version compatibility do not require a private external warehouse.
+- Core memory delivery works from an empty local data root: context packet, hot context, notebook, warm memory, ongoing tracks, observation/episode journals, case index, and cold-version compatibility do not require a private external warehouse.
 - Nightly dreaming can remain disabled or manually supervised until the bridge-owned completion gate is implemented; do not document it as an active first-version guarantee.
 
 ## Service Smoke

@@ -52,6 +52,7 @@ The runtime can be `codex` or `claudecode`, but the documented command surface s
 - `timeline.write`
 - `reminder.create`
 - `diary.append`
+  Legacy action name for appending a local notebook/diary entry.
 - `app.star`
 - `app.help`
 
@@ -75,6 +76,7 @@ Those capabilities are exposed as project-native structured tools:
 
 - `mossbridge_channel_send_file`
 - `mossbridge_diary_append`
+  Appends to the local notebook store under `MOSSBRIDGE_DATA_ROOT/storage/notebook` by default.
 - `mossbridge_reminder_create`
 - `mossbridge_system_send`
 - `mossbridge_timeline_write`

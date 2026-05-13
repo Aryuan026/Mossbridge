@@ -11,6 +11,8 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_STICKER_ASSETS_DIR",
   "MOSSBRIDGE_STICKERS_INDEX_FILE",
   "MOSSBRIDGE_STICKER_TAGS_FILE",
+  "MOSSBRIDGE_NOTEBOOK_DIR",
+  "MOSSBRIDGE_DIARY_DIR",
   "MOSSBRIDGE_IDENTITY_USER_ID",
   "MOSSBRIDGE_IDENTITY_REALM_ID",
   "MOSSBRIDGE_IDENTITY_AGENT_ID",
@@ -49,6 +51,8 @@ test("readConfig keeps standalone sticker catalog under bridge state by default"
     assert.equal(config.stickerAssetsDir, path.join("/tmp/bridge-state", "stickers", "assets"));
     assert.equal(config.stickersIndexFile, path.join("/tmp/bridge-state", "stickers", "index.json"));
     assert.equal(config.stickerTagsFile, path.join("/tmp/bridge-state", "stickers", "tags.json"));
+    assert.equal(config.notebookDir, path.join("/tmp/bridge-state", "mossbridge_data", "storage", "notebook"));
+    assert.equal(config.diaryDir, config.notebookDir);
   });
 });
 
@@ -61,10 +65,25 @@ test("readConfig shares data-root sticker catalog when a data root is configured
     const expectedRoot = path.join("/tmp/mossbridge-data", "storage", "stickers");
 
     assert.equal(config.asherieDataRoot, "/tmp/mossbridge-data");
+    assert.equal(config.notebookDir, path.join("/tmp/mossbridge-data", "storage", "notebook"));
+    assert.equal(config.diaryDir, config.notebookDir);
     assert.equal(config.stickersDir, expectedRoot);
     assert.equal(config.stickerAssetsDir, path.join(expectedRoot, "assets"));
     assert.equal(config.stickersIndexFile, path.join(expectedRoot, "index.json"));
     assert.equal(config.stickerTagsFile, path.join(expectedRoot, "tags.json"));
+  });
+});
+
+test("readConfig lets notebook storage override the data-root default", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_DATA_ROOT: "/tmp/mossbridge-data",
+    MOSSBRIDGE_NOTEBOOK_DIR: "/tmp/manual-notebook",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.notebookDir, "/tmp/manual-notebook");
+    assert.equal(config.diaryDir, "/tmp/manual-notebook");
   });
 });
 

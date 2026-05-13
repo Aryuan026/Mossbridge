@@ -233,7 +233,7 @@ const COMMAND_GROUPS = [
       },
       {
         action: "diary.append",
-        summary: "Append a diary entry",
+        summary: "Append a notebook/diary entry",
         terminal: [],
         weixin: [],
         status: "active",

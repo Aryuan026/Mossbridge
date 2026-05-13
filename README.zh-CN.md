@@ -4,14 +4,14 @@
 
 Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude Code 接入微信。
 
-它保留了 Cyberboss 最有价值的“嘴”：一个微信账号、一个本地 runtime、一套收消息/发消息/传文件/自唤醒/共享线程的链路。在这层外壳之上，苔藓小桥正在长成更偏记忆与陪伴的系统：温记忆、近中期追踪、近期上下文缓存、可选冷树兼容、携带记忆的主动唤醒，以及代码本体、私人数据、测试数据的分离。
+它保留了 Cyberboss 最有价值的“嘴”：一个微信账号、一个本地 runtime、一套收消息/发消息/传文件/自唤醒/共享线程的链路。在这层外壳之上，苔藓小桥正在长成更偏记忆与陪伴的系统：热上下文、温记忆、小事记/笔记本、近中期追踪、case memory、可选冷树兼容、携带记忆的主动唤醒，以及代码本体、私人数据、测试数据的分离。
 
 本仓库不是上游 Cyberboss，也不是 Cyberboss 官方版本。
 
 ## 和 Cyberboss 的主要差异
 
 - **记忆优先**
-  Mossbridge 增加了自己的记忆层，包括温卡、ongoing tracks、context packet、冷记忆版本兼容和近期对话缓存。前台模型可以通过工具读取、写入、修改和删除记忆，而不是只依赖当前窗口上文。
+  Mossbridge 增加了自己的内置 brain，包括热上下文、温卡、小事记/笔记本、ongoing tracks、context packet、case index、冷记忆版本兼容和近期对话缓存。前台模型可以通过工具读取、写入、修改和删除记忆，而不是只依赖当前窗口上文。
 
 - **陪伴连续性，而不是固定人设控制**
   记忆管理层不应该用关键词式规则限制模型必须怎么说话。提示词的目标是帮助模型理解上下文、保持关系连续，而不是把它锁死成某种固定口吻。
@@ -19,8 +19,8 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 - **主动唤醒携带上下文**
   随机 check-in 和定时 reminder 都被当作“模型醒来后的系统轮次”，而不是普通闹钟。唤醒时可以携带近期上下文、温记忆和 ongoing 信息，避免主动消息像固定日历一样干瘪。
 
-- **多窗口记忆姿态**
-  WeChat、终端、ChatGPT 网页/app 抓取或第三方 chatbox 可以被视为不同窗口。它们未来可以写入同一个记忆沉淀区，同时仍然保持各自的通道身份。Mossbridge 接这些来源时应该把它们当作数据入口，而不是桥接到私人外部执行器。
+- **本地记忆仓姿态**
+  第一版先保持 Mossbridge 本体完整：WeChat、选定 runtime 和 Mossbridge 自己的数据根。ChatGPT 网页/app 抓取或第三方 chatbox 未来可以作为数据入口接进来，但 raw capture 应先进入 hot/cache，再由本地 brain 整理，不直接变成稳定记忆。
 
 - **近中期追踪层**
   减重、写稿、家族八卦、购买决策、系统 bug、咨询进展这类“这阵子还活着的事”，可以挂在 ongoing tracks，而不是太早冻结成永久冷记忆。
@@ -42,7 +42,7 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 Mossbridge 的配置比原始 bridge 多，是因为它要把三件事分清楚：微信账号运行态、助手自己的记忆仓、用户给 runtime 读写的工作区。
 
 - `MOSSBRIDGE_STATE_DIR` 是运行态：二维码登录、账号文件、session、日志、队列、cooldown、生成的微信提示文件。默认是 `${HOME}/.mossbridge`。
-- `MOSSBRIDGE_DATA_ROOT` 是记忆数据：温卡、ongoing、observation / episode journal、conversation cache、app capture 和 mutation log。新部署先只接一个干净 data root，再考虑导入旧仓。
+- `MOSSBRIDGE_DATA_ROOT` 是记忆数据：hot context、温卡、小事记、ongoing、observation / episode journal、conversation cache、case index、app capture 和 mutation log。新部署先只接一个干净 data root，再考虑导入旧仓。
 - `MOSSBRIDGE_WORKSPACE_ROOT` 是 runtime 可读写的办公区，用来收附件、写文件、做项目协作，不应该直接暴露整个 Home。
 - `MOSSBRIDGE_CHECKIN_*` 控制心跳机会，不只是闹钟频率。hot window 和 token backoff 是为了避免主动唤醒打断正在聊天的用户，或把已经很重的 runtime 上下文继续压满。
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*` 是历史记忆层命名，控制一轮里递送多少记忆。限制保持小，是为了让记忆帮助当前回复落地，而不是把整仓流水灌进窗口。
@@ -148,6 +148,7 @@ Mossbridge 的目标是让代码和私人数据可分割。
 - 私人记忆留在 `MOSSBRIDGE_DATA_ROOT` 或显式配置的记忆仓。
 - 测试数据应该可以删除，而不影响稳定记忆。
 - 公开发布前不能包含私人记忆卡、账号 token、本地日志、二维码数据或个人 workspace 绑定。
+- 嘴、手和 runtime adapter 不直接写 brain 文件；记忆写入应走 memory service 边界。
 
 ## 记忆层
 
@@ -155,6 +156,10 @@ Mossbridge 的目标是让代码和私人数据可分割。
 
 - **温记忆**
   日常关系连续性、偏好、象征物、固定印象和可复用上下文卡。
+- **热记忆**
+  刚发生的跨窗口上下文、合流缓冲、短投影和快照。
+- **小事记 / notebook**
+  人能读的轻量笔记和日记原材料，不自动等于稳定事实。
 - **ongoing tracks**
   近中期活跃事件，不一定是永久事实，但需要持续挂在前台附近。
 - **conversation cache**
@@ -178,6 +183,8 @@ Mossbridge 的目标是让代码和私人数据可分割。
 
 - [docs/commands.md](./docs/commands.md)
 - [docs/quickstart.md](./docs/quickstart.md)
+- [docs/architecture-for-humans.md](./docs/architecture-for-humans.md)
+- [docs/brain-layer-boundary.md](./docs/brain-layer-boundary.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
