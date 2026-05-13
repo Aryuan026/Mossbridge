@@ -82,6 +82,8 @@ npm install
 
 For the full first-run path, including QR login and `/bind`, see [docs/quickstart.md](./docs/quickstart.md).
 
+If you ask Codex to help deploy a fresh clone, have it read [AGENTS.md](./AGENTS.md) first, then [docs/codex-memory-setup.md](./docs/codex-memory-setup.md). Those two files explain the public service boundary, isolated state/data/workspace paths, and the empty memory smoke.
+
 ## Minimal Configuration
 
 Create a local `.env` in the project directory. Private `.env` files and runtime state are intentionally ignored by git.
@@ -207,6 +209,7 @@ Before making this repository public, do a final naming and privacy pass:
 
 - [docs/commands.md](./docs/commands.md)
 - [docs/quickstart.md](./docs/quickstart.md)
+- [docs/architecture-for-humans.md](./docs/architecture-for-humans.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/runtime-neutral-readiness.md](./docs/runtime-neutral-readiness.md)

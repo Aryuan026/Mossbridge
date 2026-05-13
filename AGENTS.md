@@ -67,6 +67,7 @@ For a clean clone:
 ```bash
 npm install
 cp .env.example .env
+npm run smoke:memory-empty
 npm run doctor
 ```
 
@@ -82,6 +83,7 @@ MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 Useful checks:
 
 ```bash
+npm run smoke:memory-empty
 npm run check
 node --test
 npm run shared:status
