@@ -47,10 +47,48 @@ function shieldRuntimeNoticeForDelivery(text, { provider = "" } = {}) {
   return { shielded: true, kind, action: "silent", text: "" };
 }
 
-function buildRuntimeCapacityNotice(text) {
+function buildRuntimeCapacityNotice(text, { runtimeId = "" } = {}) {
   const reset = extractResetTime(text);
-  const suffix = reset ? `，重置时间看起来是 ${reset}` : "";
-  return `ClaudeCode 这边暂时到额度/运行时限制了${suffix}。这不是你的消息没送到，也不是记忆断了；等它恢复后再发我会继续接住。`;
+  const runtimeLabel = resolveRuntimeLabel(runtimeId, text);
+  const lines = [
+    `${runtimeLabel} 已触发额度/速率限制。`,
+    "这是一条桥状态提示，不是助手回复。",
+    "当前轮次没有生成正文；请在限制解除后重试。",
+  ];
+  if (reset) {
+    lines.push(`reset: ${reset}`);
+  }
+  return formatBridgeNotice("runtime_limit", lines);
+}
+
+function formatBridgeNotice(code, detailLines = []) {
+  const normalizedCode = normalizeText(code) || "status";
+  const lines = [`[Mossbridge] ${normalizedCode}`];
+  for (const line of Array.isArray(detailLines) ? detailLines : [detailLines]) {
+    const normalized = normalizeText(line);
+    if (normalized) {
+      lines.push(normalized);
+    }
+  }
+  return lines.join("\n");
+}
+
+function resolveRuntimeLabel(runtimeId, text) {
+  const normalizedRuntime = normalizeText(runtimeId).toLowerCase();
+  if (normalizedRuntime === "claudecode") {
+    return "ClaudeCode";
+  }
+  if (normalizedRuntime === "codex") {
+    return "Codex";
+  }
+  const normalizedText = normalizeText(text);
+  if (/\bclaude(?:\s+code)?\b/i.test(normalizedText)) {
+    return "ClaudeCode";
+  }
+  if (/\bcodex\b/i.test(normalizedText)) {
+    return "Codex";
+  }
+  return "runtime";
 }
 
 function extractResetTime(text) {
@@ -67,6 +105,7 @@ module.exports = {
   RUNTIME_NOTICE_KIND,
   buildRuntimeCapacityNotice,
   classifyRuntimeNotice,
+  formatBridgeNotice,
   isRuntimeCapacityNotice,
   shieldRuntimeNoticeForDelivery,
 };

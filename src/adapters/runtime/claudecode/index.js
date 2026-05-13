@@ -193,6 +193,15 @@ function createClaudeCodeRuntimeAdapter(config) {
         models: [],
       };
     },
+    async refreshModelCatalog() {
+      return {
+        models: [],
+        updatedAt: "",
+        source: "claudecode_raw_model_id",
+        acceptsRawModel: true,
+        unavailableReason: "Claude Code does not expose a stable local model catalog; raw model ids are accepted and passed to --model.",
+      };
+    },
     async close() {
       for (const client of clientsByWorkspace.values()) {
         await client.close();

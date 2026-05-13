@@ -11,7 +11,7 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 ## What Is Different From Cyberboss?
 
 - **Memory-first design**
-  Mossbridge adds an Asherie-style memory layer around warm cards, ongoing tracks, context packets, cold-version compatibility, and recent conversation cache. The front-stage model can read, write, update, and correct memory through project tools instead of relying only on the current chat window.
+  Mossbridge adds a memory layer around warm cards, ongoing tracks, context packets, cold-version compatibility, and recent conversation cache. The front-stage model can read, write, update, and correct memory through project tools instead of relying only on the current chat window.
 
 - **Companion continuity instead of fixed persona control**
   The bridge avoids keyword-style behavior cages in the memory-management layer. Prompts should help the model understand context and maintain continuity, not force one rigid speaking style.
@@ -35,10 +35,21 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
   The bridge includes chunking and normalization work so long replies, paragraph breathing, short-message merging, and WeChat emoji shortcodes behave more naturally.
 
 - **Runtime flexibility**
-  Codex and Claude Code are both supported. Shared mode is the preferred daily workflow, with commands for opening the same thread from terminal and WeChat and for switching Claude models when supported by the local runtime.
+  Codex and Claude Code are both supported. Shared mode is the preferred daily workflow, with commands for opening the same thread from terminal and WeChat and for selecting the next-turn model when supported by the local runtime.
 
 - **Safe self-check by default**
   Heartbeat maintenance can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
+
+## Why The Extra Settings Exist
+
+Mossbridge carries more configuration than the original bridge because it is trying to keep three things separate: the transport account, the assistant's memory warehouse, and the user's working files.
+
+- `MOSSBRIDGE_STATE_DIR` is runtime state: QR login, account files, sessions, logs, queues, cooldowns, and generated WeChat prompt files. It defaults to `${HOME}/.mossbridge`.
+- `MOSSBRIDGE_DATA_ROOT` is memory data: warm cards, ongoing tracks, observation and episode journals, conversation cache, app captures, and mutation logs. Fresh deployments should start with one clean data root before importing anything else.
+- `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
+- `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context.
+- `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for how much context gets delivered into a turn. Keep these limits modest so memory helps the model land the current reply instead of flooding it.
+- `MOSSBRIDGE_MAINTENANCE_*` settings keep the public heartbeat posture read-only by default. Private operators can opt into repair, but public clone smoke tests should only inspect and report.
 
 ## Public Naming And Runtime Posture
 
@@ -124,9 +135,13 @@ Useful WeChat commands:
 - `/status`
   Show workspace, thread, model, and context status.
 - `/model`
-  Show the current Claude Code model when the runtime supports it.
+  Show selected, default, effective, and catalog-backed models for the current runtime.
 - `/model <id>`
-  Switch model when the runtime supports it.
+  Select a model for the next turn. Codex uses its model catalog when available; Claude Code accepts raw model ids.
+- `/model default`
+  Clear the workspace override and use the runtime default on the next turn.
+- `/model refresh`
+  Ask the runtime adapter to refresh its model catalog when supported.
 - `/reread`
   Reload local instructions and operations templates into the current thread.
 - `/checkin <min>-<max>`

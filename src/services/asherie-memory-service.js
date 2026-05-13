@@ -43,7 +43,7 @@ class AsherieMemoryService {
     this.config = config || {};
     this.identity = resolveSingleIdentity(this.config);
     this.layout = buildGatewayStorageLayout(
-      this.config.asherieDataRoot || path.join(this.config.stateDir || process.cwd(), "asherie_gateway"),
+      this.config.asherieDataRoot || path.join(this.config.stateDir || process.cwd(), "mossbridge_data"),
       {
         truthLayerDirOverride: this.config.asherieTruthLayerDir,
         memoryTreeDirOverride: this.config.asherieMemoryTreeDir,

@@ -5,7 +5,7 @@ Mossbridge has two local guard layers:
 - `shared-start` supervises the Bridge child process and restarts it if the child exits unexpectedly.
 - macOS `launchd` can supervise `shared-start` itself, so the bridge comes back after terminal exits, process crashes, and user login.
 
-This is intentionally a local-first guard. It does not solve WeChat login expiry, ClaudeCode quota/API errors, or memory quality by itself. It makes those failures visible and recoverable instead of letting the bridge silently disappear.
+This is intentionally a local-first guard. It does not solve WeChat login expiry, runtime quota/API errors, or memory quality by itself. It makes those failures visible and recoverable instead of letting the bridge silently disappear.
 
 Public Mossbridge defaults to the safe self-check boundary in [safe-self-check.md](./safe-self-check.md): heartbeat checks may inspect and report, but should not silently restart services, rebind accounts, edit files, delete memory, or change credentials.
 
@@ -67,6 +67,6 @@ Only one default LaunchAgent label is expected to be active at a time. If you in
 
 ## Failure Shape
 
-If ClaudeCode returns a bad runtime result such as `API Error: 400`, malformed JSON, or `Prompt is too long`, Bridge should now treat it as `runtime.turn.failed`, clear the bad thread binding, and send a throttled user-readable notice instead of preserving the broken state as if it were a normal reply.
+If a runtime returns a bad result such as `API Error: 400`, malformed JSON, or `Prompt is too long`, Bridge should now treat it as `runtime.turn.failed`, clear the bad thread binding, and send a throttled user-readable notice instead of preserving the broken state as if it were a normal reply.
 
 If the Bridge child exits, `shared-start` restarts it. If `shared-start` exits unexpectedly, `launchd` restarts it.

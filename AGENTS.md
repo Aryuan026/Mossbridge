@@ -33,6 +33,27 @@ Runtime adapters should only contain protocol-specific details:
 
 Do not describe Mossbridge as Claude Code-only.
 
+## What This Fork Adds
+
+Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator layers:
+
+- Heartbeat system: random check-ins, due reminders, deferred replies, wakeup agenda, cooldowns, and safe self-checks are handled as runtime system turns. A heartbeat is a chance for the model to inspect context and decide what useful action exists; it is not just a timer that always sends text.
+- Memory delivery system: warm cards, resident anchors, ongoing tracks, observation journal, episode journal, conversation cache, cold-version compatibility, and future app-capture imports are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
+
+Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
+
+## Why The Main Settings Exist
+
+- `MOSSBRIDGE_STATE_DIR`: local runtime state. It contains account/session/log/queue files and generated WeChat prompts. Never reuse a live private state dir for public smoke tests.
+- `MOSSBRIDGE_DATA_ROOT`: local memory warehouse. It contains stable memory, active tracks, journals, cache, app captures, and mutation logs. New deployments should set this once and leave migration-only overrides unset.
+- `MOSSBRIDGE_WORKSPACE_ROOT`: runtime file workspace. This is where attachments, notes, and project files can land; do not bind it to the user's whole home directory.
+- `MOSSBRIDGE_IDENTITY_*`: memory scope. `user_id` identifies the human scope, `realm_id` separates deployments or relationships, and `agent_id` separates assistant/persona lineage. New public examples use `agent_id=moss`; older code and tests may still contain `aji` as historical compatibility.
+- `MOSSBRIDGE_CHECKIN_*`: heartbeat cadence and guardrails. Token/context backoff and hot-chat windows exist to prevent proactive wakeups from interrupting active chat or overloading a near-full runtime context.
+- `MOSSBRIDGE_ASHERIE_PRELUDE_*`: historical memory-layer env names for recall limits. Keep limits small unless a test proves larger packets improve continuity without bloating replies.
+- `MOSSBRIDGE_MAINTENANCE_*`: public maintenance posture. The default is read-only report; self-repair must be an explicit private deployment choice.
+
+Do not rename deep historical memory symbols casually. If you rename `src/asherie/*`, `MOSSBRIDGE_ASHERIE_*`, or legacy `agent_id` defaults, do it as a deliberate migration with tests and docs, not as a partial search/replace.
+
 ## Public Tool Boundary
 
 Mossbridge does not ship private external executors. Do not add tool names, prompts, docs, or tests that imply built-in access to private account/device/permission systems.

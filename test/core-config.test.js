@@ -41,6 +41,7 @@ test("readConfig keeps standalone sticker catalog under bridge state by default"
   withBridgeEnv({ MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state" }, () => {
     const config = readConfig();
 
+    assert.equal(config.asherieDataRoot, path.join("/tmp/bridge-state", "mossbridge_data"));
     assert.equal(config.stickersDir, path.join("/tmp/bridge-state", "stickers"));
     assert.equal(config.stickerAssetsDir, path.join("/tmp/bridge-state", "stickers", "assets"));
     assert.equal(config.stickersIndexFile, path.join("/tmp/bridge-state", "stickers", "index.json"));

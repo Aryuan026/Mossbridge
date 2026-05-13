@@ -65,18 +65,19 @@ function createCodexRuntimeAdapter(config) {
       }
       await runtimeClient.connect();
       await runtimeClient.initialize();
-      const modelResponse = await runtimeClient.listModels().catch(() => null);
-      const models = Array.isArray(modelResponse?.result?.data)
-        ? modelResponse.result.data
-        : [];
-      if (models.length) {
-        sessionStore.setAvailableModelCatalog(models);
-      }
+      const catalog = await refreshModelCatalog(runtimeClient, sessionStore).catch(() => ({ models: [] }));
+      const models = catalog.models || [];
       readyState = {
         endpoint: config.codexEndpoint || "(spawn)",
         models,
       };
       return readyState;
+    },
+    async refreshModelCatalog() {
+      const runtimeClient = ensureClient();
+      await runtimeClient.connect();
+      await runtimeClient.initialize();
+      return refreshModelCatalog(runtimeClient, sessionStore);
     },
     async close() {
       if (client) {
@@ -178,6 +179,20 @@ function createCodexRuntimeAdapter(config) {
 }
 
 module.exports = { createCodexRuntimeAdapter };
+
+async function refreshModelCatalog(runtimeClient, sessionStore) {
+  const modelResponse = await runtimeClient.listModels();
+  const models = Array.isArray(modelResponse?.result?.data)
+    ? modelResponse.result.data
+    : [];
+  const catalog = models.length ? sessionStore.setAvailableModelCatalog(models) : null;
+  return {
+    models: catalog?.models || [],
+    updatedAt: catalog?.updatedAt || "",
+    source: "codex_rpc_model_list",
+    acceptsRawModel: true,
+  };
+}
 
 function waitForTurnCompletion(client, threadId) {
   return new Promise((resolve, reject) => {

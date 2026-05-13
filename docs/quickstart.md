@@ -38,6 +38,9 @@ MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_IDENTITY_USER_ID=owner
+MOSSBRIDGE_IDENTITY_REALM_ID=default
+MOSSBRIDGE_IDENTITY_AGENT_ID=moss
 ```
 
 For Claude Code, change only:
@@ -48,6 +51,13 @@ MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
 ```
 
 Leave migration-only memory overrides unset for a first run.
+
+Why these paths matter:
+
+- `MOSSBRIDGE_STATE_DIR` proves QR login, sessions, logs, queues, and cooldowns can be created without touching another bridge.
+- `MOSSBRIDGE_DATA_ROOT` proves warm memory, ongoing tracks, journals, app capture staging, and mutation logs can start from an empty warehouse.
+- `MOSSBRIDGE_WORKSPACE_ROOT` gives the runtime a safe file area for `/bind`, attachments, and first project work.
+- `MOSSBRIDGE_IDENTITY_*` scopes the memory files. Keep them stable after first deployment so future imports and recalls land in the same identity tree.
 
 ## 4. QR Login
 

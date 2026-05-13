@@ -3,9 +3,9 @@ const assert = require("node:assert/strict");
 
 const { StreamDelivery } = require("../src/core/stream-delivery");
 
-const DEFERRED_REPLY_NOTICE = "由于微信 context_token 的限制，上轮对话里有一部分内容当时没能送达；这次用户再次发来消息、context_token 刷新后，先把遗留内容补上。如果这种情况反复出现，可发送 /chunk <数字>（例如 /chunk 50）调大最小合并字符数，减少消息分片。";
-const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
+const DEFERRED_REPLY_NOTICE = "[Mossbridge] deferred_delivery\n上一轮有内容因 WeChat context_token 失效未能发送；本次 token 刷新后补发。\n若频繁出现，可发送 /chunk <数字> 调大最小合并字符数。";
+const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 =====";
+const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 function createHarness({ sendText, getKnownContextTokens } = {}) {
@@ -141,8 +141,10 @@ test("user runtime capacity notices are rewritten into bridge notices", async ()
   });
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /ClaudeCode 这边暂时到额度/);
+  assert.match(sent[0].text, /^\[Mossbridge] runtime_limit/);
+  assert.match(sent[0].text, /不是助手回复/);
   assert.match(sent[0].text, /10:40pm \(Asia\/Shanghai\)/);
+  assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
 });
 
 test("system send_message JSON sends only the message text", async () => {

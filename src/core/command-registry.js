@@ -177,9 +177,9 @@ const COMMAND_GROUPS = [
       },
       {
         action: "model.select",
-        summary: "Switch to a specific model",
+        summary: "Select a model for the next turn, clear to default, or refresh the model catalog",
         terminal: [],
-        weixin: ["/model <id>"],
+        weixin: ["/model <id>", "/model default", "/model refresh"],
         status: "active",
       },
       {

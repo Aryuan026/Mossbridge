@@ -27,7 +27,7 @@ Bridge 可以作为独立产品运行，不应该默认依赖私人外部冷层�
 MOSSBRIDGE_DATA_ROOT=/absolute/path/to/bridge-data
 ```
 
-如果不设置，bridge 会落在本地状态目录下的 `asherie_gateway/`。
+如果不设置，bridge 会落在本地状态目录下的 `mossbridge_data/`。公开部署仍建议显式设置 `MOSSBRIDGE_DATA_ROOT`，这样后续迁移、备份和测试隔离更清楚。
 
 常用可覆盖路径：
 

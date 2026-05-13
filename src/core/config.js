@@ -6,7 +6,7 @@ function readConfig() {
   const mode = argv[0] || "";
   const stateDir = readBridgeTextEnv("STATE_DIR") || path.join(os.homedir(), ".mossbridge");
   const configuredAsherieDataRoot = readTextEnv("MOSSBRIDGE_DATA_ROOT");
-  const asherieDataRoot = configuredAsherieDataRoot || path.join(stateDir, "asherie_gateway");
+  const asherieDataRoot = configuredAsherieDataRoot || path.join(stateDir, "mossbridge_data");
   const stickersDir = readBridgeTextEnv("STICKERS_DIR")
     || (configuredAsherieDataRoot
       ? path.join(asherieDataRoot, "storage", "stickers")

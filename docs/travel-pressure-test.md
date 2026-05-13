@@ -1,12 +1,12 @@
-# Travel Pressure Test Notes
+# Runtime Pressure Test Notes
 
-This file is the handoff for the three-day WeChat/ClaudeCode bridge pressure test.
+This file is the handoff for a multi-day WeChat/runtime bridge pressure test.
 It is intentionally operational rather than architectural: when the user returns, collect evidence first, then decide what to fix.
 
 ## What To Preserve
 
 - Keep the Mac awake, powered, and online when possible.
-- Keep the shared bridge process running with ClaudeCode runtime.
+- Keep the shared bridge process running with the selected runtime.
 - Do not clear `~/.mossbridge` during the test.
 - Do not delete the configured shared data root cache or storage directories.
 - If a failure appears in WeChat, note the local time and the user-facing symptom before retrying.
@@ -14,7 +14,7 @@ It is intentionally operational rather than architectural: when the user returns
 ## Primary Signals
 
 - `WeChat transport`: inbound accepted/dispatched, context token present, no repeated `ret=-2`.
-- `ClaudeCode runtime`: first event latency, stall notices, quota/capacity notices, unexpected exits.
+- `Runtime adapter`: first event latency, stall notices, quota/capacity notices, unexpected exits.
 - `System queues`: system-message queue, deferred-system replies, reminders, and screenshot queue should not silently pile up.
 - `Proactive check-in`: random check-ins should happen at the configured cadence, but skip recent active conversation.
 - `Memory context`: ordinary turns should carry warm memory, ongoing tracks, observation journal only when activated, and recent-thread tail.
@@ -42,7 +42,7 @@ Use preview mode sparingly because it can include fragments of recent WeChat tex
 
 1. Did WeChat keep polling during the silent period?
 2. Did inbound messages reach `accepted` and then `dispatched`?
-3. Did ClaudeCode start but fail to emit the first event, or did it finish but delivery fail?
+3. Did the runtime start but fail to emit the first event, or did it finish but delivery fail?
 4. Did system queues or deferred replies grow instead of drain?
 5. Did runtime context approach the auto-compact threshold?
 6. Did observation journal stay quiet for unrelated questions?
@@ -51,8 +51,8 @@ Use preview mode sparingly because it can include fragments of recent WeChat tex
 
 ## Expected Current Baseline
 
-- Runtime: ClaudeCode.
-- Preferred model: `claude-opus-4-6`.
+- Runtime: the selected `codex` or `claudecode` adapter for this smoke.
+- Preferred model: the configured runtime default, or the workspace override shown by `/model`.
 - Workspace root: the bound workspace used for this pressure test.
 - Data root: the configured Mossbridge data root for this pressure test.
 - Random check-in default: 5-25 minutes, with a recent-activity skip window.

@@ -32,6 +32,17 @@ Runtime adapters should only hold protocol-specific details, such as Codex RPC/s
 
 Some memory internals still carry historical Asherie terms. Treat those as cleanup debt unless they appear in upstream acknowledgement, migration notes, or memory-domain vocabulary.
 
+## Why The Extra Settings Exist
+
+Mossbridge separates transport state, memory data, and runtime workspace on purpose:
+
+- `MOSSBRIDGE_STATE_DIR` stores QR login, accounts, sessions, logs, queues, cooldowns, and generated WeChat prompt files. The default is `${HOME}/.mossbridge`.
+- `MOSSBRIDGE_DATA_ROOT` stores warm memory, ongoing tracks, journals, conversation cache, app captures, and mutation logs. Fresh installs should start with one clean data root.
+- `MOSSBRIDGE_WORKSPACE_ROOT` is the file workspace exposed to the runtime. It should not be the user's whole home directory.
+- `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities with hot-window and context-backoff guardrails.
+- `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for turn-level memory delivery limits.
+- `MOSSBRIDGE_MAINTENANCE_*` keeps public heartbeat self-checks read-only unless a private operator explicitly enables repair.
+
 ## Requirements
 
 - Node.js `>= 22`
@@ -103,6 +114,8 @@ Useful WeChat commands:
 - `/chunk <number>`
 - `/model`
 - `/model <id>`
+- `/model default`
+- `/model refresh`
 - `/help`
 
 ## Data Boundaries

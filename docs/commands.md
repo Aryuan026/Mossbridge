@@ -105,6 +105,8 @@ Notes:
 - `/no`
 - `/model`
 - `/model <id>`
+- `/model default`
+- `/model refresh`
 - `/star`
 - `/help`
 
@@ -112,5 +114,7 @@ Notes:
 
 - `/status` covers thread, workspace, and context details
 - there is no separate `/context` command; use `/status` and read the `📦 context` line
+- `/model` is runtime-neutral: Codex uses a runtime model catalog when available, Claude Code accepts raw `--model` ids, and `/model default` clears only the workspace override
+- `/model refresh` asks the runtime adapter to refresh its model catalog; runtimes without a stable catalog should report that raw model ids are accepted
 - `/compact` asks the current thread to compact its context and reports start / finish back to WeChat
 - file sending is still available, but no longer exposed as a WeChat command

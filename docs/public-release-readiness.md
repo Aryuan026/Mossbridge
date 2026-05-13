@@ -4,7 +4,7 @@
 
 它记录当前私有备份已经完成到哪里、为什么现在还不适合直接公开分享、以及未来要把它交给朋友使用前必须补齐哪些东西。这里不记录私人记忆内容、账号 token、测试聊天原文或本地二维码数据。
 
-Last updated: 2026-05-08
+Last updated: 2026-05-13
 
 ## 当前结论
 
@@ -43,6 +43,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 2026-05-10：明确 Mossbridge 公开线不提供私人外部执行器接口。未来重点是 OpenAI user 的 `ChatGPT 日常对话 / 网页抓取 -> Mossbridge 沉淀仓 -> Codex/Claude Code runtime -> WeChat 延续`，不可公开的外部执行器不进入公开工具面。
 - 2026-05-07：对齐 dreaming 发布风险：私测可以借外部 scheduler，但公开版必须由 Bridge 自己拥有静默窗口触发、整理日志、写入回执和 runtime 故障提示。
 - 2026-05-08：补入 dreaming completion-gate 提醒：公开版实现 Bridge-owned dreaming 时，不能把“触发过”当成“整理成功”。必须以 mutation/writeback 成功为完成条件；前台活跃、runtime 错误、解析错误或写入失败都要延迟重试同一任务，并留下 retry 回执。
+- 2026-05-13：同步公开版交付说明：README / AGENTS / quickstart / Codex memory setup 解释心跳系统、记忆递送、状态/数据/workspace 隔离和主要参数原因；公开示例 `agent_id` 改为 `moss`，默认未配置 data root 时落到 `mossbridge_data/`；桥提示改成明确 `[Mossbridge]` 运行层通知，避免和主 bot 口吻混淆；`/model` 扩展为 Codex / Claude Code 通用的下一轮模型覆盖命令。
 
 ## 当前已经具备的能力
 

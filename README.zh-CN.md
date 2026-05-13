@@ -11,7 +11,7 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 ## 和 Cyberboss 的主要差异
 
 - **记忆优先**
-  Mossbridge 增加了 Asherie 风格的记忆层，包括温卡、ongoing tracks、context packet、冷记忆版本兼容和近期对话缓存。前台模型可以通过工具读取、写入、修改和删除记忆，而不是只依赖当前窗口上文。
+  Mossbridge 增加了自己的记忆层，包括温卡、ongoing tracks、context packet、冷记忆版本兼容和近期对话缓存。前台模型可以通过工具读取、写入、修改和删除记忆，而不是只依赖当前窗口上文。
 
 - **陪伴连续性，而不是固定人设控制**
   记忆管理层不应该用关键词式规则限制模型必须怎么说话。提示词的目标是帮助模型理解上下文、保持关系连续，而不是把它锁死成某种固定口吻。
@@ -35,7 +35,18 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
   当前加入了回复分段、短句合并、段落呼吸和微信 emoji shortcode 归一化，减少“同一个模型在微信端变短变硬”的传输层影响。
 
 - **Codex / Claude Code 双 runtime**
-  支持 Codex 和 Claude Code。日常推荐 shared mode，让微信端和终端端挂在同一条线程上，也支持在 Claude Code runtime 下查看和切换模型。
+  支持 Codex 和 Claude Code。日常推荐 shared mode，让微信端和终端端挂在同一条线程上；`/model` 是共享命令，Codex 有目录时用目录校验，Claude Code 没有稳定目录时接受原始 model id。
+
+## 为什么会多这些参数
+
+Mossbridge 的配置比原始 bridge 多，是因为它要把三件事分清楚：微信账号运行态、助手自己的记忆仓、用户给 runtime 读写的工作区。
+
+- `MOSSBRIDGE_STATE_DIR` 是运行态：二维码登录、账号文件、session、日志、队列、cooldown、生成的微信提示文件。默认是 `${HOME}/.mossbridge`。
+- `MOSSBRIDGE_DATA_ROOT` 是记忆数据：温卡、ongoing、observation / episode journal、conversation cache、app capture 和 mutation log。新部署先只接一个干净 data root，再考虑导入旧仓。
+- `MOSSBRIDGE_WORKSPACE_ROOT` 是 runtime 可读写的办公区，用来收附件、写文件、做项目协作，不应该直接暴露整个 Home。
+- `MOSSBRIDGE_CHECKIN_*` 控制心跳机会，不只是闹钟频率。hot window 和 token backoff 是为了避免主动唤醒打断正在聊天的用户，或把已经很重的 runtime 上下文继续压满。
+- `MOSSBRIDGE_ASHERIE_PRELUDE_*` 是历史记忆层命名，控制一轮里递送多少记忆。限制保持小，是为了让记忆帮助当前回复落地，而不是把整仓流水灌进窗口。
+- `MOSSBRIDGE_MAINTENANCE_*` 让公开版心跳默认只读自检。私有部署可以显式打开修复，但公开 clone 验收应该先只检查和报告。
 
 ## 公开命名与 runtime 姿态
 
@@ -114,9 +125,13 @@ npm run shared:status:claudecode
 - `/status`
   查看 workspace、thread、model 和上下文状态。
 - `/model`
-  查看当前 Claude Code 模型。
+  查看当前 runtime 的 selected / default / effective model 和模型目录状态。
 - `/model <id>`
-  在 runtime 支持时切换模型。
+  为下一轮选择模型。Codex 会优先使用模型目录校验；Claude Code 没有稳定目录时接受原始 model id。
+- `/model default`
+  清除当前 workspace 的模型覆盖，下一轮回到 runtime 默认模型。
+- `/model refresh`
+  让 runtime adapter 刷新模型目录。
 - `/reread`
   重新注入本地指令和操作模板。
 - `/checkin <min>-<max>`

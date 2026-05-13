@@ -27,8 +27,8 @@ const stateDir = readValueFlag("--state-dir")
   || path.join(os.homedir(), ".mossbridge");
 const dataRoot = readValueFlag("--data-root")
   || process.env.MOSSBRIDGE_DATA_ROOT
-  || path.join(stateDir, "asherie_gateway");
-const homeHealthUrl = readValueFlag("--home-health-url") || "http://127.0.0.1:8089/health";
+  || path.join(stateDir, "mossbridge_data");
+const externalHealthUrl = readValueFlag("--external-health-url");
 
 main().catch((error) => {
   console.error(error?.stack || error?.message || String(error));
@@ -44,12 +44,14 @@ async function main() {
       include_previews: includePreviews,
       state_dir: stateDir,
       data_root: dataRoot,
-      home_health_url: homeHealthUrl,
+      external_health_url: externalHealthUrl,
     },
     process: buildProcessSection(),
     bridge_state: buildBridgeStateSection(),
     memory_storage: buildMemoryStorageSection(),
-    home_health: await fetchJsonWithTimeout(homeHealthUrl, 900),
+    external_health: externalHealthUrl
+      ? await fetchJsonWithTimeout(externalHealthUrl, 900)
+      : { skipped: true, reason: "No --external-health-url was provided." },
     notes: [
       "This report is local diagnostics only. It avoids raw conversation previews unless --include-previews is passed.",
       "Use it after the travel pressure test to correlate silence, queue buildup, wakeups, memory sediment, and context pressure.",

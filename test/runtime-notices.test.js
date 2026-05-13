@@ -32,7 +32,9 @@ test("runtime notice shield replaces user-facing capacity notices and suppresses
   });
   assert.equal(user.shielded, true);
   assert.equal(user.action, "replace");
-  assert.match(user.text, /ClaudeCode 这边暂时到额度/);
+  assert.match(user.text, /^\[Mossbridge] runtime_limit/);
+  assert.match(user.text, /不是助手回复/);
+  assert.doesNotMatch(user.text, /继续接住|记忆断|你的消息没送到/);
 
   const system = shieldRuntimeNoticeForDelivery("Claude Code usage limit reached. Your limit will reset at 10:40pm.", {
     provider: "system",

@@ -608,7 +608,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_context_packet",
-    description: "Read the current Asherie-style context packet for the bound user, including warm cards, cold version summary, and recent cache traces.",
+    description: "Read the current Mossbridge memory context packet for the bound user, including warm cards, cold version summary, and recent cache traces.",
     shortHint: "Read the current memory packet before a turn when recall feels important.",
     topics: ["memory"],
     inputSchema: {
@@ -637,7 +637,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_warm_write",
-    description: "Write a warm-memory card into the Asherie-style material layer for the current user.",
+    description: "Write a warm-memory card into the Mossbridge material layer for the current user.",
     shortHint: "Save a durable warm-memory card with title, body, and optional routing metadata.",
     topics: ["memory"],
     inputSchema: {
@@ -1583,7 +1583,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_cold_upsert",
-    description: "Upsert a cold-memory version payload into the Asherie-style version bank for the current user. Inspect the active version first when you are correcting existing cold memory.",
+    description: "Upsert a cold-memory version payload into the Mossbridge version bank for the current user. Inspect the active version first when you are correcting existing cold memory.",
     shortHint: "Write a versioned cold-memory payload after checking the active version when needed.",
     topics: ["memory"],
     inputSchema: {

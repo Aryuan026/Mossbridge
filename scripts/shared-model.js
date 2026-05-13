@@ -106,6 +106,10 @@ function parseArgs(argv = []) {
       options.clear = true;
       continue;
     }
+    if (["default", "clear", "reset"].includes(arg.toLowerCase())) {
+      options.clear = true;
+      continue;
+    }
     if (arg === "--workspace") {
       index += 1;
       options.workspaceRoot = String(argv[index] || "").trim();
@@ -246,8 +250,12 @@ function formatSummary({
   lines.push(`runtime: ${runtime}`);
   lines.push(`workspace: ${workspaceRoot}`);
   lines.push(`session_model: ${sessionModel || "(default)"}`);
+  lines.push(`effective_model: ${sessionModel || envDefaultModel || "(runtime default)"}`);
   if (envDefaultModel) {
     lines.push(`env_default: ${envDefaultModel}`);
+  }
+  if (changed) {
+    lines.push("applies_to: next_turn");
   }
   lines.push(`thread: ${threadId || "(not bound yet)"}`);
   lines.push(`binding: ${bindingKey || "(not found)"}`);

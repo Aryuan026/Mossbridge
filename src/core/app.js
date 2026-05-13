@@ -10,7 +10,7 @@ const {
 } = require("../adapters/channel/weixin/media-receive");
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
-const { findModelByQuery } = require("../adapters/runtime/codex/model-catalog");
+const { findModelByQuery, normalizeModelCatalog } = require("../adapters/runtime/codex/model-catalog");
 const { createTimelineIntegration } = require("../integrations/timeline");
 const { buildWeixinHelpText } = require("./command-registry");
 const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
@@ -38,7 +38,12 @@ const {
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
 const { recordUserMessage, recordAiReply } = require("./activity-tracker");
-const { buildRuntimeCapacityNotice, isRuntimeCapacityNotice, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
+const {
+  buildRuntimeCapacityNotice,
+  formatBridgeNotice,
+  isRuntimeCapacityNotice,
+  shieldRuntimeNoticeForDelivery,
+} = require("./runtime-notices");
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
@@ -627,7 +632,10 @@ class MossbridgeApp {
       const messageText = error instanceof Error ? error.message : String(error || "unknown error");
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
-        text: `❌ Request failed\n${messageText}`,
+        text: formatBridgeNotice("request_failed", [
+          "消息在进入 runtime 前失败。",
+          messageText,
+        ]),
         contextToken: prepared.contextToken,
       }).catch(() => {});
       return false;
@@ -639,7 +647,9 @@ class MossbridgeApp {
     if (cooldown) {
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
-        text: buildRuntimeCapacityNotice(cooldown.messagePreview || ""),
+        text: buildRuntimeCapacityNotice(cooldown.messagePreview || "", {
+          runtimeId: this.config.runtime || "codex",
+        }),
         contextToken: prepared.contextToken,
       }).catch(() => {});
       return false;
@@ -956,34 +966,20 @@ class MossbridgeApp {
           return;
         }
         watchdog.noticeSent = true;
-        const noticeLines = isCodex
-          ? [
-              `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
-              "If your terminal is still reconnecting, this round is probably still stuck in shared-thread startup.",
-              "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
-              `workspace: ${workspaceRoot}`,
-              `thread: ${normalizedThreadId}`,
-            ]
-          : isClaudeCode
-            ? [
-                "⏳ 我已经收到这句了，只是 ClaudeCode 这边第一口气还没吐出来。",
-                "它这会儿大概率还在处理这轮输入，不一定是坏住了。",
-                "你不用继续在聊天框里等着；如果它马上接上，正文会自己回来。",
-                `workspace: ${workspaceRoot}`,
-                `thread: ${normalizedThreadId}`,
-              ]
-            : [
-                `⏳ This message has already reached the bridge, but ${runtimeName} has not returned the first event yet.`,
-                "The runtime process may still be starting up.",
-                "You do not need to keep waiting in chat. If it reconnects later, the message will continue.",
-                `workspace: ${workspaceRoot}`,
-                `thread: ${normalizedThreadId}`,
-              ];
+        const noticeLines = [
+          `消息已到达桥，但 ${formatRuntimeLabel(runtimeName)} 尚未返回首个事件。`,
+          isCodex
+            ? "可能仍在 shared-thread 启动或重连阶段。"
+            : "可能仍在启动、重连或处理本轮输入。",
+          "这是一条桥状态提示，不是助手回复。",
+          `workspace: ${workspaceRoot}`,
+          `thread: ${normalizedThreadId}`,
+        ];
         await this.channelAdapter.sendText({
           userId: normalized.senderId,
           contextToken: normalized.contextToken,
           preserveBlock: true,
-          text: noticeLines.join("\n"),
+          text: formatBridgeNotice("runtime_waiting_first_event", noticeLines),
         }).catch(() => {});
       }, noticeTimeoutMs)
       : null;
@@ -998,48 +994,23 @@ class MossbridgeApp {
         status: 0,
         contextToken: normalized.contextToken,
       }).catch(() => {});
-      const failureLines = isCodex
-        ? [
-            `❌ This message has already reached the bridge, but ${runtimeName} still has not returned the first event.`,
-            "If the reconnecting cycle in the terminal already finished 5 attempts, this shared thread most likely never started successfully.",
-            `workspace: ${workspaceRoot}`,
-            `thread: ${normalizedThreadId}`,
-            "Check these first: whether the shared app-server is healthy, whether the terminal is attached to the same thread, and whether runtime actually started processing this message.",
-            "Recommended order:",
-            "1. Run `npm run shared:status` in the project directory",
-            "2. If the bridge is down, run `npm run shared:start`",
-            "3. Open another terminal and run `npm run shared:open`",
-            "4. Confirm the terminal is attached to the same thread shown above, not a private thread",
-          ]
-        : isClaudeCode
-          ? [
-              "❌ 这句已经进桥了，但 ClaudeCode 这边到现在还没吐出第一条事件。",
-              openingTurn
-                ? "如果这是新线程的第一轮，现在更像是启动真的卡住了，不只是慢。"
-                : "这时就更像是 ClaudeCode 进程本身卡住或退出了。",
-              `workspace: ${workspaceRoot}`,
-              `thread: ${normalizedThreadId}`,
-              "建议顺手看这几步：",
-              "1. 在项目目录跑 `npm run shared:status:claudecode`",
-              "2. 如果桥没起来，跑 `npm run shared:start:claudecode`",
-              "3. 再看一下这条微信绑定是不是还在同一个 workspace 里",
-            ]
-        : [
-            `❌ This message has already reached the bridge, but ${runtimeName} still has not returned the first event.`,
-            "The runtime process may have failed to start or exited unexpectedly.",
-            `workspace: ${workspaceRoot}`,
-            `thread: ${normalizedThreadId}`,
-            "Recommended order:",
-            "1. Run `npm run shared:status:claudecode` in the project directory",
-            "2. If the bridge is down, run `npm run shared:start:claudecode`",
-            "3. Open another terminal and run `npm run shared:open:claudecode`",
-            "4. Confirm ClaudeCode is still attached to the same workspace shown above",
-          ];
+      const failureLines = [
+        `消息已到达桥，但 ${formatRuntimeLabel(runtimeName)} 超时未返回首个事件。`,
+        openingTurn
+          ? "新线程首轮可能启动失败。"
+          : "runtime 进程可能卡住、退出，或没有接入当前 shared thread。",
+        `workspace: ${workspaceRoot}`,
+        `thread: ${normalizedThreadId}`,
+        "建议检查：",
+        isCodex ? "1. npm run shared:status" : "1. npm run shared:status:claudecode",
+        isCodex ? "2. npm run shared:start" : "2. npm run shared:start:claudecode",
+        isCodex ? "3. npm run shared:open" : "3. npm run shared:open:claudecode",
+      ];
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
         preserveBlock: true,
-        text: failureLines.join("\n"),
+        text: formatBridgeNotice("runtime_first_event_timeout", failureLines),
       }).catch(() => {});
     }, failureTimeoutMs);
     this.pendingRuntimeEventWatchdogs.set(normalizedThreadId, {
@@ -1212,12 +1183,12 @@ class MossbridgeApp {
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
         preserveBlock: true,
-        text: [
-          "⏳ 这轮我已经收到，ClaudeCode 也已经开始处理，只是正文出来得比较慢。",
-          "这是一条慢回提示，不是失败通知；如果后面正文自己回来，可以直接忽略这一条。",
+        text: formatBridgeNotice("runtime_slow_reply", [
+          `${formatRuntimeLabel(runtimeName)} 已开始处理本轮输入，但尚未产生助手正文。`,
+          "这是一条桥状态提示，不是助手回复。",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
-        ].join("\n"),
+        ]),
       }).catch(() => {});
     }, noticeTimeoutMs);
 
@@ -1237,12 +1208,12 @@ class MossbridgeApp {
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
         preserveBlock: true,
-        text: [
-          `⚠️ 这轮 ClaudeCode 超过 ${Math.round(recoveryTimeoutMs / 60_000)} 分钟没有完成，我先把卡住的运行释放掉。`,
-          "刚才那句话可能需要你重新发一次；后续消息不会继续堵在这轮后面。",
+        text: formatBridgeNotice("runtime_stalled_released", [
+          `${formatRuntimeLabel(runtimeName)} 超过 ${Math.round(recoveryTimeoutMs / 60_000)} 分钟未完成本轮输入。`,
+          "Mossbridge 已释放这次运行；如仍需要结果，请重新发送请求。",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
-        ].join("\n"),
+        ]),
       }).catch(() => {});
       await this.runtimeAdapter.cancelTurn({
         threadId: normalizedThreadId,
@@ -1368,7 +1339,10 @@ class MossbridgeApp {
         if (!runtimeText) {
           await this.channelAdapter.sendText({
             userId: normalized.senderId,
-            text: `⚠️ Failed to receive image or attachment\n${persisted.failed.map((item) => item.reason).join("\n")}`,
+            text: formatBridgeNotice("attachment_intake_failed", [
+              "图片或附件接收失败。",
+              ...persisted.failed.map((item) => item.reason),
+            ]),
             contextToken: normalized.contextToken,
             preserveBlock: true,
           }).catch(() => {});
@@ -1434,7 +1408,9 @@ class MossbridgeApp {
         }).catch(() => {});
         await this.channelAdapter.sendText({
           userId: job.senderId,
-          text: `❌ Timeline screenshot failed\n${messageText}`,
+          text: formatBridgeNotice("timeline_screenshot_failed", [
+            messageText,
+          ]),
           preserveBlock: true,
         }).catch(() => {});
       }
@@ -1818,7 +1794,9 @@ class MossbridgeApp {
     } catch (error) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Reread failed\n${error instanceof Error ? error.message : String(error || "unknown error")}`,
+        text: formatBridgeNotice("reread_failed", [
+          error instanceof Error ? error.message : String(error || "unknown error"),
+        ]),
         contextToken: normalized.contextToken,
       }).catch(() => {});
     }
@@ -1876,7 +1854,9 @@ class MossbridgeApp {
     } catch (error) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Compact failed\n${error instanceof Error ? error.message : String(error || "unknown error")}`,
+        text: formatBridgeNotice("compact_failed", [
+          error instanceof Error ? error.message : String(error || "unknown error"),
+        ]),
         contextToken: normalized.contextToken,
       }).catch(() => {});
     }
@@ -2092,35 +2072,71 @@ class MossbridgeApp {
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const query = normalizeCommandArgument(command.args);
     const sessionStore = this.runtimeAdapter.getSessionStore();
-    const catalog = sessionStore.getAvailableModelCatalog();
+    let catalog = sessionStore.getAvailableModelCatalog();
     const currentModel = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model;
+    const runtimeId = this.runtimeAdapter.describe().id || "runtime";
 
     if (!query) {
-      const lines = [
-        `Current model: ${currentModel || "(default)"}`,
-      ];
-      if (catalog?.models?.length) {
-        lines.push(`Available models: ${catalog.models.map((item) => item.model).join(", ")}`);
-      } else {
-        lines.push("Available models: (not available)");
-      }
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: lines.join("\n"),
+        text: formatModelStatusNotice({
+          runtimeId,
+          workspaceRoot,
+          selectedModel: currentModel,
+          runtimeDefaultModel: this.resolveRuntimeDefaultModel(runtimeId, catalog),
+          catalog,
+        }),
         contextToken: normalized.contextToken,
       });
       return;
     }
 
-    const runtimeId = this.runtimeAdapter.describe().id || "runtime";
+    const normalizedAction = query.toLowerCase();
+    if (["default", "clear", "reset"].includes(normalizedAction)) {
+      sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, { model: "" });
+      catalog = sessionStore.getAvailableModelCatalog();
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: formatBridgeNotice("model_selected", [
+          `runtime: ${runtimeId}`,
+          `workspace: ${workspaceRoot}`,
+          "selected_model: (default)",
+          `effective_model: ${this.resolveEffectiveModelLabel(runtimeId, "", catalog)}`,
+          "applies_to: next_turn",
+        ]),
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+
+    if (normalizedAction === "refresh") {
+      await this.handleModelRefreshCommand({ normalized, runtimeId, workspaceRoot });
+      return;
+    }
+
+    if (!catalog?.models?.length && typeof this.runtimeAdapter.refreshModelCatalog === "function") {
+      const refreshed = await this.runtimeAdapter.refreshModelCatalog().catch(() => null);
+      if (refreshed?.models?.length) {
+        sessionStore.setAvailableModelCatalog(refreshed.models);
+        catalog = sessionStore.getAvailableModelCatalog();
+      }
+    }
+
     let matched = findModelByQuery(catalog?.models || [], query);
-    if (!matched && runtimeId !== "codex" && !catalog?.models?.length) {
+    if (!matched && !catalog?.models?.length) {
       matched = { model: query };
     }
     if (!matched) {
+      const models = catalog?.models || [];
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: `❌ Model not found\n${query}`,
+        text: formatBridgeNotice("model_not_found", [
+          `runtime: ${runtimeId}`,
+          `query: ${query}`,
+          `catalog: ${models.length} models`,
+          `available_models: ${formatModelList(models)}`,
+          "hint: /model refresh",
+        ]),
         contextToken: normalized.contextToken,
       });
       return;
@@ -2131,9 +2147,79 @@ class MossbridgeApp {
     });
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: `✅ Model switched\nworkspace: ${workspaceRoot}\nmodel: ${matched.model}`,
+      text: formatBridgeNotice("model_selected", [
+        `runtime: ${runtimeId}`,
+        `workspace: ${workspaceRoot}`,
+        `selected_model: ${matched.model}`,
+        `effective_model: ${matched.model}`,
+        catalog?.models?.length ? "source: catalog" : "source: raw_model_id",
+        "applies_to: next_turn",
+      ]),
       contextToken: normalized.contextToken,
     });
+  }
+
+  async handleModelRefreshCommand({ normalized, runtimeId, workspaceRoot }) {
+    if (typeof this.runtimeAdapter.refreshModelCatalog !== "function") {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: formatBridgeNotice("model_catalog_unavailable", [
+          `runtime: ${runtimeId}`,
+          "reason: this runtime adapter does not expose model catalog refresh",
+        ]),
+        contextToken: normalized.contextToken,
+      });
+      return;
+    }
+    try {
+      const refreshed = await this.runtimeAdapter.refreshModelCatalog();
+      const models = normalizeModelCatalog(refreshed?.models || []);
+      const catalog = models.length
+        ? this.runtimeAdapter.getSessionStore().setAvailableModelCatalog(models)
+        : null;
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: formatBridgeNotice(models.length ? "model_catalog_refreshed" : "model_catalog_unavailable", [
+          `runtime: ${runtimeId}`,
+          `workspace: ${workspaceRoot}`,
+          `catalog: ${models.length} models`,
+          refreshed?.source ? `source: ${refreshed.source}` : "",
+          refreshed?.unavailableReason ? `reason: ${refreshed.unavailableReason}` : "",
+          refreshed?.acceptsRawModel ? "raw_model_id: accepted" : "",
+          catalog?.updatedAt ? `updated_at: ${catalog.updatedAt}` : "",
+          models.length ? `available_models: ${formatModelList(models)}` : "",
+        ]),
+        contextToken: normalized.contextToken,
+      });
+    } catch (error) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: formatBridgeNotice("model_catalog_refresh_failed", [
+          `runtime: ${runtimeId}`,
+          error instanceof Error ? error.message : String(error || "unknown error"),
+        ]),
+        contextToken: normalized.contextToken,
+      });
+    }
+  }
+
+  resolveRuntimeDefaultModel(runtimeId, catalog = null) {
+    const normalizedRuntimeId = normalizeText(runtimeId).toLowerCase();
+    if (normalizedRuntimeId === "claudecode") {
+      return normalizeText(this.config.claudeModel);
+    }
+    const defaultModel = Array.isArray(catalog?.models)
+      ? catalog.models.find((item) => item?.isDefault)
+      : null;
+    return normalizeText(defaultModel?.model);
+  }
+
+  resolveEffectiveModelLabel(runtimeId, selectedModel, catalog = null) {
+    const selected = normalizeText(selectedModel);
+    if (selected) {
+      return selected;
+    }
+    return this.resolveRuntimeDefaultModel(runtimeId, catalog) || "(runtime default)";
   }
 
   async handleStarCommand(normalized) {
@@ -3194,27 +3280,72 @@ function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
   const normalized = normalizeText(text) || "❌ Execution failed";
   const kind = classifyRuntimeFailureKind(normalized);
   if (kind === "prompt_too_long") {
-    return [
-      "⚠️ ClaudeCode 这轮上下文太长，桥已经把这条运行线程标记为失败并释放。",
+    return formatBridgeNotice("runtime_prompt_too_long", [
+      "ClaudeCode prompt 超过上下文限制，Mossbridge 已释放本轮运行。",
       provider === "system"
-        ? "这是后台唤醒失败提示，不是你说错了什么；我会避免继续把同一条坏线程反复塞满。"
-        : "刚才那句话可能需要你重新发一次；下一轮会尝试从干净线程继续。",
-    ].join("\n");
+        ? "这是后台唤醒失败提示，不会作为助手正文发送。"
+        : "当前轮次没有生成助手正文；请缩短请求或 compact 后重试。",
+    ]);
   }
   if (kind === "bad_json") {
-    return [
-      "⚠️ ClaudeCode 拒绝了这轮请求体，桥已经把坏请求隔离掉。",
-      "常见原因是表情/特殊字符或内部 JSON 被运行时判成非法。下一轮会重新开干净路径，不会继续卡在这条坏消息后面。",
-    ].join("\n");
+    return formatBridgeNotice("runtime_bad_json", [
+      "ClaudeCode 拒绝了本轮请求体，Mossbridge 已隔离这次运行。",
+      "常见原因是特殊字符或内部 JSON 被 runtime 判定为非法；请重新发送请求。",
+    ]);
   }
   if (kind === "api_error") {
-    return [
-      "⚠️ ClaudeCode 这轮返回了 API 错误，桥已经释放当前运行线程。",
-      "这条不会进入记忆；如果你刚才是在等正文，可以把那句话重新发一次。",
+    return formatBridgeNotice("runtime_api_error", [
+      "ClaudeCode 返回 API 错误，Mossbridge 已释放本轮运行。",
+      "这是一条桥状态提示，不是助手回复；不会写入记忆。",
+      "如仍需要结果，请在 provider 恢复后重新发送请求。",
       `detail: ${truncateForStatus(normalized, 260)}`,
-    ].join("\n");
+    ]);
   }
   return normalized;
+}
+
+function formatRuntimeLabel(runtimeName) {
+  const normalized = normalizeText(runtimeName).toLowerCase();
+  if (normalized === "claudecode") {
+    return "ClaudeCode";
+  }
+  if (normalized === "codex") {
+    return "Codex";
+  }
+  return normalizeText(runtimeName) || "runtime";
+}
+
+function formatModelStatusNotice({
+  runtimeId = "",
+  workspaceRoot = "",
+  selectedModel = "",
+  runtimeDefaultModel = "",
+  catalog = null,
+} = {}) {
+  const models = catalog?.models || [];
+  const selected = normalizeText(selectedModel);
+  const runtimeDefault = normalizeText(runtimeDefaultModel);
+  return formatBridgeNotice("model_status", [
+    `runtime: ${normalizeText(runtimeId) || "runtime"}`,
+    workspaceRoot ? `workspace: ${workspaceRoot}` : "",
+    `selected_model: ${selected || "(default)"}`,
+    runtimeDefault ? `runtime_default: ${runtimeDefault}` : "runtime_default: (runtime default)",
+    `effective_model: ${selected || runtimeDefault || "(runtime default)"}`,
+    `catalog: ${models.length ? `${models.length} models` : "(not available)"}`,
+    catalog?.updatedAt ? `catalog_updated_at: ${catalog.updatedAt}` : "",
+    models.length ? `available_models: ${formatModelList(models)}` : "available_models: (not available)",
+    "commands: /model <id>, /model default, /model refresh",
+  ]);
+}
+
+function formatModelList(models, limit = 12) {
+  const normalized = normalizeModelCatalog(models);
+  if (!normalized.length) {
+    return "(not available)";
+  }
+  const shown = normalized.slice(0, Math.max(1, Number(limit) || 12)).map((item) => item.model);
+  const suffix = normalized.length > shown.length ? `, +${normalized.length - shown.length} more` : "";
+  return `${shown.join(", ")}${suffix}`;
 }
 
 function isClaudeRuntimeFailureText(text) {
@@ -3788,7 +3919,7 @@ function isForbiddenIdentitySeedFileRead(approval, config = {}) {
       || base === "persona.md"
       || base === "人格提示词.md"
       || lower.includes("/00_system/soul.md")
-      || lower.includes("/aji-memory/00_system/")
+      || /\/[^/]*memory\/00_system\//u.test(lower)
     );
     if (!looksLikeSeed) {
       return false;
@@ -3885,9 +4016,12 @@ function parseNumericOrderValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-const DEFERRED_REPLY_NOTICE = "由于微信 context_token 的限制，上轮对话里有一部分内容当时没能送达；这次用户再次发来消息、context_token 刷新后，先把遗留内容补上。如果这种情况反复出现，可发送 /chunk <数字>（例如 /chunk 50）调大最小合并字符数，减少消息分片。";
-const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
+const DEFERRED_REPLY_NOTICE = formatBridgeNotice("deferred_delivery", [
+  "上一轮有内容因 WeChat context_token 失效未能发送；本次 token 刷新后补发。",
+  "若频繁出现，可发送 /chunk <数字> 调大最小合并字符数。",
+]);
+const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 =====";
+const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
 
 function formatDeferredSystemReplyText(text) {
   const normalized = String(text || "").trim();

@@ -45,7 +45,7 @@ MOSSBRIDGE_STATE_DIR=/Users/you/Documents/MossbridgeState
 MOSSBRIDGE_DATA_ROOT=/Users/you/Documents/MossbridgeData
 MOSSBRIDGE_IDENTITY_USER_ID=owner
 MOSSBRIDGE_IDENTITY_REALM_ID=default
-MOSSBRIDGE_IDENTITY_AGENT_ID=aji
+MOSSBRIDGE_IDENTITY_AGENT_ID=moss
 ```
 
 如果用户选择 Claude Code runtime，再改成：
@@ -79,7 +79,7 @@ MossbridgeData/
     warm_memory/
       owner/
         default/
-          aji/
+          moss/
             materials/
               *.md
     ongoing_tracks.json
@@ -215,6 +215,31 @@ Codex 调试时要确认：
 - 模型可以主动要求新增记忆能力或指出当前系统不舒服。
 - 主动唤醒不是裸提醒，应该带 warm/ongoing/recent context。
 - 如果主动浮现不够用，模型应该继续搜索记忆，而不是用不合适的召回结果凑合回答。
+
+## 心跳系统为什么这样设
+
+Mossbridge 的 heartbeat 不是“固定时间给用户发一句问候”。它更像一次很小的后台醒来：先看有没有 due reminder、近期上下文、ongoing、observation、episode、solitude note 和 bridge 状态，再决定是发微信、写一条私有连续性记录、更新提醒，还是安静跳过。
+
+几个参数要这样理解：
+
+- `MOSSBRIDGE_CHECKIN_MIN_INTERVAL_MS` / `MAX_INTERVAL_MS` 只给随机醒来的时间范围，不保证每次都会打扰用户。
+- `MOSSBRIDGE_CHECKIN_HOT_*` 防止用户正在聊的时候又被主动 check-in 插话。
+- `MOSSBRIDGE_CHECKIN_TOKEN_*` 在 runtime 上下文接近压力线时拉长唤醒间隔，避免主动消息把窗口推向 overflow。
+- `MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR=false` 是公开版默认边界：心跳可以读状态和报告，不会自己重启服务、重绑账号、改凭据、删文件或删记忆。
+
+给 Codex 的判断句：heartbeat 的目标是保持“连续性把手”，不是制造存在感；如果没有真实上下文价值，安静记录或推迟比硬发一句更好。
+
+## 记忆递送为什么这样设
+
+Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。它是一小包让前台模型落地当前回复的材料：
+
+- resident warm anchors：长期应该常驻的关系/偏好锚点。
+- relevant warm cards：和当前问题相关的温卡。
+- active ongoing tracks：这阵子还活着的事。
+- observation / episode attention：可修正默契和有边界的事件盒子。
+- recent snippets：少量近期尾巴，让跨窗口继续同一件事时不失忆。
+
+所以 `MOSSBRIDGE_ASHERIE_PRELUDE_*` 的默认值故意偏小。调大前先确认模型回复真的更稳，而不是只是更啰嗦、更像在复述资料。记忆递送应该改变“模型知道什么”，不应该把前台口吻压成工程说明或固定人设。
 
 ## 验收清单
 
