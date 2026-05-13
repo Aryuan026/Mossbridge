@@ -13,7 +13,7 @@ Bridge 可以作为独立产品运行，不应该默认依赖私人外部冷层�
 - 日常关系、口吻、偏好、象征物、用户固定印象、近期待办，优先进入 `warm_memory/` 和 `ongoing_tracks.json`。
 - 既有私人冷层树可以作为迁移/兼容来源、深层归档、关系拓扑和时间拓扑参考，但不作为 WeChat 日常人格连续性的主要文本召回层。
 - Mossbridge 不提供私人外部执行器接口：不桥接不可公开的外部执行器。公开线需要的简单能力应成为 Mossbridge 本体能力或清晰的可选 adapter。
-- 未来的主要公开路径是 `ChatGPT 网页/app 日常对话 -> daily capture -> conversation_cache -> warm/ongoing/episode/case 沉淀 -> Codex/Claude Code runtime -> WeChat 延续`。
+- 第一版公开路径是 `WeChat -> Mossbridge memory delivery -> Codex/Claude Code runtime -> WeChat 延续`。ChatGPT 网页/app daily capture、多端同步和 Notion 对齐先作为后续扩展，不进入第一版启动链路。
 - Bridge 的冷层不应该只是另一套温卡检索器。它更适合保存“卡与卡之间为什么连在一起”：家族分支、关系网、跨时间因果、证据来源，以及 case/file-work provenance。
 - 231 张来自旧冷层、实际语义更像温卡的内容，迁入 bridge 时应作为温层材料处理。
 
@@ -199,7 +199,7 @@ Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是�
 
 ### `cache/conversation_cache/`
 
-近期对话沉淀池。WeChat、终端、ChatGPT 网页/app daily capture 或其他 chatbox 都可以把上文写进这里，供 dreaming 和后续抽取使用。
+近期对话沉淀池。第一版主要由 WeChat 和本地 runtime 写入；后续 ChatGPT 网页/app daily capture 或其他 chatbox 可以作为数据源接进这里。
 
 它不是每轮都要完整塞给前台模型的全文聊天记录。运行时应该从这里整理出可读工作包，而不是盲目复读。
 
@@ -214,7 +214,7 @@ Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是�
 
 ### `cache/app_daily_captures/`
 
-官方 app / ChatGPT web 抓取插件的每日对话入口。
+后续官方 app / ChatGPT web 抓取插件的每日对话入口。第一版不启用同步，只保留目录和验证契约作为未来扩展位。
 
 它解决的是“官方 app 端的上文怎么进入沉淀池”，不是“固有记忆怎么长期同步”。推荐一日一个目录，先保存 raw/daily capture，再归一化进 `conversation_cache/`。
 
@@ -297,7 +297,7 @@ Bridge 自己的轻量关系树预留位。
   "decisions": [],
   "followups": [],
   "source_refs": [],
-  "agent_id": "aji",
+  "agent_id": "moss",
   "owner_id": "owner",
   "created_at": "2026-05-01T00:00:00.000Z",
   "updated_at": "2026-05-01T00:00:00.000Z"
@@ -318,7 +318,7 @@ Case 可以有很多中间产物，但 AI 不负责判定哪一版是终稿。`a
 
 ### `storage/notion_sync/`
 
-Notion 固有记忆同步层。
+后续 Notion 固有记忆同步层。第一版不启用 Notion 同步，也不要求部署者配置 Notion。
 
 它对齐 Driftstone 的 Notion staging bundle：
 
@@ -413,7 +413,7 @@ Bridge 当前消费契约：
   "source_card_id": "original-id",
   "import_batch": "2026-05-bridge-warm-import",
   "imported_at": "2026-05-01T00:00:00.000Z",
-  "agent_id": "aji",
+  "agent_id": "moss",
   "owner_id": "owner"
 }
 ```
@@ -457,8 +457,8 @@ conversation_cache -> dreaming -> warm_memory / ongoing_tracks / episode_journal
 - 有起止、适合整理成人类小记录的旅行/照片/小任务，进入 episode journal。
 - 近期状态、日常节律和相处默契，先进入 observation journal。
 - 已完成的工程、文件工作、调试结论，进入 case index。
-- 官方 app / ChatGPT web 的每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
-- 跨端固有记忆通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
+- 后续如果启用官方 app / ChatGPT web 每日抓取，先进入 `app_daily_captures`，再归一化进 `conversation_cache`。
+- 后续如果启用跨端固有记忆，再通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
 - 不要把短期事件默认推进冷层。
 

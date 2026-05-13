@@ -14,7 +14,7 @@ class CaseIndexStore {
   upsert(scopedUserId, payload = {}) {
     const scoped = normalizeText(scopedUserId) || normalizeText(payload.scoped_user_id || payload.scopedUserId) || "owner";
     const realmId = safeId(payload.realm_id || payload.realmId || "default");
-    const agentId = safeId(payload.agent_id || payload.agentId || "aji");
+    const agentId = safeId(payload.agent_id || payload.agentId || "moss");
     const data = isObject(payload) ? { ...payload } : {};
     const existingId = safeId(data.case_id || data.caseId);
     const caseId = existingId || newCaseId(data.title || data.summary || "case");
@@ -54,7 +54,7 @@ class CaseIndexStore {
   appendEvent(scopedUserId, caseId, payload = {}) {
     const scoped = normalizeText(scopedUserId) || "owner";
     const realmId = safeId(payload.realm_id || payload.realmId || "default");
-    const agentId = safeId(payload.agent_id || payload.agentId || "aji");
+    const agentId = safeId(payload.agent_id || payload.agentId || "moss");
     const target = safeId(caseId);
     if (!target) {
       throw new Error("case_id is required");
@@ -106,7 +106,7 @@ class CaseIndexStore {
   close(scopedUserId, caseId, payload = {}) {
     const scoped = normalizeText(scopedUserId) || "owner";
     const realmId = safeId(payload.realm_id || payload.realmId || "default");
-    const agentId = safeId(payload.agent_id || payload.agentId || "aji");
+    const agentId = safeId(payload.agent_id || payload.agentId || "moss");
     const target = safeId(caseId);
     if (!target) {
       throw new Error("case_id is required");
@@ -167,7 +167,7 @@ class CaseIndexStore {
       return null;
     }
     const realmId = safeId(options.realm_id || options.realmId || "default");
-    const agentId = safeId(options.agent_id || options.agentId || "aji");
+    const agentId = safeId(options.agent_id || options.agentId || "moss");
     const record = readJson(this.caseFile(scoped, realmId, agentId, target));
     if (!isObject(record)) {
       return null;
@@ -183,7 +183,7 @@ class CaseIndexStore {
     const scoped = normalizeText(scopedUserId);
     const target = safeId(caseId);
     const realmId = safeId(options.realm_id || options.realmId || "default");
-    const agentId = safeId(options.agent_id || options.agentId || "aji");
+    const agentId = safeId(options.agent_id || options.agentId || "moss");
     const rows = readJsonLines(this.eventsFile(scoped, realmId, agentId, target)).map(normalizeEvent);
     rows.sort((a, b) => `${a.created_at}${a.event_id}`.localeCompare(`${b.created_at}${b.event_id}`));
     const limit = Math.max(1, Math.min(Number(options.limit) || 100, 1000));
@@ -194,7 +194,7 @@ class CaseIndexStore {
     const scoped = normalizeText(scopedUserId);
     const target = safeId(caseId);
     const realmId = safeId(options.realm_id || options.realmId || "default");
-    const agentId = safeId(options.agent_id || options.agentId || "aji");
+    const agentId = safeId(options.agent_id || options.agentId || "moss");
     const record = this.get(scoped, target, { realmId, agentId });
     if (!record) {
       return { ok: false, case_id: target, error: `case not found: ${target}` };
@@ -209,7 +209,7 @@ class CaseIndexStore {
   projectCase(scopedUserId, realmId, agentId, caseId) {
     const scoped = normalizeText(scopedUserId);
     const realm = safeId(realmId || "default");
-    const agent = safeId(agentId || "aji");
+    const agent = safeId(agentId || "moss");
     const target = safeId(caseId);
     const record = normalizeCase(readJson(this.caseFile(scoped, realm, agent, target)) || {});
     const events = this.listEvents(scoped, target, { realmId: realm, agentId: agent, limit: 1000 });
@@ -251,7 +251,7 @@ class CaseIndexStore {
     return rows;
   }
 
-  scopeDir(scopedUserId, realmId = "default", agentId = "aji") {
+  scopeDir(scopedUserId, realmId = "default", agentId = "moss") {
     return path.join(this.rootDir, safeId(scopedUserId || "owner"), safeId(realmId), safeId(agentId));
   }
 
@@ -279,7 +279,7 @@ function normalizeCase(payload = {}) {
     scoped_user_id: normalizeText(source.scoped_user_id || source.scopedUserId),
     owner_id: normalizeText(source.owner_id || source.ownerId),
     realm_id: safeId(source.realm_id || source.realmId || "default"),
-    agent_id: safeId(source.agent_id || source.agentId || "aji"),
+    agent_id: safeId(source.agent_id || source.agentId || "moss"),
     title: normalizeText(source.title) || normalizeText(source.case_title || source.caseTitle) || safeId(source.case_id || source.caseId),
     kind: normalizeText(source.kind || source.event_type || source.eventType) || "work_case",
     status: normalizeStatus(source.status) || "active",
@@ -311,7 +311,7 @@ function normalizeEvent(payload = {}) {
     case_id: safeId(source.case_id || source.caseId),
     scoped_user_id: normalizeText(source.scoped_user_id || source.scopedUserId),
     realm_id: safeId(source.realm_id || source.realmId || "default"),
-    agent_id: safeId(source.agent_id || source.agentId || "aji"),
+    agent_id: safeId(source.agent_id || source.agentId || "moss"),
     event_type: normalizeText(source.event_type || source.eventType) || "note",
     summary: normalizeText(source.summary || source.text || source.note),
     actor: normalizeText(source.actor) || "assistant",

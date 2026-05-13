@@ -1,5 +1,7 @@
 # Notion Memory Interop
 
+Status: deferred extension note. This is not part of the first public Mossbridge deployment path. The first version keeps local WeChat bridge, runtime conversation, and Mossbridge-native memory delivery stable; Notion, Driftstone, Rikkahub, and ChatGPT capture synchronization should only be reopened after the private pressure-test line proves the workflow mature in an isolated data root.
+
 Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 端记得，而是让多个窗口把上文共同沉淀到同一套记忆系统里。
 
 这里的关键判断是：
@@ -21,7 +23,7 @@ Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 
 
 ```text
 /absolute/path/to/notion_staging/
-  ajimem_2025-03/
+  example_memory_2025-03/
     00_manifest.json
     01_memory_entries.json
     02_source_topics.json
@@ -33,7 +35,7 @@ Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 
 
 ## Driftstone v1 观察结论
 
-对 `ajimem_2025-03` 的第一轮检查结论：
+对 `example_memory_2025-03` 的第一轮检查结论：
 
 - 字段骨架已经有用。`entry_id`、`entry_type`、`month_key`、`summary`、`recall_payload`、`source_ref`、`source_window_id`、`source_msg_range` 等足够支撑后续导入器。
 - `memory_shape` 仍然偏斜。308 条里有 197 条是 `self_definition`，其中 195 条 persona 全部落到 `self_definition`，说明分类层还没完全把事件、关系、偏好、协议、人物画像分开。

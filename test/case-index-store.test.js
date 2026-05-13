@@ -13,7 +13,7 @@ test("case index store writes work provenance without requiring runtime injectio
   const created = store.upsert("owner", {
     case_id: "bridge-proactive-memory-2026-05-06",
     realm_id: "default",
-    agent_id: "aji",
+    agent_id: "moss",
     title: "Bridge proactive memory repair",
     kind: "system_architecture",
     summary: "Make random checkins recall recent conversation tail before long-term memory.",
@@ -29,7 +29,7 @@ test("case index store writes work provenance without requiring runtime injectio
 
   const event = store.appendEvent("owner", created.case_id, {
     realm_id: "default",
-    agent_id: "aji",
+    agent_id: "moss",
     event_type: "test",
     summary: "Focused memory tests passed.",
     tests: [{ command: "node --test test/asherie-memory-service.test.js", status: "passed" }],
@@ -39,7 +39,7 @@ test("case index store writes work provenance without requiring runtime injectio
 
   const artifact = store.linkArtifact("owner", created.case_id, {
     realm_id: "default",
-    agent_id: "aji",
+    agent_id: "moss",
     title: "case markdown",
     path: created.markdown_path,
     status: "user_approved_final",
@@ -63,14 +63,14 @@ test("case index store writes work provenance without requiring runtime injectio
 
   const read = store.get("owner", created.case_id, {
     realmId: "default",
-    agentId: "aji",
+    agentId: "moss",
     includeEvents: true,
   });
   assert.equal(read.events.length, 2);
 
   const exported = store.exportMarkdown("owner", created.case_id, {
     realmId: "default",
-    agentId: "aji",
+    agentId: "moss",
   });
   assert.equal(exported.ok, true);
   const markdown = fs.readFileSync(exported.path, "utf8");

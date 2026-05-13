@@ -18,7 +18,7 @@ It is intentionally operational rather than architectural: when the user returns
 - `System queues`: system-message queue, deferred-system replies, reminders, and screenshot queue should not silently pile up.
 - `Proactive check-in`: random check-ins should happen at the configured cadence, but skip recent active conversation.
 - `Memory context`: ordinary turns should carry warm memory, ongoing tracks, observation journal only when activated, and recent-thread tail.
-- `Dreaming/metabolism`: bridge-owned dreaming should see WeChat and app-capture sediment when the quiet-window trigger is available.
+- `Dreaming/metabolism`: deferred for the first public version; if enabled in a pressure test, bridge-owned dreaming should see WeChat sediment and avoid private scheduler assumptions.
 - `Cold tree`: do not treat lack of cold hits as failure by itself; evaluate whether topology edges and case/project provenance are useful.
 
 ## Quick Collection
@@ -47,7 +47,7 @@ Use preview mode sparingly because it can include fragments of recent WeChat tex
 5. Did runtime context approach the auto-compact threshold?
 6. Did observation journal stay quiet for unrelated questions?
 7. Did wakeups and reminders carry memory context or behave like empty alarms?
-8. Did dreaming run while the user was quiet, without relying on a private external scheduler?
+8. If dreaming was enabled for this pressure test, did it run while the user was quiet without relying on a private external scheduler?
 
 ## Expected Current Baseline
 

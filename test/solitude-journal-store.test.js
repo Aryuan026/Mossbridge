@@ -9,7 +9,7 @@ const { SolitudeJournalStore } = require("../src/asherie/solitude-journal-store"
 test("solitude journal stores shareable wakeup reflections without raw chain-of-thought", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-solitude-journal-"));
   const store = new SolitudeJournalStore(root, {
-    identity: { userId: "owner", realmId: "default", agentId: "aji" },
+    identity: { userId: "owner", realmId: "default", agentId: "moss" },
   });
 
   const written = store.append("owner", {
@@ -38,7 +38,7 @@ test("solitude journal stores shareable wakeup reflections without raw chain-of-
 test("solitude journal builds a backstage digest from recent notes and repeated lessons", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-solitude-digest-"));
   const store = new SolitudeJournalStore(root, {
-    identity: { userId: "owner", realmId: "default", agentId: "aji" },
+    identity: { userId: "owner", realmId: "default", agentId: "moss" },
   });
 
   store.append("owner", {

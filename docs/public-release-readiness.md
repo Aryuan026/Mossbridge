@@ -107,9 +107,9 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 
 当前判断是：WeChat 日常陪伴不应强依赖私人外部冷树。温记忆和 ongoing tracks 应该先保证日常连续性，冷层更适合做关系拓扑、时间拓扑和深层归档。
 
-当前私人压测里，睡前 dreaming 仍主要由外部后台 scheduler 负责触发，Bridge 提供 WeChat 上文、图片、工具写入和共享数据仓。Bridge 自身已经有 reminder / random checkin 的 system-turn 队列，但还没有完全独立的 nightly dreaming executor。因此独立发布前要把 dreaming 明确做成 Bridge-owned、runtime-neutral 的后台能力：Codex 和 Claude Code 都只是可选执行器，不能让“有没有外部进程打开”决定它会不会整理记忆。
+第一版公开目标先停在完整本地记忆结构和已验证的记忆递送，不把自动 nightly dreaming 当成发布前 blocker。当前私人压测里，睡前 dreaming 仍主要由外部后台 scheduler 负责触发；这条线等压测成熟后再同步回公开仓。后续接入时，dreaming 必须做成 Bridge-owned、runtime-neutral 的后台能力：Codex 和 Claude Code 都只是可选执行器，不能让“有没有外部进程打开”决定它会不会整理记忆。
 
-公开前还需要继续验证：
+后续重新打开 dreaming 线时需要验证：
 
 - dreaming 在用户静默后能稳定触发。
 - 没有外部 scheduler 进程时，Bridge 自己也能按静默窗口触发 nightly dreaming，并把结果写入本地 `dreaming_mutation_log` / `warm_memory` / `memory_tree`。
@@ -137,13 +137,13 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - Codex 和 Claude Code 各跑一次最小链路。
 - 主动 wakeup、reminder、sticker、附件 inbox、memory tool 都跑一轮。
 
-### 5. 外源记忆导入还没隔离验收
+### 5. 外源记忆导入暂缓到后续版本
 
-GPT / Rikkahub / Driftstone / Notion staging 这类外源记忆导入还没有在独立 Mossbridge data root 中验收。
+第一版公开目标收窄为 Mossbridge 本体：WeChat 对话、Codex / Claude Code runtime、当前已验证的记忆递送、warm / ongoing / observation / episode / case / cold-version compatibility 等本地记忆结构。
 
-目前主要障碍是：私测 bridge 与私人母库共用数据根时，外源导入会污染正在使用的真实记忆仓，无法判断导入器、召回链路、dreaming 整理到底是不是独立可靠。
+GPT / Rikkahub / Driftstone / Notion staging、ChatGPT 网页/app capture、Notion stable memory 同步都不作为第一版 blocker，也不接入第一版启动路径。它们保留为后续扩展设计，等私人压测线成熟后再同步回公开仓。
 
-公开前需要单独验证：
+后续重新打开这条线时，仍需在独立 `MOSSBRIDGE_DATA_ROOT` 中验证：
 
 - 原始对话切片进入 conversation cache 或 episode journal。
 - 归一化后的稳定事实进入 warm memory。
@@ -181,26 +181,28 @@ GPT / Rikkahub / Driftstone / Notion staging 这类外源记忆导入还没有�
 - 写清楚 data root 目录结构。
 - 确认测试数据与稳定记忆分离。
 - 确认自定义 stickers、inbox、logs、accounts 永远不会进入 git。
-- 提供空仓启动 smoke test。
+- 提供空仓记忆结构 smoke test。
 - 提供迁移旧数据的说明，但不把私人外部记忆仓作为默认依赖。
 
 ### 记忆系统补强
 
-- 完成 ongoing tracks 到 warm memory 的整理链路。
-- 完成跨窗口 conversation cache 到 dreaming 的整理链路。
-- 完成 Bridge-owned nightly dreaming 触发器，不能依赖私人外部 scheduler。
-- 完成 dreaming completion gate：触发只是 attempt，只有 mutation/writeback 成功才 complete；失败或前台活跃时延迟重试同一任务，不悄悄滚到下一天。
-- 完成 dreaming 整理回执记录，尤其是 `memory_metabolism`、warm write、cold promotion、cold patch 和失败原因。
-- 固定 dreaming 的语气边界：整理记忆时保留自然陪伴质地，不把观察、冷树或温卡变成前台表达禁令。
-- 完成外源 GPT/Rikkahub/Notion staging 导入到 warm/cold/episode 的隔离验收。
-- 完成 ChatGPT 网页/app daily capture 插件与导入器：先写入独立 `cache/app_daily_captures/`，再归一化进 `conversation_cache`，不能直接污染稳定记忆。
+- 确认空仓能创建完整本地记忆结构。
+- 确认 context packet 能从 warm / resident warm / ongoing / observation / episode / case / conversation cache / cold-version compatibility 组合出可递送上下文。
+- 确认 ongoing tracks、observation、episode、case index 的工具写入和召回入口不依赖私人 Home。
 - 给冷层拓扑定义更稳定的 provider 接口。
 - 明确 case index 的落盘结构和召回入口。
-- 明确 Notion stable memory 与本地 warm/tree/case 的导入导出契约。
-- 为 Driftstone/Notion staging 增加归一化层，避免第一轮导出格式直接写进 memory tree。
-- 明确官方 app / ChatGPT web daily capture 如何进入 conversation cache。
 - 验证主动 wakeup 的 context packet 足够支撑自然对话。
 - 避免通过关键词作弊提高个别记忆召回。
+
+### 暂缓到后续压测成熟后再接入
+
+- 外源 GPT / Rikkahub / Driftstone / Notion staging 导入。
+- ChatGPT 网页/app daily capture 插件与导入器。
+- Notion stable memory 与本地 warm/tree/case 的导入导出契约。
+- Driftstone/Notion staging 归一化层。
+- 官方 app / ChatGPT web daily capture 到 conversation cache 的同步链路。
+- Bridge-owned nightly dreaming 触发器、completion gate、retry metadata 和 mutation receipt。
+- dreaming 与 ongoing/warm/cold 的自动整理链路。
 
 ### 运行稳定性
 
@@ -229,7 +231,7 @@ GPT / Rikkahub / Driftstone / Notion staging 这类外源记忆导入还没有�
 - 写 “如何选择 Codex runtime / Claude Code runtime” 指南。
 - 写 “如何切换 Claude 模型” 指南。
 - 写 “记忆仓可以不用 / 可以外接 / 可以共享”的说明。
-- 写 “Notion 固有记忆同步 / 官方 app 每日抓取”说明。
+- 把 “Notion 固有记忆同步 / 官方 app 每日抓取” 标成后续扩展，不写入第一版部署要求。
 - 写 “从 Cyberboss 分叉而来，差异在哪里”的公开说明。
 
 ## 分享给朋友前的验收标准
@@ -250,7 +252,7 @@ GPT / Rikkahub / Driftstone / Notion staging 这类外源记忆导入还没有�
 
 - 继续在现有本地仓位上实测 WeChat 日常对话。
 - 当前 live 测试仓继续保持原路径和原 service，不在上面做公开版大重命名。
-- `0-github/Mossbridge` 作为公开版孵化仓，专门用于命名清洗、空仓测试、新微信绑定和外源导入验收。
+- `0-github/Mossbridge` 作为公开版孵化仓，专门用于命名清洗、空仓测试、新微信绑定和本体记忆结构验收。
 - 从 live 仓同步功能修复到公开孵化仓时必须显式记录，避免两份代码悄悄分叉。
 - 继续把真实发现的问题写入代码和文档。
 - 每完成一轮稳定优化，就提交到私有 GitHub 仓库备份。

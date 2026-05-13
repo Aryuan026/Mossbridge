@@ -19,8 +19,8 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 - **Proactive wakeups with memory context**
   Random check-ins and scheduled reminders are treated as model wakeups, not just alarm messages. Wakeups can carry recent context and relevant warm/ongoing memory so they do not feel detached from the relationship history.
 
-- **Multi-window data posture**
-  The code can point its memory data root at a shared store, so WeChat, terminal, ChatGPT web/app captures, or other chat windows can eventually write into one memory metabolism pipeline while still remaining separate channels. Mossbridge should ingest those sources as data, not bridge to private external executors.
+- **Local memory warehouse posture**
+  The first public version keeps the core loop local: WeChat, the selected runtime, and Mossbridge's own memory stores. Future ChatGPT web/app captures or other windows can be added later as data sources, but they are not part of the first deploy path.
 
 - **Ongoing-track layer**
   Near-term living threads, such as health tracking, writing tasks, family updates, purchases, and unresolved cases, can stay suspended near the front of memory without being prematurely frozen into permanent cold memory.
@@ -45,7 +45,7 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 Mossbridge carries more configuration than the original bridge because it is trying to keep three things separate: the transport account, the assistant's memory warehouse, and the user's working files.
 
 - `MOSSBRIDGE_STATE_DIR` is runtime state: QR login, account files, sessions, logs, queues, cooldowns, and generated WeChat prompt files. It defaults to `${HOME}/.mossbridge`.
-- `MOSSBRIDGE_DATA_ROOT` is memory data: warm cards, ongoing tracks, observation and episode journals, conversation cache, app captures, and mutation logs. Fresh deployments should start with one clean data root before importing anything else.
+- `MOSSBRIDGE_DATA_ROOT` is memory data: warm cards, ongoing tracks, observation and episode journals, conversation cache, case index, cold-version compatibility, and mutation logs. Fresh deployments should start with one clean data root.
 - `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
 - `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context.
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for how much context gets delivered into a turn. Keep these limits modest so memory helps the model land the current reply instead of flooding it.
@@ -114,6 +114,7 @@ For new deployments, prefer setting only `MOSSBRIDGE_DATA_ROOT` first. The more 
 ## Daily Commands
 
 ```bash
+npm run smoke:memory-empty
 npm run login
 npm run shared:start
 npm run shared:open
@@ -208,11 +209,14 @@ Before making this repository public, do a final naming and privacy pass:
 - [docs/quickstart.md](./docs/quickstart.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
-- [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
 - [docs/runtime-neutral-readiness.md](./docs/runtime-neutral-readiness.md)
-- [docs/notion-memory-interop.md](./docs/notion-memory-interop.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
 - [docs/public-release-readiness.md](./docs/public-release-readiness.md)
+
+Deferred extension notes:
+
+- [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
+- [docs/notion-memory-interop.md](./docs/notion-memory-interop.md)
 
 Some docs still preserve Cyberboss wording where they describe upstream lineage or older architecture notes. Public setup docs should otherwise use Mossbridge names.
 

@@ -1,5 +1,5 @@
 const SINGLE_USER_ID = "owner";
-const SINGLE_AGENT_ID = "aji";
+const SINGLE_AGENT_ID = "moss";
 const SINGLE_REALM_ID = "default";
 
 function resolveSingleIdentity(source = {}) {

@@ -27,7 +27,7 @@ class ObservationJournalStore {
       scoped_user_id: normalizeText(scopedUserId) || normalizeText(args.scoped_user_id || args.scopedUserId) || normalizeText(this.identity.userId) || "owner",
       user_id: normalizeText(args.user_id || args.userId) || normalizeText(this.identity.userId) || "owner",
       realm_id: normalizeText(args.realm_id || args.realmId) || normalizeText(this.identity.realmId) || "default",
-      agent_id: normalizeText(args.agent_id || args.agentId) || normalizeText(this.identity.agentId) || "aji",
+      agent_id: normalizeText(args.agent_id || args.agentId) || normalizeText(this.identity.agentId) || "moss",
       kind: normalizeKind(args.kind),
       status: normalizeStatus(args.status) || "tentative",
       confidence: normalizeConfidence(args.confidence, 0.35),

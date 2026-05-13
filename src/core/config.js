@@ -69,7 +69,7 @@ function readConfig() {
     weixinOperationsFile: path.resolve(__dirname, "..", "..", "templates", "weixin-operations.md"),
     identityUserId: readBridgeTextEnv("IDENTITY_USER_ID") || "owner",
     identityRealmId: readBridgeTextEnv("IDENTITY_REALM_ID") || "default",
-    identityAgentId: readBridgeTextEnv("IDENTITY_AGENT_ID") || "aji",
+    identityAgentId: readBridgeTextEnv("IDENTITY_AGENT_ID") || "moss",
     diaryDir: path.join(stateDir, "diary"),
     locationStoreFile: path.join(stateDir, "locations.json"),
     locationHost: readBridgeTextEnv("LOCATION_HOST") || "0.0.0.0",

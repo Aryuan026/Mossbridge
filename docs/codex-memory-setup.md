@@ -133,9 +133,9 @@ MossbridgeData/
 - `storage/case_index/`
   记录“这个 agent 帮用户做过什么事”的工作索引。第一阶段可以先用 JSON/Markdown。
 - `storage/notion_sync/`
-  和 Notion 固有记忆同步的中间层。对齐 Driftstone 的 `memory_entries`、`source_topics`、`persona_workspace`。
+  后续 Notion 固有记忆同步的中间层。第一版只保留为未来扩展仓位，不接入部署路径。
 - `cache/app_daily_captures/`
-  官方 app / ChatGPT web 抓取插件的每日对话入口。它是原始沉淀素材，不是稳定记忆。
+  后续官方 app / ChatGPT web 抓取插件的每日对话入口。第一版只保留验证契约，不同步、不写稳定记忆。
 - `storage/dreaming_mutation_log/`
   记录 dreaming 做过哪些整理和改写，方便回滚和审计。
 - `cache/`
@@ -257,13 +257,15 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 - 写入一条温记忆后，后续对话能召回。
 - 添加一个 ongoing track 后，主动唤醒能携带它。
 
-如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。后面再逐步补 dreaming、树边生成、case index 检索和公开版 rename。
+如果这些都通过，Mossbridge 就拥有了自己的轻量记忆仓起点。第一版先稳定对话和记忆递送；后面再逐步补 dreaming、树边生成、case index 检索和公开版 rename。
 
-独立发布口径：Bridge 不能假设某个私人外部 scheduler 一直开着。公开版要补 Bridge 自己的静默窗口 dreaming 入口；Codex / Claude Code 只负责执行同一份整理 prompt 和 JSON 契约，触发、日志、失败回执、写入目录都应归 Bridge 本体管理。
+后续接入 dreaming 时，Bridge 不能假设某个私人外部 scheduler 一直开着。公开版应该由 Bridge 自己拥有静默窗口入口；Codex / Claude Code 只负责执行同一份整理 prompt 和 JSON 契约，触发、日志、失败回执、写入目录都应归 Bridge 本体管理。
 
 调试 dreaming 时，Codex 还要确认两件小事：第一，整理结果里的 `memory_metabolism`、warm write、cold promotion、cold patch 等字段能被日志或回执看见；第二，整理 prompt 不应该把前台模型的自然表达磨成冷淡工程口吻，也不应该写成关键词式行为限制。
 
-## 官方 app 与 Notion 互通
+## 后续：官方 app 与 Notion 互通
+
+这一节是后续扩展方向，不是 Mossbridge 第一版公开部署要求。第一版先保持本地 WeChat bridge、runtime 对话和记忆递送稳定，不接入外源记忆导入、插件捕获同步或 Notion。
 
 如果用户希望 WeChat、Codex、官方 app 三边记忆互通，不要让官方 app 直接依赖 Mossbridge 本地文件。
 

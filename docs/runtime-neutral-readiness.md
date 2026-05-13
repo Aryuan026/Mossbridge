@@ -10,12 +10,12 @@ A new user should be able to clone Mossbridge, choose `codex` or `claudecode`, a
 
 Codex can also help a human deploy the project, but that is a helper role. It does not replace `codex` as a runtime target.
 
-The expected public direction is OpenAI-user continuity: ChatGPT daily
-conversation and future ChatGPT web/app captures should enter Mossbridge as data
-sediment, Codex should be able to help deploy and maintain the bridge, and
-WeChat should continue the same memory/personality posture. Mossbridge should
-not expose private external executor tools that cannot be configured and audited
-as Mossbridge-native adapters.
+The expected public direction is OpenAI-user continuity: Codex should be able to
+help deploy and maintain the bridge, and WeChat should continue the same
+memory/personality posture through Mossbridge's local memory delivery. ChatGPT
+web/app capture sync is a deferred extension path, not a first-version runtime
+requirement. Mossbridge should not expose private external executor tools that
+cannot be configured and audited as Mossbridge-native adapters.
 
 ## Runtime Matrix
 
@@ -28,9 +28,9 @@ as Mossbridge-native adapters.
 | WeChat login | QR login and allowed-user binding are runtime-independent | same account store | same account store |
 | Workspace bind | `/bind` maps WeChat to a workspace | Codex thread stored in session store | Claude Code session stored in session store |
 | Memory | warm memory, ongoing tracks, observation journal, episode journal, conversation cache use the same data root | same tools/context packet | same tools/context packet via MCP config |
-| App capture | ChatGPT web/app daily captures land in `cache/app_daily_captures/` before normalization | Codex can help inspect/import captures | Claude Code can read the same normalized memory once imported |
+| Deferred app capture | ChatGPT web/app daily captures are a future local data source, not a first-version requirement | Codex can later help inspect/import captures | Claude Code can later read normalized memory once imported |
 | Wakeups | reminders and random checkins use the same system-turn queue and failure throttling | Codex adapter handles thread/RPC failure | Claude Code adapter handles session/API-result failure |
-| Nightly dreaming | quiet-window dreaming trigger, mutation log, memory writeback, and visible failure notices are owned by shared bridge code | Codex executes the shared dreaming JSON contract | Claude Code executes the shared dreaming JSON contract |
+| Deferred nightly dreaming | quiet-window dreaming completion gate is a future shared bridge feature, not a first-version guarantee | Codex should execute the same future JSON contract | Claude Code should execute the same future JSON contract |
 | Attachments | WeChat image/file intake, batching, inbox, and notes are shared | same prepared inbound text | same prepared inbound text, with local image `Read` guidance |
 | Failure visibility | runtime errors become user-readable bridge notices and do not enter assistant memory text | auth/RPC/compact failures covered | 400/prompt-too-long/session-id failures covered |
 
@@ -95,9 +95,8 @@ Pass criteria:
 - Asking "你能看看记忆里有什么吗" does not fail on an empty warehouse.
 - A warm memory write/read path can be exercised through the model tools.
 - A reminder or checkin can be scheduled or triggered without crashing the bridge.
-- A quiet-window dreaming run can write a visible mutation log without any private external scheduler process.
-- A dreaming schedule item is not marked complete merely because it was triggered; completion requires a successful mutation/writeback receipt.
-- If dreaming is held because the user is still active, or fails because the runtime/JSON/writeback path breaks, the same item is delayed and retried with visible retry metadata.
+- Core memory delivery works from an empty local data root: context packet, warm memory, ongoing tracks, observation/episode journals, case index, and cold-version compatibility do not require a private external warehouse.
+- Nightly dreaming can remain disabled or manually supervised until the bridge-owned completion gate is implemented; do not document it as an active first-version guarantee.
 
 ## Service Smoke
 
@@ -138,8 +137,8 @@ Verify:
 - `Prompt is too long` or equivalent context overflow clears or recovers the bad turn instead of poisoning the thread.
 - WeChat context-token send failures defer or retry instead of evaporating.
 - repeated proactive failures are throttled so wakeups do not spam the user.
-- dreaming runtime failures are visible to the user/operator but do not become remembered conversation text.
-- dreaming failures do not silently roll to the next day; they keep retrying after a delay until a real mutation/writeback succeeds or an operator explicitly intervenes.
+- runtime failures are visible to the user/operator but do not become remembered conversation text.
+- if nightly dreaming is enabled in a later version, failures must not silently roll to the next day; they should retry with visible metadata until mutation/writeback succeeds or an operator intervenes.
 
 ## Public Release Blockers
 

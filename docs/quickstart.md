@@ -55,9 +55,17 @@ Leave migration-only memory overrides unset for a first run.
 Why these paths matter:
 
 - `MOSSBRIDGE_STATE_DIR` proves QR login, sessions, logs, queues, and cooldowns can be created without touching another bridge.
-- `MOSSBRIDGE_DATA_ROOT` proves warm memory, ongoing tracks, journals, app capture staging, and mutation logs can start from an empty warehouse.
+- `MOSSBRIDGE_DATA_ROOT` proves warm memory, ongoing tracks, journals, case index, cold-version compatibility, and mutation logs can start from an empty warehouse.
 - `MOSSBRIDGE_WORKSPACE_ROOT` gives the runtime a safe file area for `/bind`, attachments, and first project work.
 - `MOSSBRIDGE_IDENTITY_*` scopes the memory files. Keep them stable after first deployment so future imports and recalls land in the same identity tree.
+
+Before QR login, you can verify the empty memory warehouse skeleton:
+
+```bash
+npm run smoke:memory-empty
+```
+
+This creates the local storage/cache directories and checks that an empty context packet can be built without touching any external memory warehouse.
 
 ## 4. QR Login
 
@@ -162,5 +170,5 @@ Codex can help a new maintainer run these checks, inspect logs, and patch local 
 ## Current Public Blockers
 
 - QR login and first WeChat reply still need to be verified on a fresh account outside the maintainer's private data roots.
-- External memory imports from GPT, Rikkahub, Driftstone, and Notion staging still need isolated warm/cold/episode write tests.
+- External memory imports, ChatGPT capture sync, and Notion sync are deferred extension paths; they are not required for the first public bridge smoke.
 - Historical Cyberboss wording should remain limited to upstream acknowledgement or migration notes, not runtime entrypoints or tests.

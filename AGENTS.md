@@ -38,16 +38,16 @@ Do not describe Mossbridge as Claude Code-only.
 Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator layers:
 
 - Heartbeat system: random check-ins, due reminders, deferred replies, wakeup agenda, cooldowns, and safe self-checks are handled as runtime system turns. A heartbeat is a chance for the model to inspect context and decide what useful action exists; it is not just a timer that always sends text.
-- Memory delivery system: warm cards, resident anchors, ongoing tracks, observation journal, episode journal, conversation cache, cold-version compatibility, and future app-capture imports are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
+- Memory delivery system: warm cards, resident anchors, ongoing tracks, observation journal, episode journal, conversation cache, and cold-version compatibility are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
 
 ## Why The Main Settings Exist
 
 - `MOSSBRIDGE_STATE_DIR`: local runtime state. It contains account/session/log/queue files and generated WeChat prompts. Never reuse a live private state dir for public smoke tests.
-- `MOSSBRIDGE_DATA_ROOT`: local memory warehouse. It contains stable memory, active tracks, journals, cache, app captures, and mutation logs. New deployments should set this once and leave migration-only overrides unset.
+- `MOSSBRIDGE_DATA_ROOT`: local memory warehouse. It contains stable memory, active tracks, journals, cache, case index, cold-version compatibility, and mutation logs. New deployments should set this once and leave migration-only overrides unset.
 - `MOSSBRIDGE_WORKSPACE_ROOT`: runtime file workspace. This is where attachments, notes, and project files can land; do not bind it to the user's whole home directory.
-- `MOSSBRIDGE_IDENTITY_*`: memory scope. `user_id` identifies the human scope, `realm_id` separates deployments or relationships, and `agent_id` separates assistant/persona lineage. New public examples use `agent_id=moss`; older code and tests may still contain `aji` as historical compatibility.
+- `MOSSBRIDGE_IDENTITY_*`: memory scope. `user_id` identifies the human scope, `realm_id` separates deployments or relationships, and `agent_id` separates assistant/persona lineage. New public examples and defaults use `agent_id=moss`; older private warehouses may still contain historical agent ids, but fresh public code should not seed them.
 - `MOSSBRIDGE_CHECKIN_*`: heartbeat cadence and guardrails. Token/context backoff and hot-chat windows exist to prevent proactive wakeups from interrupting active chat or overloading a near-full runtime context.
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*`: historical memory-layer env names for recall limits. Keep limits small unless a test proves larger packets improve continuity without bloating replies.
 - `MOSSBRIDGE_MAINTENANCE_*`: public maintenance posture. The default is read-only report; self-repair must be an explicit private deployment choice.
@@ -90,7 +90,9 @@ npm run service:status:codex
 
 Only run `npm run login`, `npm run shared:start`, service install/restart/takeover commands, or QR flows when the user explicitly asks for a local deployment or smoke run.
 
-## Daily Capture Import Boundary
+## Deferred Capture Import Boundary
+
+Daily capture and Notion-style synchronization are deferred extension paths, not public first-version deployment requirements.
 
 External ChatGPT web/app capture tools should export raw daily capture JSON. Mossbridge should ingest those captures as data, not as an external automation bridge.
 

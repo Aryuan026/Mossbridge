@@ -11,6 +11,9 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_STICKER_ASSETS_DIR",
   "MOSSBRIDGE_STICKERS_INDEX_FILE",
   "MOSSBRIDGE_STICKER_TAGS_FILE",
+  "MOSSBRIDGE_IDENTITY_USER_ID",
+  "MOSSBRIDGE_IDENTITY_REALM_ID",
+  "MOSSBRIDGE_IDENTITY_AGENT_ID",
   "MOSSBRIDGE_MAINTENANCE_PROFILE",
   "MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR",
 ];
@@ -86,6 +89,16 @@ test("readConfig defaults public bridge maintenance to safe self-check", () => {
 
     assert.equal(config.maintenanceProfile, "safe_self_check");
     assert.equal(config.maintenanceAllowSelfRepair, false);
+  });
+});
+
+test("readConfig defaults public memory identity to moss agent", () => {
+  withBridgeEnv({ MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state" }, () => {
+    const config = readConfig();
+
+    assert.equal(config.identityUserId, "owner");
+    assert.equal(config.identityRealmId, "default");
+    assert.equal(config.identityAgentId, "moss");
   });
 });
 

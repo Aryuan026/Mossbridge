@@ -10,7 +10,7 @@ function buildColdScope({
   defaultRealmId = "",
   ownerId = "",
   realmId = "",
-  agentId = "mossbridge",
+  agentId = "moss",
   identity = null,
 } = {}) {
   const resolvedIdentity = resolveSingleIdentity(identity || {});

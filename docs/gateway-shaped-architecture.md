@@ -17,18 +17,19 @@ stopping duplicated state while keeping the stronger chat/runtime shell.
 
 ## Public Product Boundary
 
-Mossbridge's public line is the user-facing conversation sedimentation bridge:
+Mossbridge's first public line is the user-facing conversation sedimentation bridge:
 
 ```text
-ChatGPT daily conversation / app capture
+WeChat conversation
   -> Mossbridge data root
   -> Codex or Claude Code runtime
   -> WeChat continuity surface
 ```
 
-The expected dominant path is OpenAI-user continuity: a user talks to ChatGPT in
-ordinary daily contexts, Codex helps deploy and maintain the local bridge, and
-WeChat becomes a low-friction continuation channel with the same memory posture.
+The expected dominant path is still OpenAI-user continuity, but the first
+version does not wire ChatGPT web/app capture or Notion sync. Codex helps deploy
+and maintain the local bridge, and WeChat becomes a low-friction continuation
+channel with the same local memory posture.
 
 Mossbridge must not expose private external executor interfaces. If a simple
 capability is needed for public use, it should be implemented as
@@ -45,8 +46,8 @@ import formats with that world, not inherit its private executor surface.
   - local implementation: `DiaryService`
   - explicit future seams: `captureContextPacket`, `writebackTurn`
 - `appCapture`
-  - planned local implementation: browser/web capture importer
-  - target source: `chatgpt_web` daily capture into `cache/app_daily_captures/`
+  - deferred extension: browser/web capture importer
+  - future target source: `chatgpt_web` daily capture into `cache/app_daily_captures/`
 - `wakeup`
   - local implementation: `ReminderService`
   - local implementation: `SystemMessageService`
@@ -69,7 +70,7 @@ Reusable as Mossbridge-native behavior:
 - reminders, check-in queues, deferred replies, runtime cooldowns, and user-visible failure notices
 - WeChat attachment intake, sticker catalog, file send, and timeline screenshot/file workflows
 - read-only bridge status, safe self-check posture, diagnostics, and launchd/shared-start supervision
-- ChatGPT web/app daily capture contracts and future local import normalization
+- ChatGPT web/app daily capture contracts and future local import normalization, kept outside the first-version deploy path
 
 Not portable into public Mossbridge:
 

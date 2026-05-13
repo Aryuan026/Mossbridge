@@ -1,5 +1,7 @@
 # App Daily Capture JSON Contract
 
+Status: deferred extension note. ChatGPT web/app capture is not part of the first public Mossbridge deployment path; this file only preserves the future interchange contract.
+
 This contract is for tools that export ChatGPT web/app conversations into Mossbridge. It is an interchange format, not a memory-store format.
 
 The capture tool should only export raw conversation data. It must not call private external executors, assume third-party account access, or write directly to stable memory.

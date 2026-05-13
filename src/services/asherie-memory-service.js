@@ -1000,7 +1000,7 @@ class AsherieMemoryService {
       defaultRealmId: normalizeText(args.default_realm_id || args.defaultRealmId || args.channel_id || args.channelId) || "weixin",
       ownerId: normalizeText(args.owner_id || args.ownerId),
       realmId: normalizeText(args.realm_id || args.realmId),
-      agentId: normalizeText(args.agent_id || args.agentId) || "mossbridge",
+      agentId: normalizeText(args.agent_id || args.agentId) || "moss",
       identity: this.identity,
     });
     const warmScope = new WarmMemoryScope({
