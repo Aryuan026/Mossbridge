@@ -20,7 +20,7 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
   随机 check-in 和定时 reminder 都被当作“模型醒来后的系统轮次”，而不是普通闹钟。唤醒时可以携带近期上下文、温记忆和 ongoing 信息，避免主动消息像固定日历一样干瘪。
 
 - **本地记忆仓姿态**
-  第一版先保持 Mossbridge 本体完整：WeChat、选定 runtime 和 Mossbridge 自己的数据根。ChatGPT 网页/app 抓取或第三方 chatbox 未来可以作为数据入口接进来，但 raw capture 应先进入 hot/cache，再由本地 brain 整理，不直接变成稳定记忆。
+  第一版先保持 Mossbridge 本体完整：WeChat、选定 runtime 和 Mossbridge 自己的数据根。ChatGPT、Claude、Gemini、Perplexity、Rikkahub 或其他网页 AI 窗口的抓取可以先进入 cache/hot，但不会直接变成稳定记忆，要等本地 brain / dreaming 递进整理。
 
 - **近中期追踪层**
   减重、写稿、家族八卦、购买决策、系统 bug、咨询进展这类“这阵子还活着的事”，可以挂在 ongoing tracks，而不是太早冻结成永久冷记忆。
@@ -37,11 +37,14 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 - **Codex / Claude Code 双 runtime**
   支持 Codex 和 Claude Code。日常推荐 shared mode，让微信端和终端端挂在同一条线程上；`/model` 是共享命令，Codex 有目录时用目录校验，Claude Code 没有稳定目录时接受原始 model id。
 
+- **控制平面**
+  Mossbridge 会把心跳跳过、runtime 冷却、memory packet 递送、dreaming receipt 等自动动作写入本地 control ledger。这样压测时能追溯“桥为什么这样做”，又不会把桥状态混成主 AI 的自然回复。
+
 ## 为什么会多这些参数
 
 Mossbridge 的配置比原始 bridge 多，是因为它要把三件事分清楚：微信账号运行态、助手自己的记忆仓、用户给 runtime 读写的工作区。
 
-- `MOSSBRIDGE_STATE_DIR` 是运行态：二维码登录、账号文件、session、日志、队列、cooldown、生成的微信提示文件。默认是 `${HOME}/.mossbridge`。
+- `MOSSBRIDGE_STATE_DIR` 是运行态：二维码登录、账号文件、session、日志、队列、cooldown、control ledger、生成的微信提示文件。默认是 `${HOME}/.mossbridge`。
 - `MOSSBRIDGE_DATA_ROOT` 是记忆数据：hot context、温卡、小事记、ongoing、observation / episode journal、conversation cache、case index、app capture 和 mutation log。新部署先只接一个干净 data root，再考虑导入旧仓。
 - `MOSSBRIDGE_WORKSPACE_ROOT` 是 runtime 可读写的办公区，用来收附件、写文件、做项目协作，不应该直接暴露整个 Home。
 - `MOSSBRIDGE_CHECKIN_*` 控制心跳机会，不只是闹钟频率。hot window 和 token backoff 是为了避免主动唤醒打断正在聊天的用户，或把已经很重的 runtime 上下文继续压满。
@@ -83,6 +86,20 @@ MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
 MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
 MOSSBRIDGE_ALLOWED_USER_IDS=
 ```
+
+可选的 Codex runtime 控制项：
+
+```dotenv
+MOSSBRIDGE_CODEX_MODEL=
+MOSSBRIDGE_CODEX_MODEL_PROVIDER=
+MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
+MOSSBRIDGE_CODEX_COMMAND=
+MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
+```
+
+这些用于固定 Codex 模型、接本地 provider，或显式覆盖当前模型是否支持原生图片输入。使用 Ollama 等本地 provider 时，可以把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到 repo 外部，设为可执行，并让 `MOSSBRIDGE_CODEX_COMMAND` 指向复制后的脚本。
+
+`MOSSBRIDGE_CODEX_MODEL_CHOICES` 是给微信 `/model` 用的人类菜单。格式是 `alias=model` 或 `alias=model@provider`，例如 `/model local` 可以展开成 `gemma4:26b-32k` 和 provider `ollama`，不用在微信里背完整模型名。
 
 如果使用 Claude Code，只额外改：
 
@@ -127,7 +144,9 @@ npm run shared:status:claudecode
 - `/model`
   查看当前 runtime 的 selected / default / effective model 和模型目录状态。
 - `/model <id>`
-  为下一轮选择模型。Codex 会优先使用模型目录校验；Claude Code 没有稳定目录时接受原始 model id。
+  为下一轮选择模型。配置了 model choices 时，也可以用 `/model local` 这样的别名。
+- `/model --provider <id> <model>`
+  Codex 专用：为当前微信绑定同时记录模型和 provider，例如 `ollama`。
 - `/model default`
   清除当前 workspace 的模型覆盖，下一轮回到 runtime 默认模型。
 - `/model refresh`
@@ -164,6 +183,8 @@ Mossbridge 的目标是让代码和私人数据可分割。
   近中期活跃事件，不一定是永久事实，但需要持续挂在前台附近。
 - **conversation cache**
   多窗口近期尾巴和上文切片，可供 dreaming 或 context packet 使用。
+- **dreaming / metabolism log**
+  安静窗口整理的 attempt、mutation/no-op receipt、retry metadata 和 completion 记录。
 - **cold/version layer**
   深层归档、旧记忆包兼容、未来关系/时间拓扑。
 - **case index**

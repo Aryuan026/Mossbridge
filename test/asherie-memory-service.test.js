@@ -192,6 +192,31 @@ test("asherie memory service honors configured recent context cache limit by def
   assert.match(explicitPacket.runtime_prelude, /recent-thread/);
 });
 
+test("asherie memory runtime can omit repeated stable guidance from prelude", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-guidance-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 0,
+    },
+  });
+
+  const guided = await service.captureContextPacket({
+    query: "今天吃面要不要加蛋",
+    residentLimit: 0,
+    includeRuntimePreludeGuidance: true,
+  });
+  assert.match(guided.runtime_prelude, /记忆自维护/);
+
+  const lean = await service.captureContextPacket({
+    query: "今天吃面要不要加蛋",
+    residentLimit: 0,
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.doesNotMatch(lean.runtime_prelude, /记忆自维护/);
+});
+
 test("asherie observation journal search requires intent or lexical activation", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-observation-filter-"));
   const service = new AsherieMemoryService({
@@ -1298,6 +1323,13 @@ test("asherie memory service injects ongoing tracks and cold case updates into t
   assert.equal(unrelatedPacket.ongoing_track_packet.hit_count, 0);
   assert.doesNotMatch(unrelatedPacket.runtime_prelude, /ongoing: 减重/);
   assert.doesNotMatch(unrelatedPacket.runtime_prelude, /open-loop: 减重/);
+
+  const healthPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "我最近减脂和饮食怎么安排",
+  });
+  assert.equal(healthPacket.ongoing_track_packet.hit_count, 1);
+  assert.match(healthPacket.runtime_prelude, /ongoing: 减重/);
 });
 
 test("proactive recall uses the latest natural tail instead of the internal trigger text", async () => {

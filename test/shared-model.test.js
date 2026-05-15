@@ -106,3 +106,125 @@ test("shared model command treats default as clearing the workspace override", (
   assert.match(output, /session_model: \(default\)/);
   assert.match(output, /effective_model: \(runtime default\)/);
 });
+
+test("shared model command stores codex provider without touching env", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-model-provider-"));
+  const stateDir = path.join(tempRoot, "state");
+  const sessionFile = path.join(stateDir, "sessions.json");
+  const envFile = path.join(tempRoot, ".env");
+  const workspaceRoot = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(sessionFile, `${JSON.stringify({
+    bindings: {
+      "default:account:user": {
+        workspaceId: "default",
+        accountId: "account",
+        senderId: "user",
+        activeWorkspaceRoot: workspaceRoot,
+        threadIdByWorkspaceRootByRuntime: {
+          codex: {
+            [workspaceRoot]: "codex-thread-1",
+          },
+        },
+        codexParamsByWorkspaceRoot: {
+          [workspaceRoot]: {
+            model: "",
+            modelProvider: "",
+          },
+        },
+      },
+    },
+    approvalCommandAllowlistByWorkspaceRoot: {},
+    approvalPromptStateByThreadId: {},
+    availableModelCatalog: { models: [], updatedAt: "" },
+  }, null, 2)}\n`);
+
+  const output = runSharedModel({
+    argv: ["--env-file", envFile, "--provider", "ollama", "gemma4:26b-32k"],
+    env: {
+      MOSSBRIDGE_RUNTIME: "codex",
+      MOSSBRIDGE_STATE_DIR: stateDir,
+      MOSSBRIDGE_SESSIONS_FILE: sessionFile,
+      MOSSBRIDGE_WORKSPACE_ROOT: workspaceRoot,
+    },
+    cwd: tempRoot,
+  });
+
+  const updated = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+  assert.deepEqual(
+    updated.bindings["default:account:user"].codexParamsByWorkspaceRoot[workspaceRoot],
+    {
+      model: "gemma4:26b-32k",
+      modelProvider: "ollama",
+    }
+  );
+  assert.equal(fs.existsSync(envFile), false);
+  assert.match(output, /session_model: gemma4:26b-32k/);
+  assert.match(output, /session_provider: ollama/);
+});
+
+test("shared model command resolves configured aliases and lists available choices", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-model-alias-"));
+  const stateDir = path.join(tempRoot, "state");
+  const sessionFile = path.join(stateDir, "sessions.json");
+  const workspaceRoot = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(sessionFile, `${JSON.stringify({
+    bindings: {
+      "default:account:user": {
+        workspaceId: "default",
+        accountId: "account",
+        senderId: "user",
+        activeWorkspaceRoot: workspaceRoot,
+        threadIdByWorkspaceRootByRuntime: {
+          codex: {
+            [workspaceRoot]: "codex-thread-1",
+          },
+        },
+        codexParamsByWorkspaceRoot: {},
+      },
+    },
+    approvalCommandAllowlistByWorkspaceRoot: {},
+    approvalPromptStateByThreadId: {},
+    availableModelCatalog: { models: [], updatedAt: "" },
+  }, null, 2)}\n`);
+
+  const status = runSharedModel({
+    argv: [],
+    env: {
+      MOSSBRIDGE_RUNTIME: "codex",
+      MOSSBRIDGE_STATE_DIR: stateDir,
+      MOSSBRIDGE_SESSIONS_FILE: sessionFile,
+      MOSSBRIDGE_WORKSPACE_ROOT: workspaceRoot,
+      MOSSBRIDGE_CODEX_MODEL_CHOICES: "local=gemma4:26b-32k@ollama,cloud=gpt-5.4",
+    },
+    cwd: tempRoot,
+  });
+
+  assert.match(status, /available: local=gemma4:26b-32k@ollama, cloud=gpt-5.4/);
+
+  const output = runSharedModel({
+    argv: ["local"],
+    env: {
+      MOSSBRIDGE_RUNTIME: "codex",
+      MOSSBRIDGE_STATE_DIR: stateDir,
+      MOSSBRIDGE_SESSIONS_FILE: sessionFile,
+      MOSSBRIDGE_WORKSPACE_ROOT: workspaceRoot,
+      MOSSBRIDGE_CODEX_MODEL_CHOICES: "local=gemma4:26b-32k@ollama,cloud=gpt-5.4",
+    },
+    cwd: tempRoot,
+  });
+
+  const updated = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+  assert.deepEqual(
+    updated.bindings["default:account:user"].codexParamsByWorkspaceRoot[workspaceRoot],
+    {
+      model: "gemma4:26b-32k",
+      modelProvider: "ollama",
+    }
+  );
+  assert.match(output, /session_model: gemma4:26b-32k/);
+  assert.match(output, /session_provider: ollama/);
+});

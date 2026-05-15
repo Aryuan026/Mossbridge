@@ -19,6 +19,20 @@ function buildOpeningTurnText(config, userText) {
   ].join("\n").trim();
 }
 
+function buildSystemWakeTurnText(config, systemText) {
+  const normalizedText = String(systemText || "").trim();
+  const anchor = buildWakeSoulAnchor(config);
+  if (!anchor) {
+    return normalizedText;
+  }
+  return [
+    anchor,
+    "",
+    "WAKE INPUT",
+    normalizedText,
+  ].join("\n").trim();
+}
+
 function buildInstructionRefreshText(config) {
   const instructions = loadWechatInstructions(config);
   if (!instructions) {
@@ -36,7 +50,7 @@ function buildInstructionRefreshText(config) {
 }
 
 function loadWechatInstructions(config = {}) {
-  const persona = loadInstructionFile(config.weixinInstructionsFile, config);
+  const persona = loadWechatPersonaInstructions(config);
   const operations = loadInstructionFile(config.weixinOperationsFile, config);
   const sections = [];
   if (persona) {
@@ -46,6 +60,43 @@ function loadWechatInstructions(config = {}) {
     sections.push(operations);
   }
   return sections.join("\n\n").trim();
+}
+
+function loadWechatPersonaInstructions(config = {}) {
+  return loadInstructionFile(config.weixinInstructionsFile, config);
+}
+
+function buildWakeSoulAnchor(config = {}) {
+  const persona = loadWechatPersonaInstructions(config);
+  const excerpt = compactWakeSoulExcerpt(persona);
+  const lines = [
+    "MOSSBRIDGE WAKE ANCHOR",
+    "This wakes the same front-stage assistant/persona for this WeChat relationship, not a blank tool session.",
+    "Bridge/system status reports are emitted by Mossbridge itself; do not borrow the front-stage voice for bridge-status notices.",
+    "Use the soul/identity anchor and attached memory packet as continuity, not as a rigid style template.",
+  ];
+  if (excerpt) {
+    lines.push("", "Soul/identity anchor excerpt:", excerpt);
+  }
+  return lines.join("\n").trim();
+}
+
+function compactWakeSoulExcerpt(text, maxChars = 900) {
+  const normalized = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  const slice = normalized.slice(0, maxChars);
+  const boundary = Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("。"), slice.lastIndexOf("."));
+  const keep = boundary >= Math.floor(maxChars * 0.55) ? slice.slice(0, boundary + 1) : slice;
+  return `${keep.trimEnd()}\n[anchor excerpt trimmed]`;
 }
 
 const instructionCache = new Map();
@@ -73,7 +124,9 @@ function loadInstructionFile(filePath, config = {}) {
 
 module.exports = {
   buildOpeningTurnText,
+  buildSystemWakeTurnText,
   buildInstructionRefreshText,
   loadWechatInstructions,
+  loadWechatPersonaInstructions,
   loadInstructionFile,
 };

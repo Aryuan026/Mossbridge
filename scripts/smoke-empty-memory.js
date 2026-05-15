@@ -48,6 +48,12 @@ async function main() {
     memory_tree: layout.memoryTreeDir,
     truth_layer: layout.truthLayerDir,
     memory_versions: layout.memoryVersionBankDir,
+    app_daily_captures: layout.appDailyCaptureDir,
+    hot_cache: layout.hotCacheDir,
+    hot_upstream_context: layout.hotUpstreamContextDir,
+    hot_context_basin: layout.hotContextBasinDir,
+    hot_context_projections: layout.hotContextProjectionDir,
+    hot_context_snapshots: layout.hotContextSnapshotDir,
     raw_transcript_archive: layout.rawTranscriptArchiveDir,
     raw_transcript_active: layout.rawTranscriptActiveDir,
     dreaming_mutation_log: layout.dreamingMutationLogDir,
@@ -83,7 +89,7 @@ async function main() {
       missing_dir_count: missingDirs.length,
     },
     missing_dirs: missingDirs,
-    first_version_policy: "This smoke verifies the local Mossbridge brain only: hot cache, notebook, warm memory, ongoing, journals, case, and topology roots. External imports, app capture sync, and Notion sync are deferred extension paths.",
+    first_version_policy: "This smoke verifies the local Mossbridge brain only: hot cache, notebook, warm memory, ongoing, journals, case, and topology roots. Automatic external imports, browser capture sync, and Notion sync are deferred extension paths; local capture import is covered by smoke:memory-chain.",
   };
 
   printResult(result);

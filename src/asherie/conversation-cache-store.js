@@ -28,6 +28,42 @@ class ConversationCacheStore {
     };
   }
 
+  hasRecordId(recordId, scopedUserId = "") {
+    const targetRecordId = normalizeText(recordId);
+    if (!targetRecordId) {
+      return false;
+    }
+    const scopedFilter = normalizeText(scopedUserId);
+    for (const filePath of this.iterBucketFiles()) {
+      let lines = [];
+      try {
+        lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+      } catch {
+        continue;
+      }
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          continue;
+        }
+        let row = null;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (normalizeText(row.record_id) !== targetRecordId) {
+          continue;
+        }
+        if (scopedFilter && normalizeText(row.scoped_user_id) !== scopedFilter) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
   listRecent(scopedUserId = "", sourceClient = "", limit = 50, includePayload = false) {
     const maxLimit = Math.max(1, Math.min(Number(limit) || 50, 5000));
     const scopedFilter = normalizeText(scopedUserId);

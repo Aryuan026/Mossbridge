@@ -1,6 +1,6 @@
 # Notion Memory Interop
 
-Status: deferred extension note. This is not part of the first public Mossbridge deployment path. The first version keeps local WeChat bridge, runtime conversation, and Mossbridge-native memory delivery stable; Notion, Driftstone, Rikkahub, and ChatGPT capture synchronization should only be reopened after the private pressure-test line proves the workflow mature in an isolated data root.
+Status: deferred extension note. This is not part of the first public Mossbridge deployment path. The first version keeps local WeChat bridge, runtime conversation, and Mossbridge-native memory delivery stable; Notion, Driftstone, Rikkahub, and automatic web AI capture synchronization should only be reopened after the private pressure-test line proves the workflow mature in an isolated data root.
 
 Mossbridge 的长期目标不是只让 WeChat 端记得，也不是只让 Codex 端记得，而是让多个窗口把上文共同沉淀到同一套记忆系统里。
 
@@ -79,7 +79,7 @@ Driftstone bundle -> memory_tree
 
 Codex 不应该把 Notion 当唯一数据库。它应该把 Notion 当作稳定记忆的同步/发布层，把 MossbridgeData 当作运行时本地仓。
 
-### 官方 app / ChatGPT web
+### 官方 app / web AI 窗口
 
 如果后续做浏览器插件或网页抓取工具，它负责把每日对话导出成 raw/daily capture，并通过 Notion 工具读取稳定记忆。
 
@@ -244,7 +244,7 @@ topic_id exact match
 
 浏览器插件或网页端抓取工具可以先输出 daily capture，不必直接写温记忆。
 
-这个插件服务的是 OpenAI-user continuity：ChatGPT 网页/app 里的日常对话先作为原始沉淀进入 Mossbridge data root，随后再由 Codex/Claude Code 可读的本地导入器归一化。它不是私有自动化工具桥，也不应该调用任何不可公开的外部执行器。
+这个插件首先服务 OpenAI-user continuity，但不应该被写死成 ChatGPT-only：ChatGPT、Claude、Gemini、Perplexity、Rikkahub 或其他网页 AI 窗口的日常对话，都可以先作为原始沉淀进入 Mossbridge data root，随后再由 Codex/Claude Code 可读的本地导入器归一化。它不是私有自动化工具桥，也不应该调用任何不可公开的外部执行器。
 
 给外部导出工具对齐的单文件 JSON 契约见 [docs/app-daily-capture-json.md](./app-daily-capture-json.md)，对应 schema 在 [schemas/app-daily-capture-bundle-v0.1.schema.json](../schemas/app-daily-capture-bundle-v0.1.schema.json)。这个契约只负责 raw capture 验证，不直接写稳定记忆。
 

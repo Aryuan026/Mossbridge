@@ -26,6 +26,7 @@ class ClaudeCodeProcessClient {
     this.alive = false;
     this.sessionWaiters = new Set();
     this.stderrTail = "";
+    this.closingIntentionally = false;
   }
 
   onMessage(listener) {
@@ -91,31 +92,24 @@ class ClaudeCodeProcessClient {
     });
 
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString("utf8").trim();
-      if (text) {
-        console.error(`[claudecode-runtime] stderr: ${text}`);
-        if (!isPotentiallySensitive(text)) {
-          this.stderrTail = appendTextTail(this.stderrTail, text);
-          if (this.ipcServer) {
-            this.ipcServer.broadcast({ type: "stderr", text });
-          }
-        }
-      }
+      this.handleStderrText(chunk.toString("utf8"));
     });
 
     child.on("error", (err) => {
       this.rejectSessionWaiters(err);
       const sessionId = this.activeThreadId || this.sessionId;
       const turnId = this.pendingTurnId;
+      const intentional = this.closingIntentionally;
       this.alive = false;
       this.child = null;
       this.stdin = null;
       this.emit({
-        type: turnId ? "process.error" : "process.closed",
+        type: turnId && !intentional ? "process.error" : "process.closed",
         error: err.message,
         stderrTail: this.stderrTail,
         sessionId,
         turnId,
+        intentional,
       }, null);
     });
 
@@ -124,16 +118,18 @@ class ClaudeCodeProcessClient {
       const sessionId = this.activeThreadId || this.sessionId;
       const turnId = this.pendingTurnId;
       const stderrTail = this.stderrTail;
+      const intentional = this.closingIntentionally;
       this.alive = false;
       this.child = null;
       this.stdin = null;
       this.emit({
-        type: turnId ? "process.close" : "process.closed",
+        type: turnId && !intentional ? "process.close" : "process.closed",
         code,
         signal,
         stderrTail,
         sessionId,
         turnId,
+        intentional,
       }, null);
     });
   }
@@ -173,6 +169,22 @@ class ClaudeCodeProcessClient {
         break;
       case "control_cancel_request":
         break;
+    }
+  }
+
+  handleStderrText(value) {
+    const text = String(value || "").trim();
+    if (!text) return;
+    console.error(`[claudecode-runtime] stderr: ${text}`);
+    if (!isPotentiallySensitive(text)) {
+      this.stderrTail = appendTextTail(this.stderrTail, text);
+      if (this.ipcServer) {
+        this.ipcServer.broadcast({ type: "stderr", text });
+      }
+    }
+    const failure = classifyClaudeCodeRuntimeFailure(text);
+    if (failure && this.pendingTurnId) {
+      this.failActiveTurn(failure, null);
     }
   }
 
@@ -247,16 +259,7 @@ class ClaudeCodeProcessClient {
     const resultText = typeof raw.result === "string" ? raw.result.trim() : "";
     const failure = classifyClaudeCodeRuntimeFailure(resultText);
     if (failure) {
-      this.emit({
-        type: "turn.failed",
-        turnId: this.pendingTurnId,
-        sessionId: this.activeThreadId || this.sessionId,
-        text: failure.text,
-        reason: failure.reason,
-      }, raw);
-      this.pendingTurnId = "";
-      this.activeThreadId = "";
-      this.assistantItemSequence = 0;
+      this.failActiveTurn(failure, raw);
       return;
     }
     this.emit({
@@ -281,6 +284,38 @@ class ClaudeCodeProcessClient {
       sessionId: this.activeThreadId || this.sessionId,
       turnId: this.pendingTurnId,
     }, raw);
+  }
+
+  failActiveTurn(failure, raw) {
+    if (!failure) {
+      return false;
+    }
+    const turnId = this.pendingTurnId;
+    const sessionId = this.activeThreadId || this.sessionId || this.resumeSessionId;
+    this.pendingTurnId = "";
+    this.activeThreadId = "";
+    this.assistantItemSequence = 0;
+    this.emit({
+      type: "turn.failed",
+      turnId,
+      sessionId,
+      text: failure.text,
+      reason: failure.reason,
+    }, raw);
+    this.closeAfterFatalRuntimeFailure(failure.reason);
+    return true;
+  }
+
+  closeAfterFatalRuntimeFailure(reason = "") {
+    if (!this.child) {
+      return;
+    }
+    console.warn(
+      `[claudecode-runtime] closing process after fatal runtime failure reason=${reason || "runtime_failure"}`
+    );
+    this.close().catch((error) => {
+      console.error(`[claudecode-runtime] failed to close process after fatal runtime failure: ${error.message}`);
+    });
   }
 
   async sendUserMessage({ text, threadId }) {
@@ -348,6 +383,7 @@ class ClaudeCodeProcessClient {
 
   async close() {
     if (!this.child) return;
+    this.closingIntentionally = true;
     if (this.stdin && !this.stdin.destroyed) {
       this.stdin.end();
     }
@@ -494,10 +530,13 @@ function classifyClaudeCodeRuntimeFailure(value) {
   if (!text) {
     return null;
   }
+  if (/\bdiagnostics\.previous_message_id\b/i.test(text) || /\bprevious_message_id\b[\s\S]{0,160}\bprior\s+\/v1\/messages\s+response\b/i.test(text)) {
+    return { reason: "stale_resume_session", text };
+  }
   if (/^prompt is too long\b/i.test(text) || /\bprompt is too long\b/i.test(text)) {
     return { reason: "prompt_too_long", text };
   }
-  if (/^api error:\s*(?:4\d\d|5\d\d)\b/i.test(text)) {
+  if (/\bapi error:\s*(?:4\d\d|5\d\d)\b/i.test(text)) {
     return { reason: "api_error", text };
   }
   if (/\binvalid_request_error\b/i.test(text)) {

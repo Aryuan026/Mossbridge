@@ -115,26 +115,34 @@ class SessionStore {
   getRuntimeParamsForWorkspace(bindingKey, workspaceRoot) {
     const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
-      return { model: "" };
+      return { model: "", modelProvider: "" };
     }
     const current = this.getBinding(bindingKey) || {};
     const codexParamsByWorkspaceRoot = getCodexParamsMap(current);
     const entry = codexParamsByWorkspaceRoot[normalizedWorkspaceRoot];
     return {
       model: normalizeValue(entry?.model),
+      modelProvider: normalizeValue(entry?.modelProvider || entry?.model_provider),
     };
   }
 
-  setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, { model = "" }) {
+  setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, params = {}) {
     const normalizedWorkspaceRoot = normalizeValue(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
       return this.getBinding(bindingKey);
     }
     const current = this.getBinding(bindingKey) || {};
+    const previousEntry = getCodexParamsMap(current)[normalizedWorkspaceRoot] || {};
+    const hasModel = Object.prototype.hasOwnProperty.call(params, "model");
+    const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider");
     const codexParamsByWorkspaceRoot = {
       ...getCodexParamsMap(current),
       [normalizedWorkspaceRoot]: {
-        model: normalizeValue(model),
+        ...previousEntry,
+        model: hasModel ? normalizeValue(params.model) : normalizeValue(previousEntry.model),
+        modelProvider: hasModelProvider
+          ? normalizeValue(params.modelProvider)
+          : normalizeValue(previousEntry.modelProvider || previousEntry.model_provider),
       },
     };
     return this.updateBinding(bindingKey, {

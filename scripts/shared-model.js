@@ -43,9 +43,14 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
   const state = loadSessionState(sessionFile);
   const selected = selectBindingForWorkspace(state, workspaceRoot, runtime, normalizeText(env.MOSSBRIDGE_ACCOUNT_ID));
   const currentModel = getBindingModel(selected?.binding, workspaceRoot);
-  const envDefaultModel = runtime === "claudecode" ? normalizeText(env.MOSSBRIDGE_CLAUDE_MODEL) : "";
+  const currentProvider = getBindingModelProvider(selected?.binding, workspaceRoot);
+  const envDefaultModel = runtime === "claudecode"
+    ? normalizeText(env.MOSSBRIDGE_CLAUDE_MODEL)
+    : normalizeText(env.MOSSBRIDGE_CODEX_MODEL);
+  const envDefaultProvider = runtime === "codex" ? normalizeText(env.MOSSBRIDGE_CODEX_MODEL_PROVIDER) : "";
+  const modelChoices = resolveConfiguredModelChoices(runtime, env);
 
-  if (!options.model && !options.clear) {
+  if (!options.model && !options.clear && !options.providerSpecified) {
     return formatSummary({
       runtime,
       workspaceRoot,
@@ -54,7 +59,10 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
       bindingKey: selected?.bindingKey || "",
       threadId: getThreadId(selected?.binding, workspaceRoot, runtime),
       sessionModel: currentModel,
+      sessionProvider: currentProvider,
       envDefaultModel,
+      envDefaultProvider,
+      modelChoices,
       changed: false,
     });
   }
@@ -63,8 +71,24 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
     throw new Error(`No bound WeChat session found for workspace: ${workspaceRoot}`);
   }
 
-  const nextModel = options.clear ? "" : options.model;
-  setBindingModel(selected.binding, workspaceRoot, nextModel);
+  const resolvedChoice = !options.clear && options.model
+    ? resolveModelChoice(modelChoices, options.model)
+    : null;
+  if (!options.clear && options.model && modelChoices.length && !resolvedChoice) {
+    throw new Error(buildModelNotFoundText(options.model, modelChoices));
+  }
+  const nextModel = options.clear ? "" : resolvedChoice?.model || options.model;
+  const nextProvider = runtime === "codex"
+    ? options.providerSpecified
+      ? options.provider
+      : options.clear
+        ? ""
+        : resolvedChoice?.modelProvider || currentProvider
+    : currentProvider;
+  setBindingRuntimeParams(selected.binding, workspaceRoot, {
+    model: nextModel,
+    modelProvider: nextProvider,
+  });
   state.bindings[selected.bindingKey] = selected.binding;
   saveSessionState(sessionFile, state);
 
@@ -82,7 +106,10 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
     bindingKey: selected.bindingKey,
     threadId: getThreadId(selected.binding, workspaceRoot, runtime),
     sessionModel: nextModel,
+    sessionProvider: nextProvider,
     envDefaultModel: runtime === "claudecode" ? nextModel || envDefaultModel : envDefaultModel,
+    envDefaultProvider,
+    modelChoices,
     changed: true,
     envUpdated,
   });
@@ -91,6 +118,8 @@ function runSharedModel({ argv = [], env = process.env, cwd = process.cwd() } = 
 function parseArgs(argv = []) {
   const options = {
     model: "",
+    provider: "",
+    providerSpecified: false,
     clear: false,
     workspaceRoot: "",
     sessionFile: "",
@@ -108,6 +137,20 @@ function parseArgs(argv = []) {
     }
     if (["default", "clear", "reset"].includes(arg.toLowerCase())) {
       options.clear = true;
+      continue;
+    }
+    if (arg === "--provider" || arg === "-p") {
+      index += 1;
+      if (!argv[index]) {
+        throw new Error("--provider requires a provider value");
+      }
+      options.providerSpecified = true;
+      options.provider = normalizeModelProviderArg(argv[index]);
+      continue;
+    }
+    if (arg.startsWith("--provider=")) {
+      options.providerSpecified = true;
+      options.provider = normalizeModelProviderArg(arg.slice("--provider=".length));
       continue;
     }
     if (arg === "--workspace") {
@@ -169,6 +212,7 @@ function selectBindingForWorkspace(state, workspaceRoot, runtime, accountId = ""
     normalizeText(binding?.activeWorkspaceRoot) === workspaceRoot
     || Boolean(getThreadId(binding, workspaceRoot, runtime))
     || Boolean(getBindingModel(binding, workspaceRoot))
+    || Boolean(getBindingModelProvider(binding, workspaceRoot))
   );
   return exact || candidates[0] || null;
 }
@@ -183,14 +227,27 @@ function getBindingModel(binding, workspaceRoot) {
   return normalizeText(params[workspaceRoot]?.model);
 }
 
-function setBindingModel(binding, workspaceRoot, model) {
+function getBindingModelProvider(binding, workspaceRoot) {
+  if (!binding || !workspaceRoot) {
+    return "";
+  }
+  const params = binding.codexParamsByWorkspaceRoot && typeof binding.codexParamsByWorkspaceRoot === "object"
+    ? binding.codexParamsByWorkspaceRoot
+    : {};
+  return normalizeText(params[workspaceRoot]?.modelProvider || params[workspaceRoot]?.model_provider);
+}
+
+function setBindingRuntimeParams(binding, workspaceRoot, { model = "", modelProvider = "" } = {}) {
   binding.activeWorkspaceRoot = normalizeText(binding.activeWorkspaceRoot) || workspaceRoot;
+  const previous = binding.codexParamsByWorkspaceRoot && typeof binding.codexParamsByWorkspaceRoot === "object"
+    ? binding.codexParamsByWorkspaceRoot
+    : {};
   binding.codexParamsByWorkspaceRoot = {
-    ...(binding.codexParamsByWorkspaceRoot && typeof binding.codexParamsByWorkspaceRoot === "object"
-      ? binding.codexParamsByWorkspaceRoot
-      : {}),
+    ...previous,
     [workspaceRoot]: {
+      ...(previous[workspaceRoot] && typeof previous[workspaceRoot] === "object" ? previous[workspaceRoot] : {}),
       model: normalizeText(model),
+      modelProvider: normalizeText(modelProvider),
     },
   };
 }
@@ -204,6 +261,134 @@ function getThreadId(binding, workspaceRoot, runtime) {
     : {};
   const scoped = runtimeMap[normalizeText(runtime)] || {};
   return normalizeText(scoped[workspaceRoot]);
+}
+
+function resolveConfiguredModelChoices(runtime, env = process.env) {
+  const globalChoices = readEnvList(env.MOSSBRIDGE_MODEL_CHOICES);
+  const runtimeChoices = runtime === "codex"
+    ? readEnvList(env.MOSSBRIDGE_CODEX_MODEL_CHOICES)
+    : readEnvList(env.MOSSBRIDGE_CLAUDE_MODEL_CHOICES);
+  const choices = [];
+  const seen = new Set();
+  for (const choice of [...globalChoices, ...runtimeChoices]) {
+    const parsed = parseConfiguredModelChoice(choice, runtime);
+    if (!parsed.model) {
+      continue;
+    }
+    const key = `${parsed.model.toLowerCase()}@${parsed.modelProvider.toLowerCase()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    choices.push(parsed);
+  }
+  return choices;
+}
+
+function parseConfiguredModelChoice(value, runtime) {
+  const text = normalizeText(value);
+  const eqIndex = text.indexOf("=");
+  const alias = eqIndex > 0 ? normalizeText(text.slice(0, eqIndex)) : "";
+  const target = eqIndex > 0 ? normalizeText(text.slice(eqIndex + 1)) : text;
+  if (!target) {
+    return { model: "", modelProvider: "", aliases: [] };
+  }
+  const split = splitModelProviderTarget(target, runtime);
+  return {
+    model: split.model,
+    modelProvider: split.provider,
+    aliases: alias ? [alias] : [],
+  };
+}
+
+function splitModelProviderTarget(target, runtime) {
+  const text = normalizeText(target);
+  if (runtime !== "codex") {
+    return { model: text, provider: "" };
+  }
+  const atIndex = text.lastIndexOf("@");
+  if (atIndex <= 0 || atIndex === text.length - 1) {
+    return { model: text, provider: "" };
+  }
+  return {
+    model: normalizeText(text.slice(0, atIndex)),
+    provider: normalizeModelProviderArg(text.slice(atIndex + 1)),
+  };
+}
+
+function resolveModelChoice(choices, query) {
+  const normalizedQuery = normalizeText(query).toLowerCase();
+  if (!normalizedQuery || !Array.isArray(choices)) {
+    return null;
+  }
+  const exact = choices.find((choice) =>
+    normalizeText(choice.model).toLowerCase() === normalizedQuery
+    || normalizeText(choice.modelProvider ? `${choice.model}@${choice.modelProvider}` : choice.model).toLowerCase() === normalizedQuery
+    || normalizeText(choice.aliases?.[0]).toLowerCase() === normalizedQuery
+  );
+  if (exact) {
+    return exact;
+  }
+  const loose = choices.filter((choice) => {
+    const candidates = [choice.model, choice.aliases?.[0]].map((item) => normalizeText(item).toLowerCase()).filter(Boolean);
+    return candidates.some((candidate) => candidate.includes(normalizedQuery));
+  });
+  return loose.length === 1 ? loose[0] : null;
+}
+
+function buildModelNotFoundText(query, choices) {
+  const suggestions = suggestModelChoices(query, choices);
+  const lines = [
+    "Model not found.",
+    `query: ${normalizeText(query) || "(empty)"}`,
+  ];
+  if (suggestions.length) {
+    lines.push(`did_you_mean: ${suggestions.join(", ")}`);
+  }
+  if (choices.length) {
+    lines.push(`available: ${formatModelChoices(choices)}`);
+  }
+  return lines.join("\n");
+}
+
+function suggestModelChoices(query, choices) {
+  const normalizedQuery = normalizeText(query).toLowerCase();
+  if (!normalizedQuery) {
+    return [];
+  }
+  return (Array.isArray(choices) ? choices : [])
+    .map((choice) => {
+      const label = formatModelChoice(choice);
+      const candidates = [choice.model, choice.aliases?.[0]].map((item) => normalizeText(item).toLowerCase()).filter(Boolean);
+      const score = candidates.some((candidate) => candidate.includes(normalizedQuery))
+        ? 80
+        : candidates.some((candidate) => normalizedQuery.includes(candidate))
+          ? 50
+          : 0;
+      return { label, score };
+    })
+    .filter((item) => item.score > 0)
+    .slice(0, 3)
+    .map((item) => item.label);
+}
+
+function formatModelChoices(choices) {
+  return (Array.isArray(choices) ? choices : []).map(formatModelChoice).filter(Boolean).join(", ");
+}
+
+function formatModelChoice(choice) {
+  const alias = normalizeText(choice?.aliases?.[0]);
+  const model = normalizeText(choice?.model);
+  const provider = normalizeText(choice?.modelProvider);
+  const modelWithProvider = provider ? `${model}@${provider}` : model;
+  return alias ? `${alias}=${modelWithProvider}` : modelWithProvider;
+}
+
+function readEnvList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function upsertEnvValue(envFile, key, value) {
@@ -241,7 +426,10 @@ function formatSummary({
   bindingKey,
   threadId,
   sessionModel,
+  sessionProvider,
   envDefaultModel,
+  envDefaultProvider,
+  modelChoices = [],
   changed,
   envUpdated = false,
 }) {
@@ -251,8 +439,21 @@ function formatSummary({
   lines.push(`workspace: ${workspaceRoot}`);
   lines.push(`session_model: ${sessionModel || "(default)"}`);
   lines.push(`effective_model: ${sessionModel || envDefaultModel || "(runtime default)"}`);
+  if (runtime === "codex") {
+    lines.push(`session_provider: ${sessionProvider || "(default)"}`);
+    lines.push(`effective_provider: ${sessionProvider || envDefaultProvider || "(default)"}`);
+  }
   if (envDefaultModel) {
-    lines.push(`env_default: ${envDefaultModel}`);
+    lines.push(`env_model: ${envDefaultModel}`);
+  }
+  if (envDefaultProvider) {
+    lines.push(`env_provider: ${envDefaultProvider}`);
+  }
+  if (runtime === "codex" && (envDefaultModel || envDefaultProvider)) {
+    lines.push("note: Codex env model/provider is pinned and may override this session selection until the shared bridge is restarted with env updated or cleared.");
+  }
+  if (modelChoices.length) {
+    lines.push(`available: ${formatModelChoices(modelChoices)}`);
   }
   if (changed) {
     lines.push("applies_to: next_turn");
@@ -264,6 +465,14 @@ function formatSummary({
     lines.push(`env: ${envFile}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function normalizeModelProviderArg(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (["", "default", "cloud", "none", "clear"].includes(normalized)) {
+    return "";
+  }
+  return normalizeText(value);
 }
 
 function normalizeText(value) {

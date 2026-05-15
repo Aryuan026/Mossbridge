@@ -5,6 +5,7 @@ const {
   STICKER_STATUS_FIELD_DESCRIPTION,
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
+const { ControlLedgerStore } = require("../control/control-plane");
 
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
@@ -193,8 +194,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_bridge_status",
-    description: "Read a low-risk Mossbridge status snapshot. Especially useful during a random check-in or heartbeat maintenance window before deciding whether to message the user. This tool is read-only: it inspects queues, pending reminders, runtime cooldowns, and context pressure without changing them.",
-    shortHint: "Inspect bridge queues, reminders, runtime cooldown, and context pressure.",
+    description: "Read a low-risk Mossbridge status snapshot. Especially useful during a random check-in or heartbeat maintenance window before deciding whether to message the user. This tool is read-only: it inspects queues, pending reminders, runtime cooldowns, context pressure, and recent control-plane decisions without changing them.",
+    shortHint: "Inspect bridge queues, reminders, runtime cooldown, context pressure, and control events.",
     topics: ["system", "wakeup"],
     inputSchema: {
       type: "object",
@@ -202,6 +203,7 @@ const PROJECT_TOOLS = [
         includeRuntime: { type: "boolean", description: "Include runtime context/cooldown status. Defaults to true." },
         includeQueues: { type: "boolean", description: "Include system/deferred queue counts. Defaults to true." },
         includeReminders: { type: "boolean", description: "Include pending reminder count and next due preview. Defaults to true." },
+        includeControl: { type: "boolean", description: "Include recent control-plane event summary. Defaults to true." },
       },
       additionalProperties: false,
     },
@@ -377,6 +379,50 @@ const PROJECT_TOOLS = [
       });
       return {
         text: `Solitude journal entries found: ${Number(result?.count) || 0}`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_metabolism_receipt_write",
+    description: "Write the completion receipt for a quiet dreaming/memory-metabolism pass. Use this after any warm/ongoing/episode/case/observation/cold/no-op decision so the bridge can mark the dreaming attempt complete; without this receipt the attempt is retried.",
+    shortHint: "Record dreaming mutations or an explicit no-op for the completion gate.",
+    topics: ["memory", "maintenance", "dreaming"],
+    inputSchema: {
+      type: "object",
+      required: ["attempt_id", "status", "summary"],
+      properties: {
+        attempt_id: { type: "string", description: "Dreaming attempt id from the system trigger." },
+        status: { type: "string", description: "mutated, no_op, or failed." },
+        summary: { type: "string", description: "Short shareable summary of what changed or why no mutation was needed." },
+        mutation_count: { type: "integer", description: "Number of successful memory mutations; use 0 for no_op." },
+        source_record_ids: { type: "array", items: { type: "string" }, description: "Conversation-cache record ids examined by this pass." },
+        mutations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              target: { type: "string", description: "warm_memory, ongoing_track, episode_journal, case_index, observation_journal, cold_root, solitude_journal, or no_op." },
+              action: { type: "string", description: "upsert, append, patch, close, no_op, etc." },
+              id: { type: "string", description: "Best stable id for the written memory object, if available." },
+              summary: { type: "string", description: "One short factual summary of the mutation." },
+            },
+            additionalProperties: false,
+          },
+        },
+        error: { type: "string", description: "Optional error summary when status=failed." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      if (!services.memoryMetabolism || typeof services.memoryMetabolism.recordReceipt !== "function") {
+        throw new Error("memory metabolism service is not available");
+      }
+      const result = services.memoryMetabolism.recordReceipt(args);
+      return {
+        text: result.ok
+          ? `Memory metabolism receipt stored: ${result.receipt.receipt_id}`
+          : `Memory metabolism receipt recorded but incomplete: ${result.receipt.receipt_id}`,
         data: result,
       };
     },
@@ -821,7 +867,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_ongoing_upsert",
-    description: "Create or update a medium-horizon ongoing track for the current user. Use this for live threads such as current health efforts, in-progress writing, unresolved consultations, or maybe-buy decisions.",
+    description: "Create or update a medium-horizon ongoing track for the current user. Use this for live threads such as health/fitness/diet/sleep/stress efforts, in-progress writing, unresolved consultations, or maybe-buy decisions. For health-like conversation facts, prefer kind=health plus tags such as health, fitness, diet, sleep, stress, workload, recovery, medication, or allergy; keep evidence explicit and avoid medical diagnosis.",
     shortHint: "Create or update one ongoing track that should stay hanging for days or weeks.",
     topics: ["memory"],
     inputSchema: {
@@ -1853,6 +1899,7 @@ function buildBridgeStatusSnapshot(
   const includeQueues = args.includeQueues !== false;
   const includeReminders = args.includeReminders !== false;
   const includeRuntime = args.includeRuntime !== false;
+  const includeControl = args.includeControl !== false;
   const runtimeId = normalizeText(context.runtimeId) || "codex";
   const nowMs = Date.now();
   const snapshot = {
@@ -1903,6 +1950,10 @@ function buildBridgeStatusSnapshot(
         ? usagePayload.autoCompactEvents.length
         : 0,
     };
+  }
+
+  if (includeControl) {
+    snapshot.control = readControlStatus(config.controlLedgerFile);
   }
 
   snapshot.maintenance = buildBridgeMaintenancePolicy(config, {
@@ -1995,6 +2046,14 @@ function buildBridgeStatusRecommendations(snapshot = {}) {
       message: "Context pressure is high; prefer quiet maintenance, compaction, or a short diagnostic over a long proactive turn.",
     });
   }
+  if ((snapshot.control?.recent_warning_count || 0) > 0) {
+    recommendations.push({
+      level: "yellow",
+      code: "control_warnings_recent",
+      action: "inspect_control_ledger",
+      message: "Recent control-plane warnings exist; inspect the bridge ledger before adding proactive pressure.",
+    });
+  }
   if (!recommendations.length) {
     recommendations.push({
       level: "green",
@@ -2036,12 +2095,13 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
   const queue = snapshot.queues || {};
   const reminders = snapshot.reminders || {};
   const runtime = snapshot.runtime || {};
+  const control = snapshot.control || {};
   const context = runtime.context || {};
   const usageText = context.context_window > 0
     ? `${context.current_tokens}/${context.context_window} (${Math.round((context.usage_ratio || 0) * 100)}%)`
     : "unknown";
   const lines = [
-    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
+    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} controlEvents=${control.sample_size ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
   ];
   const recommendation = Array.isArray(snapshot.recommendations) ? snapshot.recommendations[0] : null;
   if (recommendation?.message) {
@@ -2054,7 +2114,54 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
     const cooldown = runtime.active_cooldowns?.[0] || {};
     lines.push(`Active cooldown: ${cooldown.reason || "unknown"} until ${cooldown.reset_at || "unknown"}`);
   }
+  if ((control.recent_warning_count || 0) > 0) {
+    const recent = Array.isArray(control.recent) ? control.recent.find((event) => event.severity === "error" || event.severity === "warn") : null;
+    if (recent) {
+      lines.push(`Recent control warning: ${recent.type || "control.event"} ${recent.reason || ""}`.trim());
+    }
+  }
   return lines.join("\n");
+}
+
+function readControlStatus(filePath) {
+  const normalizedPath = normalizeText(filePath);
+  if (!normalizedPath) {
+    return {
+      available: false,
+      sample_size: 0,
+      recent_warning_count: 0,
+      recent: [],
+    };
+  }
+  try {
+    const store = new ControlLedgerStore({ filePath: normalizedPath });
+    const summary = store.summarize({ limit: 50 });
+    const recent = Array.isArray(summary.recent) ? summary.recent.slice(-5).map((event) => ({
+      type: normalizeText(event.type),
+      scope: normalizeText(event.scope),
+      layer: normalizeText(event.layer),
+      severity: normalizeText(event.severity),
+      reason: normalizeText(event.reason),
+      outcome: normalizeText(event.outcome),
+      observed_at: normalizeText(event.observedAt),
+    })) : [];
+    return {
+      available: true,
+      sample_size: Number(summary.sampleSize) || 0,
+      by_scope: summary.byScope || {},
+      by_severity: summary.bySeverity || {},
+      recent_warning_count: recent.filter((event) => event.severity === "warn" || event.severity === "error").length,
+      recent,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      sample_size: 0,
+      recent_warning_count: 0,
+      recent: [],
+      error: normalizeText(error?.message) || "control ledger unreadable",
+    };
+  }
 }
 
 function readJsonFile(filePath) {

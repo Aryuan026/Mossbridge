@@ -8,6 +8,26 @@ It keeps the practical mouth of Cyberboss: one WeChat account, one local runtime
 
 This repository is not the upstream Cyberboss project and is not an official Cyberboss release.
 
+## Architecture At A Glance
+
+Mossbridge is intentionally split into five parts:
+
+```text
+WeChat mouth
+  -> bridge core and tools
+  -> Codex / Claude Code runtime engine
+  -> built-in local brain
+  -> control plane ledger
+```
+
+- **Mouth**: WeChat login, inbound messages, reply delivery, files, stickers, and bridge notices.
+- **Hands**: project tools for reminders, notebook, files, timeline, stickers, memory, and safe status checks.
+- **Engines**: Codex and Claude Code adapters. They own protocol/session/model details only.
+- **Brain**: local memory under `MOSSBRIDGE_DATA_ROOT`: hot context, warm cards, notebook, ongoing tracks, observation, episode, case, and compatibility cold layers.
+- **Control plane**: local operational ledger under `MOSSBRIDGE_STATE_DIR/control-events.jsonl`, recording why Mossbridge queued, skipped, cooled down, delivered, retried, or completed an automatic action.
+
+The control plane is the guardrail against "just adding another fallback". It keeps runtime, heartbeat, memory delivery, and dreaming behavior explainable without turning bridge status into the main assistant's voice.
+
 ## What Is Different From Cyberboss?
 
 - **Memory-first design**
@@ -20,7 +40,7 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
   Random check-ins and scheduled reminders are treated as model wakeups, not just alarm messages. Wakeups can carry recent context and relevant warm/ongoing memory so they do not feel detached from the relationship history.
 
 - **Local memory warehouse posture**
-  The first public version keeps the core loop local: WeChat, the selected runtime, and Mossbridge's own memory stores. Future ChatGPT web/app captures or other windows can be added later as data sources, but they are not part of the first deploy path and should stage through hot/recent context before becoming stable memory.
+  The first public version keeps the core loop local: WeChat, the selected runtime, and Mossbridge's own memory stores. Web AI captures from ChatGPT, Claude, Gemini, Perplexity, Rikkahub, or other browser windows can be staged into cache and hot context, but they do not become stable memory until local brain/dreaming passes promote them.
 
 - **Ongoing-track layer**
   Near-term living threads, such as health tracking, writing tasks, family updates, purchases, and unresolved cases, can stay suspended near the front of memory without being prematurely frozen into permanent cold memory.
@@ -40,11 +60,15 @@ This repository is not the upstream Cyberboss project and is not an official Cyb
 - **Safe self-check by default**
   Heartbeat maintenance can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
 
+- **Cybernetic control plane**
+  Mossbridge records operational decisions in a local control ledger: why a heartbeat was queued or skipped, why a runtime cooled down, what memory packet was delivered, and whether a dreaming/metabolism pass completed. This keeps the bridge explainable without turning bridge status into the main assistant's voice.
+
 ## Why The Extra Settings Exist
 
 Mossbridge carries more configuration than the original bridge because it is trying to keep three things separate: the transport account, the assistant's memory warehouse, and the user's working files.
 
 - `MOSSBRIDGE_STATE_DIR` is runtime state: QR login, account files, sessions, logs, queues, cooldowns, and generated WeChat prompt files. It defaults to `${HOME}/.mossbridge`.
+- `MOSSBRIDGE_STATE_DIR/control-events.jsonl` is the control ledger: bridge/runtime/memory delivery decisions for debugging and pressure-test review. It is operational state, not durable user memory.
 - `MOSSBRIDGE_DATA_ROOT` is memory data: hot context, warm cards, notebook notes, ongoing tracks, observation and episode journals, conversation cache, case index, cold-version compatibility, and mutation logs. Fresh deployments should start with one clean data root.
 - `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
 - `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context.
@@ -82,7 +106,13 @@ npm install
 
 For the full first-run path, including QR login and `/bind`, see [docs/quickstart.md](./docs/quickstart.md).
 
-If you ask Codex to help deploy a fresh clone, have it read [AGENTS.md](./AGENTS.md) first, then [docs/codex-memory-setup.md](./docs/codex-memory-setup.md). Those two files explain the public service boundary, isolated state/data/workspace paths, and the empty memory smoke.
+If you ask Codex to help deploy a fresh clone, have it read these in order:
+
+1. [AGENTS.md](./AGENTS.md)
+2. [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
+3. [docs/quickstart.md](./docs/quickstart.md)
+
+Those files explain the public service boundary, isolated state/data/workspace paths, the built-in brain, the control ledger, and the empty-memory smoke. Codex should not reuse a private state directory, connect an old personal memory warehouse, or restart/take over another bridge service while doing a public smoke.
 
 ## Minimal Configuration
 
@@ -95,6 +125,20 @@ MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
 MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
 MOSSBRIDGE_ALLOWED_USER_IDS=
 ```
+
+Optional Codex runtime controls:
+
+```dotenv
+MOSSBRIDGE_CODEX_MODEL=
+MOSSBRIDGE_CODEX_MODEL_PROVIDER=
+MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
+MOSSBRIDGE_CODEX_COMMAND=
+MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
+```
+
+Use these when you need to pin a Codex model, point Codex at a local provider, or override whether the current Codex model supports native image input. For local providers such as Ollama, copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) outside the repo, make it executable, and set `MOSSBRIDGE_CODEX_COMMAND` to that copied script.
+
+`MOSSBRIDGE_CODEX_MODEL_CHOICES` is the human-friendly `/model` menu. Entries use `alias=model` or `alias=model@provider`, so `/model local` can expand to `gemma4:26b-32k` plus provider `ollama` without the user memorizing exact local model names.
 
 For Claude Code, set:
 
@@ -131,6 +175,13 @@ npm run shared:open:claudecode
 npm run shared:status:claudecode
 ```
 
+Web AI capture bundles can be checked and imported into cache/hot memory without promoting them to stable memory:
+
+```bash
+npm run capture:validate -- /path/to/capture-bundle.json
+npm run capture:import -- /path/to/capture-bundle.json
+```
+
 Useful WeChat commands:
 
 - `/bind /absolute/path`
@@ -140,7 +191,9 @@ Useful WeChat commands:
 - `/model`
   Show selected, default, effective, and catalog-backed models for the current runtime.
 - `/model <id>`
-  Select a model for the next turn. Codex uses its model catalog when available; Claude Code accepts raw model ids.
+  Select a model for the next turn. If model choices are configured, aliases such as `/model local` are accepted.
+- `/model --provider <id> <model>`
+  For Codex, select a model and store a provider such as `ollama` for this WeChat binding.
 - `/model default`
   Clear the workspace override and use the runtime default on the next turn.
 - `/model refresh`
@@ -162,6 +215,7 @@ Mossbridge is designed so code and personal data can be separated. The bridge sh
 - Test data should be removable without touching stable personal memory.
 - A future public release should not include private memory cards, account tokens, local logs, QR data, or personal workspace bindings.
 - Channel/runtime/tool changes should not write brain files directly. Memory writes should go through the memory service boundary and preserve the documented data layout.
+- Control-plane events stay in state. They can mention counts, reasons, and ids, but should not become warm/cold memory unless a later explicit memory tool turns a human-meaningful lesson into a normal memory object.
 
 ## Memory Layers
 
@@ -170,13 +224,15 @@ The current memory model is:
 - **warm memory**
   Daily relationship continuity, preferences, symbolic objects, stable impressions, and reusable context cards.
 - **hot memory**
-  Short-lived cross-window context basin, projections, and snapshots for future ChatGPT capture merges and active conversation handoff.
+  Short-lived cross-window context basin, upstream packages, projections, and snapshots for web AI capture merges and active conversation handoff.
 - **notebook**
   Human-readable small notes and diary-like "小事记". These are source material for memory work, not automatically stable facts.
 - **ongoing tracks**
   Active medium-term threads that need continuity but are not necessarily permanent facts.
 - **conversation cache**
   Recent cross-window traces and tail snippets that can feed dreaming or context packets.
+- **dreaming/metabolism log**
+  Quiet-window attempts, mutation/no-op receipts, retry metadata, and completion records for bridge-owned memory整理.
 - **cold/version layer**
   Deeper archive, compatibility with older memory packages, and future relationship/time topology.
 - **case index**
@@ -193,6 +249,7 @@ The model-facing capabilities are exposed as local project tools. Current tool f
 - file delivery
 - sticker catalog operations
 - memory context packets
+- memory-metabolism/dreaming receipts
 - warm-memory write/search/read/update/delete
 - ongoing-track upsert/read/list/close
 - cold-memory read/search/patch/version operations
@@ -215,6 +272,7 @@ Before making this repository public, do a final naming and privacy pass:
 - [docs/commands.md](./docs/commands.md)
 - [docs/quickstart.md](./docs/quickstart.md)
 - [docs/architecture-for-humans.md](./docs/architecture-for-humans.md)
+- [docs/control-plane.md](./docs/control-plane.md)
 - [docs/brain-layer-boundary.md](./docs/brain-layer-boundary.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)

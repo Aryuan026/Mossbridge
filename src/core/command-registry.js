@@ -62,7 +62,14 @@ const COMMAND_GROUPS = [
       {
         action: "system.checkin_poller",
         summary: "Emit proactive check-in triggers at random intervals",
-        terminal: [],
+        terminal: ["start --checkin"],
+        weixin: [],
+        status: "active",
+      },
+      {
+        action: "system.dreaming_poller",
+        summary: "Enable quiet-window memory metabolism/dreaming triggers",
+        terminal: ["start --dreaming"],
         weixin: [],
         status: "active",
       },
@@ -270,6 +277,7 @@ function buildTerminalHelpText() {
     "Current terminal commands:",
     "  mossbridge start        start the WeChat bridge and runtime loop",
     "  npm run start:claudecode  start the WeChat bridge with Claude Code runtime",
+    "  npm run start:dreaming  start with quiet-window memory metabolism enabled",
     "  mossbridge login        start WeChat QR login",
     "  mossbridge accounts     list locally saved accounts",
     "  mossbridge doctor       print current config and thread state",
@@ -374,6 +382,8 @@ function toTerminalCommandExample(commandText) {
       return `npm run ${normalized.replace(" ", ":")}`;
     case "start --checkin":
       return "mossbridge start --checkin";
+    case "start --dreaming":
+      return "mossbridge start --dreaming";
     default:
       return normalized;
   }

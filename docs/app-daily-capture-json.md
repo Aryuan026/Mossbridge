@@ -1,8 +1,8 @@
-# App Daily Capture JSON Contract
+# Web AI Daily Capture JSON Contract
 
-Status: deferred extension note. ChatGPT web/app capture is not part of the first public Mossbridge deployment path; this file only preserves the future interchange contract.
+Status: source-neutral capture contract plus local importer.
 
-This contract is for tools that export ChatGPT web/app conversations into Mossbridge. It is an interchange format, not a memory-store format.
+This contract is for tools that export web AI conversations into Mossbridge. ChatGPT web is one source, but the same shape can carry Claude web, Gemini, Perplexity, Rikkahub, or another browser AI frontend. It is an interchange format first; the importer then stages it into Mossbridge cache and hot context.
 
 The capture tool should only export raw conversation data. It must not call private external executors, assume third-party account access, or write directly to stable memory.
 
@@ -23,7 +23,7 @@ Use one JSON file per export batch:
   },
   "conversations": [
     {
-      "conversation_id": "chatgpt-thread-id",
+      "conversation_id": "source-thread-id",
       "conversation_title": "A short title",
       "source_url": "https://chatgpt.com/c/example",
       "messages": [
@@ -44,7 +44,7 @@ Use one JSON file per export batch:
 Required top-level fields:
 
 - `schema`: `mossbridge_app_daily_capture_bundle_v0.1`
-- `source_client`: for example `chatgpt_web`, `chatgpt_app`, or another local capture source
+- `source_client`: for example `chatgpt_web`, `claude_web`, `gemini_web`, `perplexity_web`, `rikkahub`, or `web_ai_window`
 - `captured_date`: local `YYYY-MM-DD`
 - `captured_at`: ISO timestamp
 - `conversations`: array
@@ -96,6 +96,25 @@ npm run capture:validate -- "$MOSSBRIDGE_DATA_ROOT/cache/app_daily_captures/chat
 ```
 
 The validator is read-only. It does not write conversation cache, warm memory, cold memory, episode journals, or case indexes.
+
+## Import
+
+Import writes only to the configured Mossbridge data root. It requires explicit `MOSSBRIDGE_STATE_DIR` and `MOSSBRIDGE_DATA_ROOT` so a test import cannot silently land in a private live memory warehouse.
+
+```bash
+MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-capture/state \
+MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-capture/data \
+npm run capture:import -- /path/to/capture-bundle.json
+```
+
+The importer:
+
+- stages the bundle under `cache/app_daily_captures/<source_client>/<captured_date>/`
+- writes stable, deduplicated turn pairs into `cache/conversation_cache/`
+- writes recent source packets into `cache/hot/upstream_context_merge/`
+- writes recent turn slices and a projection into `cache/hot/context_basin/` and `cache/hot/projections/`
+
+It does not promote anything directly into warm cards, cold roots, notebooks, episodes, or cases. Those stable layers are still owned by normal memory tools and dreaming/metabolism passes.
 
 ## Sedimentation Path
 

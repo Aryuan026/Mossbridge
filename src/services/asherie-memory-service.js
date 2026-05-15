@@ -3,6 +3,13 @@ const path = require("path");
 const { buildColdScope } = require("../asherie/memory-scope");
 const { compactMessages } = require("../asherie/context-compactor");
 const { ConversationCacheStore } = require("../asherie/conversation-cache-store");
+const {
+  HotContextStore,
+  HotScope,
+  UpstreamContextMergeStore,
+  buildHotContextPacket,
+  buildHotContextPreludeLines,
+} = require("../asherie/hot-context-store");
 const { WakeupStore } = require("../asherie/wakeup-store");
 const { CalendarStore } = require("../asherie/calendar-store");
 const { OngoingTrackStore, isOngoingOverviewQuery } = require("../asherie/ongoing-track-store");
@@ -86,6 +93,12 @@ class AsherieMemoryService {
       identity: this.identity,
     });
     this.warmMemoryStore = new WarmMemoryStore(this.layout.warmMemoryDir);
+    this.hotUpstreamStore = new UpstreamContextMergeStore(this.layout.hotUpstreamContextDir);
+    this.hotContextStore = new HotContextStore({
+      basinRoot: this.layout.hotContextBasinDir,
+      projectionRoot: this.layout.hotContextProjectionDir,
+      snapshotRoot: this.layout.hotContextSnapshotDir,
+    });
   }
 
   describe() {
@@ -155,9 +168,24 @@ class AsherieMemoryService {
       plan: temporalPlan,
       records: temporalRows.records,
     });
+    const recallQuery = normalizeText(recallFocus.recall_query || focusQuery || query);
+    const hotContextPacket = this.buildHotContextRuntimePacket(scopes, {
+      query: recallQuery,
+      upstreamLimit: resolvePositiveInt(
+        args.prelude_hot_upstream_limit || args.preludeHotUpstreamLimit,
+        Number(this.config.asheriePreludeHotUpstreamLimit) || 4,
+      ),
+      turnLimit: resolvePositiveInt(
+        args.prelude_hot_turn_limit || args.preludeHotTurnLimit,
+        Number(this.config.asheriePreludeHotTurnLimit) || 6,
+      ),
+      snapshotLimit: resolvePositiveInt(
+        args.prelude_hot_snapshot_limit || args.preludeHotSnapshotLimit,
+        Number(this.config.asheriePreludeHotSnapshotLimit) || 2,
+      ),
+    });
     const calendarPacket = this.calendarStore.summarizeForWakeup(scopes.scopedUserId, new Date());
     const wakeupPacket = buildWakeupRuntimePacket(this.wakeupStore, scopes.scopedUserId);
-    const recallQuery = normalizeText(recallFocus.recall_query || focusQuery || query);
     const ongoingQuery = normalizeText(recallMode) === "proactive"
       ? recallQuery
       : normalizeText(query);
@@ -332,6 +360,7 @@ class AsherieMemoryService {
       coldRootPacket,
       coldVinePacket,
       temporalRecallPacket,
+      hotContextPacket,
       ongoingTrackPacket,
       episodeJournalPacket,
       observationJournalPacket,
@@ -341,6 +370,7 @@ class AsherieMemoryService {
       recentRecords: recent.records,
       calendarPacket,
       wakeupPacket,
+      includeGuidance: args.include_runtime_prelude_guidance ?? args.includeRuntimePreludeGuidance ?? true,
       preludeWarmLimit: resolvePositiveInt(
         args.prelude_warm_limit || args.preludeWarmLimit,
         Number(this.config.asheriePreludeWarmLimit) || 5,
@@ -398,6 +428,7 @@ class AsherieMemoryService {
         ...temporalRecallPacket,
         stats: temporalRows.stats,
       },
+      hot_context_packet: hotContextPacket,
       cold_memory: {
         active_version: coldMemoryActiveVersion || null,
         counts: countPayload(coldMemoryPayload),
@@ -1019,6 +1050,16 @@ class AsherieMemoryService {
     };
   }
 
+  resolveHotScope(args = {}) {
+    const scopes = args?.coldScope && args?.warmScope ? args : this.resolveScopes(args);
+    return new HotScope({
+      ownerId: scopes.coldScope?.owner_id,
+      realmId: scopes.coldScope?.realm_id,
+      agentId: scopes.coldScope?.agent_id,
+      basinId: args.basin_id || args.basinId || "default",
+    });
+  }
+
   applyWarmMemoryWritePayloads(scope, payloads) {
     const source = Array.isArray(payloads) ? payloads : [];
     const results = source
@@ -1174,6 +1215,23 @@ class AsherieMemoryService {
       minRepeat: 2,
     });
   }
+
+  buildHotContextRuntimePacket(scopes, {
+    query = "",
+    upstreamLimit = 4,
+    turnLimit = 6,
+    snapshotLimit = 2,
+  } = {}) {
+    return buildHotContextPacket({
+      scope: this.resolveHotScope(scopes),
+      upstreamStore: this.hotUpstreamStore,
+      hotContextStore: this.hotContextStore,
+      query,
+      upstreamLimit,
+      turnLimit,
+      snapshotLimit,
+    });
+  }
 }
 
 function shouldCarryOngoingTrackForQuery(item = {}, { overviewQuery = false } = {}) {
@@ -1233,6 +1291,7 @@ function buildRuntimePrelude({
   coldRootPacket,
   coldVinePacket,
   temporalRecallPacket,
+  hotContextPacket,
   recentRecords,
   calendarPacket,
   wakeupPacket,
@@ -1245,6 +1304,7 @@ function buildRuntimePrelude({
   preludeSolitudeLimit = 3,
   preludeRecentSnippetLimit = 4,
   preludeRecentThreadLimit = 3,
+  includeGuidance = true,
 }) {
   const lines = [];
   const warmHits = Array.isArray(warmMemoryPacket?.hits) ? warmMemoryPacket.hits : [];
@@ -1253,11 +1313,18 @@ function buildRuntimePrelude({
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
   const includeRecentContext = shouldIncludeRecentContextPrelude(recallFocus, recallMode);
   const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
-  ensurePreludeHeader(lines);
-  lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
+  if (includeGuidance !== false) {
+    ensurePreludeHeader(lines);
+    lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
+  }
   if (proactiveRecentStateLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...proactiveRecentStateLines);
+  }
+  const hotContextLines = buildHotContextPreludeLines(hotContextPacket, 4);
+  if (hotContextLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...hotContextLines);
   }
   if (residentWarmHits.length) {
     ensurePreludeHeader(lines);

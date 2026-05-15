@@ -223,13 +223,13 @@ test("checkin daily budget stops background wakeups without blocking user turns"
     contextsByThreadId: {
       "system-1": {
         runtimeId: "claudecode",
-        bindingKey: "default:user#asherie-system",
+        bindingKey: "default:user#mossbridge-system",
         currentTokens: 180_000,
         updatedAt: "2026-05-09T02:00:00.000Z",
       },
       "system-2": {
         runtimeId: "claudecode",
-        bindingKey: "default:user#asherie-system",
+        bindingKey: "default:user#mossbridge-system",
         currentTokens: 140_000,
         updatedAt: "2026-05-09T08:00:00.000Z",
       },
@@ -241,7 +241,7 @@ test("checkin daily budget stops background wakeups without blocking user turns"
       },
       "yesterday-system": {
         runtimeId: "claudecode",
-        bindingKey: "default:user#asherie-system",
+        bindingKey: "default:user#mossbridge-system",
         currentTokens: 500_000,
         updatedAt: "2026-05-08T08:00:00.000Z",
       },
@@ -300,7 +300,7 @@ test("checkin readiness skips when the daily background budget is exhausted", ()
           contextsByThreadId: {
             "system-1": {
               runtimeId: "claudecode",
-              bindingKey: "default:user#asherie-system",
+              bindingKey: "default:user#mossbridge-system",
               currentTokens: 310_000,
               updatedAt: "2026-05-09T08:00:00.000Z",
             },
@@ -391,7 +391,7 @@ test("user turns return a bridge notice instead of calling runtime during cooldo
   });
   runtimeCooldownStore.setCapacityCooldown({
     runtimeId: "claudecode",
-    text: "You've hit your limit · resets May 14 at 12pm (Asia/Shanghai)",
+    text: "You've hit your limit · resets May 14, 2099 at 12pm (Asia/Shanghai)",
     nowMs: Date.parse("2026-05-10T01:01:01.000Z"),
   });
 
@@ -424,7 +424,7 @@ test("user turns return a bridge notice instead of calling runtime during cooldo
   assert.match(sent[0].text, /^\[Mossbridge] runtime_limit/);
   assert.match(sent[0].text, /ClaudeCode 已触发额度\/速率限制/);
   assert.match(sent[0].text, /不是助手回复/);
-  assert.match(sent[0].text, /May 14 at 12pm/);
+  assert.match(sent[0].text, /May 14, 2099 at 12pm/);
   assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
 });
 

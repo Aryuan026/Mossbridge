@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mossbridge.local/schemas/app-daily-capture-bundle-v0.1.schema.json",
-  "title": "Mossbridge App Daily Capture Bundle v0.1",
+  "title": "Mossbridge Web AI Daily Capture Bundle v0.1",
   "type": "object",
   "additionalProperties": true,
   "required": [

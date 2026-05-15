@@ -27,9 +27,9 @@ WeChat conversation
 ```
 
 The expected dominant path is still OpenAI-user continuity, but the first
-version does not wire ChatGPT web/app capture or Notion sync. Codex helps deploy
-and maintain the local bridge, and WeChat becomes a low-friction continuation
-channel with the same local memory posture.
+version does not wire automatic web AI capture sync or Notion sync. Codex helps
+deploy and maintain the local bridge, and WeChat becomes a low-friction
+continuation channel with the same local memory posture.
 
 Mossbridge must not expose private external executor interfaces. If a simple
 capability is needed for public use, it should be implemented as
@@ -70,7 +70,7 @@ Reusable as Mossbridge-native behavior:
 - reminders, check-in queues, deferred replies, runtime cooldowns, and user-visible failure notices
 - WeChat attachment intake, sticker catalog, file send, and timeline screenshot/file workflows
 - read-only bridge status, safe self-check posture, diagnostics, and launchd/shared-start supervision
-- ChatGPT web/app daily capture contracts and future local import normalization, kept outside the first-version deploy path
+- web AI daily capture contracts and local import normalization, with automatic browser sync kept outside the first-version deploy path
 
 Not portable into public Mossbridge:
 

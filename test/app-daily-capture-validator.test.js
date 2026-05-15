@@ -5,10 +5,13 @@ const os = require("os");
 const path = require("path");
 
 const {
+  importDailyCaptureTarget,
+  stageDailyCaptureTarget,
   validateDailyCaptureBundle,
   validateDailyCaptureDirectory,
   validateDailyCaptureTarget,
 } = require("../src/importers/app-daily-capture");
+const { AsherieMemoryService } = require("../src/services/asherie-memory-service");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-capture-test-"));
@@ -97,6 +100,72 @@ test("validateDailyCaptureTarget accepts bundle file", () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.summary.shape, "bundle");
+});
+
+test("stages source-neutral web AI capture bundle", () => {
+  const dir = tempDir();
+  const filePath = path.join(dir, "capture.json");
+  const captureRoot = path.join(dir, "data", "cache", "app_daily_captures");
+  const bundle = validBundle();
+  bundle.source_client = "claude_web";
+  bundle.conversations[0].source_url = "https://claude.ai/chat/thread-1";
+  fs.writeFileSync(filePath, JSON.stringify(bundle), "utf8");
+
+  const result = stageDailyCaptureTarget(filePath, { appDailyCaptureDir: captureRoot });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.staged, true);
+  assert.equal(result.wrote, true);
+  assert.equal(result.summary.shape, "staged_directory");
+  assert.equal(result.summary.source_client, "claude_web");
+  assert.equal(fs.existsSync(path.join(result.staged_dir, "manifest.json")), true);
+  assert.equal(fs.existsSync(path.join(result.staged_dir, "conversations.jsonl")), true);
+});
+
+test("imports source-neutral web AI capture into conversation cache and hot context", async () => {
+  const dir = tempDir();
+  const filePath = path.join(dir, "capture.json");
+  const bundle = validBundle();
+  bundle.source_client = "perplexity_web";
+  bundle.conversations[0].conversation_title = "deployment thread";
+  bundle.conversations[0].source_url = "https://www.perplexity.ai/search/thread-1";
+  bundle.conversations[0].messages[0].text = "继续整理 Mossbridge deployment checklist";
+  bundle.conversations[0].messages[1].text = "先检查 isolated state/data，再跑 capture import。";
+  fs.writeFileSync(filePath, JSON.stringify(bundle), "utf8");
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: path.join(dir, "state"),
+      asherieDataRoot: path.join(dir, "data"),
+      runtime: "codex",
+      identityUserId: "owner",
+      identityRealmId: "default",
+      identityAgentId: "moss",
+    },
+  });
+
+  const result = await importDailyCaptureTarget(filePath, { memoryService: service });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.imported, true);
+  assert.equal(result.stats.conversation_cache_written, 1);
+  assert.equal(result.stats.hot_turns_written, 2);
+  assert.equal(result.stats.upstream_packages, 1);
+
+  const packet = await service.captureContextPacket({
+    query: "deployment checklist",
+    include_runtime_prelude_guidance: false,
+  });
+
+  assert.equal(packet.hot_context_packet.upstream.package_count, 1);
+  assert.match(packet.runtime_prelude, /hot-source/);
+  assert.match(packet.runtime_prelude, /perplexity_web/);
+  assert.match(packet.runtime_prelude, /deployment checklist/);
+
+  const second = await importDailyCaptureTarget(filePath, { memoryService: service });
+
+  assert.equal(second.ok, true);
+  assert.equal(second.stats.conversation_cache_written, 0);
+  assert.equal(second.stats.conversation_cache_skipped, 1);
 });
 
 test("rejects invalid role and missing text or attachments", () => {

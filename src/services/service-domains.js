@@ -7,6 +7,7 @@ function createServiceDomains(services = {}) {
   const sticker = services.sticker || null;
   const timeline = services.timeline || null;
   const whereabouts = services.whereabouts || null;
+  const memoryMetabolism = services.memoryMetabolism || null;
 
   const systemTurn = {
     service: system,
@@ -226,6 +227,7 @@ function createServiceDomains(services = {}) {
       sticker,
       timeline,
       whereabouts,
+      memoryMetabolism,
     },
   };
 }

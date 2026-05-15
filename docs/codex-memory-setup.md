@@ -14,6 +14,26 @@ Mossbridge 不是某个私人本地系统的网关。它可以接入既有本地
 请为 Mossbridge 准备一个独立的本地数据仓，把运行态、热上下文、稳定记忆、小事记、测试数据和工作文件分开；优先只配置 MOSSBRIDGE_DATA_ROOT，不要接入任何私人旧仓路径，除非用户明确要求迁移或共享旧记忆。
 ```
 
+## 给 Codex 的施工地图
+
+部署时先把 Mossbridge 看成五层，不要把所有问题都塞进 `src/core/app.js`：
+
+```text
+mouth:   WeChat 收发、附件、桥提示
+hands:   工具和非记忆服务
+engines: Codex / Claude Code runtime adapter
+brain:   MOSSBRIDGE_DATA_ROOT 下的本地记忆仓
+control: MOSSBRIDGE_STATE_DIR/control-events.jsonl 下的运行因果账本
+```
+
+Codex 的默认工作方式：
+
+- 修改嘴或发送链路时，不直接改 brain 文件。
+- 修改 runtime adapter 时，不把记忆策略塞进 Codex 或 Claude Code 私有协议层。
+- 修改记忆递送时，通过 memory service / service domain 进入，不绕开 data root layout。
+- 调试心跳、cooldown、dreaming、deferred delivery 时，先看 control ledger 的原因和结果，再决定是否修代码。
+- 桥状态提示由 `[Mossbridge]` 发；携带 soul 和记忆的主 AI 不替桥层播报 quota、timeout、binding、delivery failure。
+
 ## 推荐的本地目录
 
 建议把代码、状态、记忆、办公 workspace 分开：
@@ -68,6 +88,11 @@ MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=
 ```
 
 这些只适合迁移旧数据、共享旧记忆仓，或做高级调试。
+
+控制平面不需要额外配置。Codex 只要确认 `MOSSBRIDGE_STATE_DIR`
+是独立目录，就会把运行因果写到
+`<MOSSBRIDGE_STATE_DIR>/control-events.jsonl`，用于部署和压测回看；
+这不是记忆仓，不要导入 warm/cold memory。
 
 ## MossbridgeData 的文件夹层级
 
@@ -130,7 +155,7 @@ MossbridgeData/
 - `cache/conversation_cache/`
   最近对话沉淀池。它不是永久记忆，但会喂给 recall 和 dreaming。
 - `cache/hot/`
-  热上下文缓冲层。给跨窗口续聊、未来 ChatGPT 抓取合流、runtime 短投影使用，不直写稳定记忆。
+  热上下文缓冲层。给跨窗口续聊、网页 AI 抓取合流、runtime 短投影使用，不直写稳定记忆。
 - `storage/memory_tree/`
   Mossbridge 自己的轻量关系树预留位。第一阶段可以只放 node/edge/evidence JSON，不需要完整图数据库。
 - `storage/truth_layer/`
@@ -140,7 +165,7 @@ MossbridgeData/
 - `storage/notion_sync/`
   后续 Notion 固有记忆同步的中间层。第一版只保留为未来扩展仓位，不接入部署路径。
 - `cache/app_daily_captures/`
-  后续官方 app / ChatGPT web 抓取插件的每日对话入口。第一版只保留验证契约，不同步、不写稳定记忆。
+  网页 AI 抓取插件的每日对话入口。第一版提供验证/暂存/导入契约，但不做自动浏览器同步、不直接写稳定记忆。
 - `storage/dreaming_mutation_log/`
   记录 dreaming 做过哪些整理和改写，方便回滚和审计。
 - `cache/`
@@ -236,6 +261,12 @@ Mossbridge 的 heartbeat 不是“固定时间给用户发一句问候”。它�
 
 给 Codex 的判断句：heartbeat 的目标是保持“连续性把手”，不是制造存在感；如果没有真实上下文价值，安静记录或推迟比硬发一句更好。
 
+心跳被投递给 runtime 时走独立的系统线程。这个线程不重复注入完整 WeChat session instructions，但也不是空手唤醒：它会收到一个很短的 `MOSSBRIDGE WAKE ANCHOR`，里面是同一个前台人格/关系的 soul/identity 锚点；再接本次 trigger、最短 memory prelude 和安全行动边界。这样可以减少 token 重复，也更利于 Codex/Claude Code 命中上游上下文缓存。系统线程仍然有足够的行动能力：它可以读状态、写小型连续性记录、安排后续提醒或发一条自然微信；它不能在无人明确要求时重启服务、重绑账号、改凭据、删记忆或做第三方账号/OAuth 操作。
+
+这里的“短”只指后台上下文包短，不指可见消息变冷、变干、变像系统播报。只要决定发微信，消息就应该从已有关系和近期情绪里自然接上；Mossbridge 不应该把一次心跳伪装成工单执行结果。
+
+桥状态和主 AI 声道要分开：额度、运行失败、发送失败、模型状态、绑定状态等报告由 `[Mossbridge]` 桥提示直接发出；携带 soul 和记忆的主 AI 不借自己的语气替桥层播报状态。如果心跳醒来后只发现“桥状态需要报告”，它应该保持 silent，让桥自己的 notice 通道处理。
+
 ## 记忆递送为什么这样设
 
 Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。它是一小包让前台模型落地当前回复的材料：
@@ -248,12 +279,21 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 
 所以 `MOSSBRIDGE_ASHERIE_PRELUDE_*` 的默认值故意偏小。调大前先确认模型回复真的更稳，而不是只是更啰嗦、更像在复述资料。记忆递送应该改变“模型知道什么”，不应该把前台口吻压成工程说明或固定人设。
 
+递送结构遵守三条规则：
+
+- 普通用户线程只在需要时接收稳定前台说明；同一个 runtime/workspace/sender 会话内不要每轮重复递送。
+- 后台心跳、提醒和 dreaming 系统线程跳过完整开场说明，但保留短 soul/identity wake anchor，再接本次可行动的短包。
+- token 评估、分段大小和压力等级记录在 memory packet 的 `delivery` 诊断字段里，不写进 runtime prompt。
+
 ## 验收清单
 
 新部署至少要验证：
 
 - `npm install` 成功。
 - `.env` 指向空的 `MossbridgeState` 和 `MossbridgeData`。
+- `npm run smoke:memory-empty` 成功。
+- `npm run smoke:memory-chain` 成功，且只写入隔离 state/data/workspace。
+- `MossbridgeState/control-events.jsonl` 能在运行后出现，且只含运行原因、计数、状态和安全摘要，不含 token、凭据或完整私聊原文。
 - `npm run shared:start` 能以 Codex runtime 启动。
 - `npm run shared:start:claudecode` 能以 Claude Code runtime 启动。
 - `MossbridgeData/storage/warm_memory` 自动创建。
@@ -279,7 +319,7 @@ Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。�
 
 推荐方式：
 
-- 官方 app / ChatGPT web 的每日对话抓取进入 `cache/app_daily_captures/`。
+- 网页 AI 的每日对话抓取进入 `cache/app_daily_captures/`。
 - 归一化后进入 `cache/conversation_cache/` 和 `cache/hot/`，参与 dreaming。
 - 固有记忆通过 Notion 的 `memory_entries` / `source_topics` 同步。
 - Mossbridge 周期性把 Notion 稳定记忆导入本地 `warm_memory`、`memory_tree`、`case_index`。

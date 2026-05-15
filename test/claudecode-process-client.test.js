@@ -61,6 +61,10 @@ test("claudecode process client classifies API result errors as runtime failures
   assert.equal(classifyClaudeCodeRuntimeFailure("Prompt is too long")?.reason, "prompt_too_long");
   assert.equal(classifyClaudeCodeRuntimeFailure("API Error: 400 {\"type\":\"error\"}")?.reason, "api_error");
   assert.equal(
+    classifyClaudeCodeRuntimeFailure("API Error: 400 diagnostics.previous_message_id: must be the id from a prior /v1/messages response")?.reason,
+    "stale_resume_session"
+  );
+  assert.equal(
     classifyClaudeCodeRuntimeFailure("The request body is not valid JSON: no low surrogate in string")?.reason,
     "invalid_json"
   );
@@ -141,5 +145,63 @@ test("claudecode process client emits turn.failed when result is an API failure"
     text: "Prompt is too long",
     reason: "prompt_too_long",
   }]);
+  assert.equal(client.pendingTurnId, "");
+});
+
+test("claudecode process client closes the child after a fatal result failure", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/tmp",
+    env: {},
+  });
+  const events = [];
+  let closeSawPendingTurnId = null;
+  let closed = false;
+  client.onMessage((event) => events.push(event));
+  client.pendingTurnId = "turn-1";
+  client.activeThreadId = "thread-1";
+  client.child = { pid: 12345 };
+  client.close = async () => {
+    closeSawPendingTurnId = client.pendingTurnId;
+    closed = true;
+  };
+
+  client.handleResult({
+    result: "API Error: 400 diagnostics.previous_message_id: must be the id from a prior /v1/messages response",
+    session_id: "thread-1",
+  });
+
+  assert.equal(closed, true);
+  assert.equal(closeSawPendingTurnId, "");
+  assert.deepEqual(events, [{
+    type: "turn.failed",
+    turnId: "turn-1",
+    sessionId: "thread-1",
+    text: "API Error: 400 diagnostics.previous_message_id: must be the id from a prior /v1/messages response",
+    reason: "stale_resume_session",
+  }]);
+});
+
+test("claudecode process client fails and closes an active turn from fatal stderr", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/tmp",
+    env: {},
+  });
+  const events = [];
+  let closed = false;
+  client.onMessage((event) => events.push(event));
+  client.pendingTurnId = "turn-1";
+  client.activeThreadId = "thread-1";
+  client.child = { pid: 12345 };
+  client.close = async () => {
+    closed = true;
+  };
+
+  client.handleStderrText("Error: API Error: 500 upstream unavailable");
+
+  assert.equal(closed, true);
+  assert.equal(events[0].type, "turn.failed");
+  assert.equal(events[0].reason, "api_error");
   assert.equal(client.pendingTurnId, "");
 });

@@ -394,6 +394,20 @@ function createHost() {
           return { version: args.versionLabel || "v3", payload: args.payload };
         },
       },
+      memoryMetabolism: {
+        recordReceipt(args) {
+          return {
+            ok: args.status === "no_op" || Number(args.mutation_count) > 0,
+            receipt: {
+              receipt_id: "receipt-1",
+              attempt_id: args.attempt_id,
+              status: args.status,
+              mutation_count: args.mutation_count || 0,
+              summary: args.summary,
+            },
+          };
+        },
+      },
       channelFile: {
         async sendToCurrentChat(args) {
           return { filePath: args.filePath, userId: args.userId || "user-1" };
@@ -625,6 +639,29 @@ test("tool host exposes wakeup agenda tools for heartbeat continuity", async () 
   assert.equal(read.text, "Wakeup agenda loaded: 1 records, 1 pending actions.");
   assert.equal(written.text, "Wakeup decision stored: wake-1");
   assert.equal(written.data.record.decision, "maintenance");
+});
+
+test("tool host exposes memory metabolism receipt tool for dreaming completion", async () => {
+  const host = createHost();
+  const tool = host.listTools().find((candidate) => candidate.name === "mossbridge_memory_metabolism_receipt_write");
+  assert.ok(tool);
+  assert.match(tool.description, /receipt/);
+
+  const result = await host.invokeTool("mossbridge_memory_metabolism_receipt_write", {
+    attempt_id: "dream-1",
+    status: "no_op",
+    summary: "No durable memory candidate in this quiet pass.",
+    mutation_count: 0,
+    source_record_ids: ["cap-1"],
+    mutations: [{
+      target: "no_op",
+      action: "no_op",
+      summary: "Reviewed and skipped.",
+    }],
+  }, {});
+
+  assert.equal(result.data.receipt.attempt_id, "dream-1");
+  assert.equal(result.data.receipt.status, "no_op");
 });
 
 test("tool host does not expose private external executors", () => {

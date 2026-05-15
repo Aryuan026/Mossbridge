@@ -4,6 +4,8 @@ This guide is the clean-clone path: new state directory, new data directory, dis
 
 Do not reuse another bridge's state directory, launchd label, account files, memory warehouse, or workspace while running this smoke. The whole point is to prove Mossbridge can stand up from an empty little patch of ground.
 
+Mossbridge has its own local brain and a small control plane. During this quickstart, `MOSSBRIDGE_DATA_ROOT` proves the brain can start empty, and `MOSSBRIDGE_STATE_DIR/control-events.jsonl` proves automatic bridge decisions can be reviewed without becoming user memory.
+
 ## 1. Prerequisites
 
 - Node.js 22 or newer
@@ -63,9 +65,10 @@ Before QR login, you can verify the empty memory warehouse skeleton:
 
 ```bash
 npm run smoke:memory-empty
+npm run smoke:memory-chain
 ```
 
-This creates the local storage/cache directories and checks that an empty context packet can be built without touching any external memory warehouse.
+The first smoke creates the local storage/cache directories and checks that an empty context packet can be built without touching any external memory warehouse. The second writes a disposable warm card, ongoing track, observation, episode, case, solitude note, notebook entry, conversation-cache record, local web AI capture import, sticker catalog, and dreaming receipt into the isolated data/state roots, then verifies the bridge can recall the core context and complete the quiet-window metabolism gate.
 
 ## 4. QR Login
 
@@ -139,7 +142,8 @@ Pass criteria:
 
 - WeChat receives a normal reply.
 - `/status` shows the intended workspace and runtime.
-- `MOSSBRIDGE_STATE_DIR` contains accounts, logs, sessions, and generated bridge files.
+- `MOSSBRIDGE_STATE_DIR` contains accounts, logs, sessions, control events, and generated bridge files.
+- `MOSSBRIDGE_STATE_DIR/control-events.jsonl` contains operational events such as runtime dispatch, memory delivery, check-in skip/queue, cooldown, or deferred delivery when those paths occur.
 - `MOSSBRIDGE_DATA_ROOT` creates memory folders under `storage/` or `cache/` without depending on any existing personal warehouse.
 - Asking about memory in an empty warehouse does not crash the bridge.
 
@@ -170,5 +174,5 @@ Codex can help a new maintainer run these checks, inspect logs, and patch local 
 ## Current Public Blockers
 
 - QR login and first WeChat reply still need to be verified on a fresh account outside the maintainer's private data roots.
-- External memory imports, ChatGPT capture sync, and Notion sync are deferred extension paths; they are not required for the first public bridge smoke.
+- External memory import runners, automatic browser capture sync, and Notion sync are deferred extension paths. Manual web AI capture bundles can already be validated/imported into cache/hot memory, but they are not required for the first public bridge smoke.
 - Historical Cyberboss wording should remain limited to upstream acknowledgement or migration notes, not runtime entrypoints or tests.

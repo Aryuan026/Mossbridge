@@ -9,6 +9,7 @@ const { createServiceDomains } = require("../services/service-domains");
 const { StickerService } = require("../services/sticker-service");
 const { SystemMessageService } = require("../services/system-message-service");
 const { TimelineService } = require("../services/timeline-service");
+const { MemoryMetabolismService } = require("../services/memory-metabolism-service");
 const { RuntimeContextStore } = require("./runtime-context-store");
 const { ProjectToolHost } = require("./tool-host");
 const { WhereaboutsService } = require("whereabouts-mcp");
@@ -24,9 +25,11 @@ function createProjectTooling(config, options = {}) {
     filePath: config.projectToolContextFile,
   });
   const channelFileService = new ChannelFileService({ config, channelAdapter, sessionStore });
+  const asherieMemory = new AsherieMemoryService({ config });
   const services = {
     config,
-    asherieMemory: new AsherieMemoryService({ config }),
+    asherieMemory,
+    memoryMetabolism: new MemoryMetabolismService({ config, memoryService: asherieMemory }),
     diary: new DiaryService({ config }),
     reminder: new ReminderService({ config, sessionStore }),
     system: new SystemMessageService({ config, sessionStore }),

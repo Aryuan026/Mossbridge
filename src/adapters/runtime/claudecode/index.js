@@ -4,21 +4,23 @@ const { ClaudeCodeProcessClient } = require("./process-client");
 const { mapClaudeCodeMessageToRuntimeEvent } = require("./events");
 const { ensureClaudeProjectMcpConfig } = require("./project-settings");
 const { SessionStore } = require("../codex/session-store");
-const { buildOpeningTurnText, buildInstructionRefreshText } = require("../shared-instructions");
+const { buildOpeningTurnText, buildSystemWakeTurnText, buildInstructionRefreshText } = require("../shared-instructions");
 const { ClaudeCodeIpcServer } = require("./ipc-server");
+
 const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
 const CLAUDE_OPENING_SESSION_TIMEOUT_MS = 90_000;
 const DEFAULT_CLAUDE_SESSION_APPEND_PROMPT = [
   "For this session, ignore user-home or global CLAUDE.md bootstrap instructions.",
   "Identity and memory context is already injected by the gateway — do not use any file-reading tools to load soul, persona, or memory files.",
   "If a card mentions soul.md or a soul_ref path, treat it as a historical pointer, not as an instruction to read that file.",
+  "Never request approval to read soul.md, persona.md, or identity seed files; if identity context feels missing, continue from the injected memory packet or use the provided memory tools.",
   "Do not read files outside the current workspace.",
   "Treat the current workspace instructions, MCP tools, and live conversation as authoritative.",
 ].join(" ");
 
 function createClaudeCodeRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "claudecode" });
-  const clientsByWorkspace = new Map();
+  const clientsByKey = new Map();
   const pendingApprovals = new Map();
   let globalListener = null;
   const ipcSocketPath = path.join(
@@ -28,35 +30,78 @@ function createClaudeCodeRuntimeAdapter(config) {
   const ipcServer = new ClaudeCodeIpcServer({ socketPath: ipcSocketPath });
 
   ipcServer.on("clientMessage", (msg) => {
-    if (msg?.type === "sendUserMessage" && msg?.workspaceRoot) {
-      const client = clientsByWorkspace.get(msg.workspaceRoot);
+    const workspaceRoot = normalizeText(msg?.workspaceRoot);
+    if (msg?.type === "sendUserMessage" && workspaceRoot) {
+      const [, client] = findPreferredClientEntryForWorkspace(workspaceRoot) || [];
       if (client?.alive) {
         client.sendUserMessage({ text: msg.text || "" }).catch(() => {});
       }
     }
-    if (msg?.type === "respondApproval" && msg?.workspaceRoot) {
-      const client = clientsByWorkspace.get(msg.workspaceRoot);
+    if (msg?.type === "respondApproval") {
+      const clientKey = pendingApprovals.get(msg.requestId);
+      const [, client] = clientKey
+        ? [clientKey, clientsByKey.get(clientKey)]
+        : findPreferredClientEntryForWorkspace(workspaceRoot) || [];
       if (client?.alive) {
         client.sendResponse(msg.requestId, { decision: msg.decision }).catch(() => {});
       }
     }
   });
 
-  function ensureClient(workspaceRoot, { modelOverride = "" } = {}) {
-    if (clientsByWorkspace.has(workspaceRoot)) {
-      return clientsByWorkspace.get(workspaceRoot);
+  function resolveRuntimeCallScope({ bindingKey = "", threadId = "", metadata = {}, systemRuntimeBinding = false } = {}) {
+    let effectiveBindingKey = normalizeText(bindingKey);
+    let effectiveSystemRuntimeBinding = Boolean(systemRuntimeBinding || metadata?.systemRuntimeBinding);
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!effectiveBindingKey && normalizedThreadId) {
+      const linked = sessionStore.findBindingForThreadId(normalizedThreadId);
+      effectiveBindingKey = normalizeText(linked?.bindingKey);
+      effectiveSystemRuntimeBinding = effectiveSystemRuntimeBinding || Boolean(linked?.systemRuntimeBinding);
+    }
+    if (effectiveBindingKey) {
+      const binding = sessionStore.getBinding(effectiveBindingKey);
+      effectiveSystemRuntimeBinding = effectiveSystemRuntimeBinding || Boolean(binding?.systemRuntimeBinding);
+    }
+    if (isSystemRuntimeBindingKey(effectiveBindingKey)) {
+      effectiveSystemRuntimeBinding = true;
+    }
+    return {
+      bindingKey: effectiveBindingKey,
+      systemRuntimeBinding: effectiveSystemRuntimeBinding,
+    };
+  }
+
+  function buildClientKey(workspaceRoot, options = {}) {
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+    const scope = resolveClientScope(options);
+    return `${normalizedWorkspaceRoot}::${scope}`;
+  }
+
+  function resolveClientScope({ bindingKey = "", systemRuntimeBinding = false } = {}) {
+    const normalizedBindingKey = normalizeText(bindingKey);
+    if (systemRuntimeBinding || isSystemRuntimeBindingKey(normalizedBindingKey)) {
+      return `system:${normalizedBindingKey || "default"}`;
+    }
+    return `user:${normalizedBindingKey || "default"}`;
+  }
+
+  function ensureClient(workspaceRoot, { modelOverride = "", bindingKey = "", systemRuntimeBinding = false, clientKey = "" } = {}) {
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+    const resolvedClientKey = clientKey || buildClientKey(normalizedWorkspaceRoot, { bindingKey, systemRuntimeBinding });
+    const existingClient = clientsByKey.get(resolvedClientKey);
+    if (existingClient) {
+      return existingClient;
     }
     const resolvedModel = normalizeModelId(modelOverride) || normalizeModelId(config.claudeModel);
     const projectSettings = ensureClaudeProjectMcpConfig({
-      workspaceRoot,
+      workspaceRoot: normalizedWorkspaceRoot,
       mossbridgeHome: process.env.MOSSBRIDGE_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
     });
     console.log(
-      `[claudecode-runtime] workspace=${workspaceRoot} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
+      `[claudecode-runtime] workspace=${normalizedWorkspaceRoot} scope=${resolveClientScope({ bindingKey, systemRuntimeBinding })} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
     );
     const client = new ClaudeCodeProcessClient({
       command: config.claudeCommand || "claude",
-      cwd: workspaceRoot,
+      cwd: normalizedWorkspaceRoot,
       env: filterClaudeCodeEnv(process.env),
       model: resolvedModel,
       permissionMode: config.claudePermissionMode || "default",
@@ -68,46 +113,53 @@ function createClaudeCodeRuntimeAdapter(config) {
       extraArgs: config.claudeExtraArgs || [],
       mcpConfigPaths: [projectSettings.configPath],
       ipcServer,
-      workspaceRoot,
+      workspaceRoot: normalizedWorkspaceRoot,
     });
+    client.__mossbridgeClientKey = resolvedClientKey;
+    client.__mossbridgeWorkspaceRoot = normalizedWorkspaceRoot;
     client.onMessage((event, raw) => {
       if (event.type === "session.id") {
-        // sendTextTurn owns binding updates. A ClaudeCode process is scoped by
-        // workspace, so broadcasting a fresh session id to every binding in that
-        // workspace lets short-lived system turns overwrite the real chat thread.
+        // sendTextTurn owns binding updates. Broadcasting a fresh session id to
+        // every binding in the same workspace lets short-lived system turns
+        // overwrite the real chat thread.
         return;
       }
       const mapped = mapClaudeCodeMessageToRuntimeEvent(event, raw);
       if (mapped?.payload && !mapped.payload.workspaceRoot) {
-        mapped.payload.workspaceRoot = workspaceRoot;
+        mapped.payload.workspaceRoot = normalizedWorkspaceRoot;
       }
       if (mapped?.type === "runtime.approval.requested") {
         if (pendingApprovals.size >= 100) {
           const firstKey = pendingApprovals.keys().next().value;
           pendingApprovals.delete(firstKey);
         }
-        pendingApprovals.set(mapped.payload.requestId, workspaceRoot);
+        pendingApprovals.set(mapped.payload.requestId, resolvedClientKey);
       }
       if (mapped?.type === "runtime.turn.failed" || mapped?.type === "runtime.process.closed") {
-        clientsByWorkspace.delete(workspaceRoot);
+        if (clientsByKey.get(resolvedClientKey) === client) {
+          clientsByKey.delete(resolvedClientKey);
+        }
+        clearApprovalsForClientKey(resolvedClientKey);
       }
       if (mapped && globalListener) {
         globalListener(mapped, raw);
       }
     });
-    clientsByWorkspace.set(workspaceRoot, client);
+    clientsByKey.set(resolvedClientKey, client);
     return client;
   }
 
-  async function attachClientToThread(workspaceRoot, threadId = "", modelOverride = "") {
-    const normalizedWorkspaceRoot = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
+  async function attachClientToThread(workspaceRoot, threadId = "", modelOverride = "", options = {}) {
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
     const normalizedThreadId = normalizeThreadId(threadId);
     const normalizedModel = normalizeModelId(modelOverride) || normalizeModelId(config.claudeModel);
     if (!normalizedWorkspaceRoot) {
       throw new Error("workspaceRoot is required");
     }
 
-    const existingClient = clientsByWorkspace.get(normalizedWorkspaceRoot);
+    const scope = resolveRuntimeCallScope({ ...options, threadId: normalizedThreadId });
+    const clientKey = buildClientKey(normalizedWorkspaceRoot, scope);
+    const existingClient = clientsByKey.get(clientKey);
     if (
       normalizedThreadId
       && clientMatchesThread(existingClient, normalizedThreadId)
@@ -117,10 +169,15 @@ function createClaudeCodeRuntimeAdapter(config) {
     }
 
     if (!normalizedThreadId && existingClient?.alive) {
-      await closeWorkspaceClient(normalizedWorkspaceRoot);
+      await closeClientByKey(clientKey);
     }
 
-    const client = ensureClient(normalizedWorkspaceRoot, { modelOverride: normalizedModel });
+    const client = ensureClient(normalizedWorkspaceRoot, {
+      modelOverride: normalizedModel,
+      bindingKey: scope.bindingKey,
+      systemRuntimeBinding: scope.systemRuntimeBinding,
+      clientKey,
+    });
     if (
       !client.alive
       || (normalizedThreadId && !clientMatchesThread(client, normalizedThreadId))
@@ -133,9 +190,14 @@ function createClaudeCodeRuntimeAdapter(config) {
           || !clientMatchesModel(client, normalizedModel)
         )
       ) {
-        await closeWorkspaceClient(normalizedWorkspaceRoot);
+        await closeClientByKey(clientKey);
       }
-      const freshClient = ensureClient(normalizedWorkspaceRoot, { modelOverride: normalizedModel });
+      const freshClient = ensureClient(normalizedWorkspaceRoot, {
+        modelOverride: normalizedModel,
+        bindingKey: scope.bindingKey,
+        systemRuntimeBinding: scope.systemRuntimeBinding,
+        clientKey,
+      });
       await freshClient.connect(normalizedThreadId);
       if (normalizedThreadId) {
         return { client: freshClient, threadId: normalizedThreadId };
@@ -145,23 +207,87 @@ function createClaudeCodeRuntimeAdapter(config) {
 
     return { client, threadId: client.sessionId || normalizedThreadId };
   }
-  async function closeWorkspaceClient(workspaceRoot) {
-    const normalizedWorkspaceRoot = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
+
+  function findClientEntryByThreadId(threadId) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    for (const [clientKey, client] of clientsByKey.entries()) {
+      if (clientMatchesThread(client, normalizedThreadId)) {
+        return [clientKey, client];
+      }
+    }
+    return null;
+  }
+
+  function findPreferredClientEntryForWorkspace(workspaceRoot) {
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
     if (!normalizedWorkspaceRoot) {
+      return null;
+    }
+    let firstAlive = null;
+    for (const [clientKey, client] of clientsByKey.entries()) {
+      if (!client?.alive || normalizeText(client.__mossbridgeWorkspaceRoot || client.workspaceRoot) !== normalizedWorkspaceRoot) {
+        continue;
+      }
+      if (!firstAlive) {
+        firstAlive = [clientKey, client];
+      }
+      if (clientKey.includes("::user:")) {
+        return [clientKey, client];
+      }
+    }
+    return firstAlive;
+  }
+
+  async function closeClientByKey(clientKey) {
+    const normalizedClientKey = normalizeText(clientKey);
+    if (!normalizedClientKey) {
       return;
     }
-    const client = clientsByWorkspace.get(normalizedWorkspaceRoot);
+    const client = clientsByKey.get(normalizedClientKey);
     if (!client) {
       return;
     }
     await client.close();
-    clientsByWorkspace.delete(normalizedWorkspaceRoot);
-    for (const [requestId, candidateWorkspaceRoot] of pendingApprovals.entries()) {
-      if (candidateWorkspaceRoot === normalizedWorkspaceRoot) {
+    if (clientsByKey.get(normalizedClientKey) === client) {
+      clientsByKey.delete(normalizedClientKey);
+    }
+    clearApprovalsForClientKey(normalizedClientKey);
+  }
+
+  async function closeWorkspaceClient(workspaceRoot, options = {}) {
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+    if (!normalizedWorkspaceRoot) {
+      return;
+    }
+    if (options?.threadId) {
+      const [clientKey] = findClientEntryByThreadId(options.threadId) || [];
+      if (clientKey) {
+        await closeClientByKey(clientKey);
+        return;
+      }
+    }
+    if (options?.bindingKey || options?.systemRuntimeBinding) {
+      await closeClientByKey(buildClientKey(normalizedWorkspaceRoot, options));
+      return;
+    }
+    for (const [clientKey, client] of [...clientsByKey.entries()]) {
+      if (normalizeText(client.__mossbridgeWorkspaceRoot || client.workspaceRoot) === normalizedWorkspaceRoot) {
+        await closeClientByKey(clientKey);
+      }
+    }
+  }
+
+  function clearApprovalsForClientKey(clientKey) {
+    for (const [requestId, candidateClientKey] of pendingApprovals.entries()) {
+      if (candidateClientKey === clientKey) {
         pendingApprovals.delete(requestId);
       }
     }
   }
+
   return {
     describe() {
       return {
@@ -203,26 +329,30 @@ function createClaudeCodeRuntimeAdapter(config) {
       };
     },
     async close() {
-      for (const client of clientsByWorkspace.values()) {
-        await client.close();
+      for (const clientKey of [...clientsByKey.keys()]) {
+        await closeClientByKey(clientKey);
       }
-      clientsByWorkspace.clear();
       await ipcServer.close();
     },
-    async startFreshThreadDraft({ workspaceRoot }) {
-      for (const binding of sessionStore.listBindings()) {
-        if (binding.activeWorkspaceRoot === workspaceRoot) {
-          sessionStore.clearPendingThreadIdForWorkspace(binding.bindingKey, workspaceRoot);
+    async startFreshThreadDraft({ bindingKey = "", workspaceRoot, systemRuntimeBinding = false } = {}) {
+      const scope = resolveRuntimeCallScope({ bindingKey, metadata: { systemRuntimeBinding } });
+      if (scope.bindingKey) {
+        sessionStore.clearPendingThreadIdForWorkspace(scope.bindingKey, workspaceRoot);
+      } else {
+        for (const binding of sessionStore.listBindings()) {
+          if (binding.activeWorkspaceRoot === workspaceRoot) {
+            sessionStore.clearPendingThreadIdForWorkspace(binding.bindingKey, workspaceRoot);
+          }
         }
       }
-      await closeWorkspaceClient(workspaceRoot);
+      await closeWorkspaceClient(workspaceRoot, scope.bindingKey || scope.systemRuntimeBinding ? scope : {});
       return { workspaceRoot };
     },
     async respondApproval({ requestId, decision, result = null }) {
-      const workspaceRoot = pendingApprovals.get(requestId);
-      const candidates = workspaceRoot
-        ? [clientsByWorkspace.get(workspaceRoot)]
-        : [...clientsByWorkspace.values()];
+      const clientKey = pendingApprovals.get(requestId);
+      const candidates = clientKey
+        ? [clientsByKey.get(clientKey)]
+        : [...clientsByKey.values()];
       for (const client of candidates) {
         if (client?.alive) {
           const responsePayload = result && typeof result === "object"
@@ -240,93 +370,114 @@ function createClaudeCodeRuntimeAdapter(config) {
       }
       throw new Error("no active claudecode session to respond to approval");
     },
-    async cancelTurn({ threadId, turnId, workspaceRoot }) {
-      if (workspaceRoot) {
-        await closeWorkspaceClient(workspaceRoot);
+    async cancelTurn({ threadId, turnId, workspaceRoot, bindingKey = "", systemRuntimeBinding = false } = {}) {
+      const [clientKey] = findClientEntryByThreadId(threadId) || [];
+      if (clientKey) {
+        await closeClientByKey(clientKey);
         return { threadId, turnId };
       }
-      for (const [workspaceRoot, client] of clientsByWorkspace.entries()) {
-        if (client.sessionId === threadId) {
-          await client.close();
-          clientsByWorkspace.delete(workspaceRoot);
-          return { threadId, turnId };
+      if (workspaceRoot && (bindingKey || systemRuntimeBinding)) {
+        await closeWorkspaceClient(workspaceRoot, { bindingKey, systemRuntimeBinding });
+        return { threadId, turnId };
+      }
+      if (workspaceRoot) {
+        const [preferredClientKey] = findPreferredClientEntryForWorkspace(workspaceRoot) || [];
+        if (preferredClientKey) {
+          await closeClientByKey(preferredClientKey);
         }
       }
       return { threadId, turnId };
     },
-    async resumeThread({ threadId, workspaceRoot, model = "" }) {
+    async resumeThread({ threadId, workspaceRoot, model = "", bindingKey = "", systemRuntimeBinding = false } = {}) {
       if (!workspaceRoot) {
         return { threadId };
       }
-      const attached = await attachClientToThread(workspaceRoot, threadId, model);
+      const scope = resolveRuntimeCallScope({ bindingKey, threadId, metadata: { systemRuntimeBinding } });
+      const attached = await attachClientToThread(workspaceRoot, threadId, model, scope);
       return { threadId: attached.threadId };
     },
-    async compactThread({ threadId, workspaceRoot, model = "" }) {
-      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model);
+    async compactThread({ threadId, workspaceRoot, model = "", bindingKey = "", systemRuntimeBinding = false } = {}) {
+      const scope = resolveRuntimeCallScope({ bindingKey, threadId, metadata: { systemRuntimeBinding } });
+      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model, scope);
       await client.sendUserMessage({ text: "/compact", threadId: activeThreadId });
       return { threadId: activeThreadId, turnId: client.pendingTurnId };
     },
-    async refreshThreadInstructions({ threadId, workspaceRoot, model = "" }) {
-      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model);
+    async refreshThreadInstructions({ threadId, workspaceRoot, model = "", bindingKey = "", systemRuntimeBinding = false } = {}) {
+      const scope = resolveRuntimeCallScope({ bindingKey, threadId, metadata: { systemRuntimeBinding } });
+      const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model, scope);
       const refreshText = buildInstructionRefreshText(config);
       await client.sendUserMessage({ text: refreshText, threadId: activeThreadId });
       return { threadId: activeThreadId };
     },
     async sendTextTurn({ bindingKey, workspaceRoot, text, metadata = {}, model = "" }) {
+      const scope = resolveRuntimeCallScope({ bindingKey, metadata });
       let threadId = sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
       if (!threadId) {
         sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
       }
       let openingTurn = !threadId;
+      const skipOpeningInstructions = Boolean(metadata?.skipOpeningInstructions);
       let attached;
       try {
-        attached = await attachClientToThread(workspaceRoot, threadId, model);
-      } catch (error) {
-        if (!threadId) {
-          throw error;
-        }
-        sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
-        sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
-        threadId = "";
-        openingTurn = true;
-        attached = await attachClientToThread(workspaceRoot, "", model);
-      }
-      const { client, threadId: activeThreadId } = attached;
-      const outboundText = openingTurn ? buildOpeningTurnText(config, text) : text;
-      const outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
-      await client.sendUserMessage({ text: outboundText, threadId: outboundThreadId });
-      let resolvedThreadId = outboundThreadId;
-      if (openingTurn) {
-        const confirmedSessionId = normalizeThreadId(
-          client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_OPENING_SESSION_TIMEOUT_MS })
-        );
-        if (!confirmedSessionId) {
-          throw new Error("timed out waiting for claudecode session id");
-        }
-        resolvedThreadId = confirmedSessionId;
-      }
-      if (!openingTurn) {
-        const confirmedSessionId = normalizeThreadId(
-          client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_RESUME_SESSION_TIMEOUT_MS })
-        );
-        if (confirmedSessionId !== normalizeThreadId(outboundThreadId)) {
-          await closeWorkspaceClient(workspaceRoot);
+        try {
+          attached = await attachClientToThread(workspaceRoot, threadId, model, scope);
+        } catch (error) {
+          if (!threadId) {
+            throw error;
+          }
           sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
           sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
-          throw new Error(`claudecode resumed unexpected session id: ${confirmedSessionId || "(empty)"}`);
+          threadId = "";
+          openingTurn = true;
+          attached = await attachClientToThread(workspaceRoot, "", model, scope);
         }
+        const { client, threadId: activeThreadId } = attached;
+        const outboundText = skipOpeningInstructions
+          ? buildSystemWakeTurnText(config, text)
+          : (openingTurn ? buildOpeningTurnText(config, text) : text);
+        const outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
+        await client.sendUserMessage({ text: outboundText, threadId: outboundThreadId });
+        let resolvedThreadId = outboundThreadId;
+        if (openingTurn) {
+          const confirmedSessionId = normalizeThreadId(
+            client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_OPENING_SESSION_TIMEOUT_MS })
+          );
+          if (!confirmedSessionId) {
+            throw new Error("timed out waiting for claudecode session id");
+          }
+          resolvedThreadId = confirmedSessionId;
+        }
+        if (!openingTurn) {
+          const confirmedSessionId = normalizeThreadId(
+            client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_RESUME_SESSION_TIMEOUT_MS })
+          );
+          if (confirmedSessionId !== normalizeThreadId(outboundThreadId)) {
+            await closeWorkspaceClient(workspaceRoot, { ...scope, threadId });
+            sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+            sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
+            throw new Error(`claudecode resumed unexpected session id: ${confirmedSessionId || "(empty)"}`);
+          }
+        }
+        sessionStore.setThreadIdForWorkspace(
+          bindingKey,
+          workspaceRoot,
+          resolvedThreadId,
+          metadata,
+        );
+        return {
+          threadId: resolvedThreadId,
+          turnId: client.pendingTurnId,
+          openingTurn,
+        };
+      } catch (error) {
+        if (attached?.client) {
+          const clientKey = attached.client.__mossbridgeClientKey || buildClientKey(workspaceRoot, scope);
+          await closeClientByKey(clientKey).catch((closeError) => {
+            console.error(`[claudecode-runtime] failed to close failed turn client: ${closeError.message}`);
+          });
+        }
+        throw error;
       }
-      sessionStore.setThreadIdForWorkspace(
-        bindingKey,
-        workspaceRoot,
-        resolvedThreadId,
-        metadata,
-      );
-      return {
-        threadId: resolvedThreadId,
-        turnId: client.pendingTurnId,
-        openingTurn,
-      };
     },
   };
 }
@@ -343,6 +494,10 @@ function filterClaudeCodeEnv(env) {
 
 module.exports = { createClaudeCodeRuntimeAdapter };
 
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function normalizeThreadId(value) {
   return typeof value === "string" ? value.replace(/\s+/g, "").trim() : "";
 }
@@ -351,13 +506,19 @@ function normalizeModelId(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isSystemRuntimeBindingKey(value) {
+  return normalizeText(value).includes("#mossbridge-system")
+    || normalizeText(value).includes("#asherie-system");
+}
+
 function clientMatchesThread(client, threadId) {
   const normalizedThreadId = normalizeThreadId(threadId);
   if (!normalizedThreadId || !client?.alive) {
     return false;
   }
   return normalizeThreadId(client.sessionId) === normalizedThreadId
-    || normalizeThreadId(client.resumeSessionId) === normalizedThreadId;
+    || normalizeThreadId(client.resumeSessionId) === normalizedThreadId
+    || normalizeThreadId(client.activeThreadId) === normalizedThreadId;
 }
 
 function clientMatchesModel(client, model) {

@@ -21,6 +21,7 @@ Shared behavior belongs in bridge core:
 
 - WeChat transport and command routing
 - local state and data layout
+- control-plane event ledger for heartbeat/runtime/memory/delivery decisions
 - conversation cache and memory stores
 - reminders, check-ins, deferred replies, cooldowns, and runtime notices
 - attachment, sticker, file, and timeline workflows
@@ -41,6 +42,8 @@ Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator
 - Memory delivery system: hot context, warm cards, resident anchors, notebook notes, ongoing tracks, observation journal, episode journal, conversation cache, case index, and cold-version compatibility are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
+
+For token hygiene, ordinary user turns may receive stable opening guidance once per runtime thread, but system wakeups must stay lean without waking empty. Heartbeat, reminder, and dreaming system turns should not re-send the full WeChat opening prompt; they should carry a short soul/identity wake anchor, the trigger, scoped memory packet, safe action envelope, and any small diagnostics needed for writeback. Bridge status reports remain `[Mossbridge]` notices, not front-stage assistant speech.
 
 ## Why The Main Settings Exist
 
@@ -64,8 +67,11 @@ Treat the code areas this way:
 - Engines: `src/adapters/runtime/codex/` and `src/adapters/runtime/claudecode/` translate runtime protocol details.
 - Hands: `src/tools/` and non-memory `src/services/` expose files, reminders, stickers, timeline, and status work.
 - Brain: `src/asherie/`, `src/services/asherie-memory-service.js`, `src/asherie/storage-layout.js`, and the boundary marker in `src/brain/README.md`.
+- Control plane: `src/control/` records why the bridge queued, skipped, cooled down, retried, delivered, or completed an automatic action.
 
-Mouth, engine, and hand code should not write brain files directly. They should pass durable context through the memory service/domain boundary so storage paths, schemas, scope ids, and future migrations stay stable.
+Mouth, engine, hand, and control-plane code should not write brain files directly. They should pass durable context through the memory service/domain boundary so storage paths, schemas, scope ids, and future migrations stay stable.
+
+Control events are operational state under `MOSSBRIDGE_STATE_DIR`, not user memory. They may explain a skip, cooldown, heartbeat, or dreaming receipt, but they should not store raw prompts, private message bodies, credentials, context tokens, or hidden chain-of-thought.
 
 Route memory-like material with this simple map:
 
@@ -91,6 +97,7 @@ For a clean clone:
 npm install
 cp .env.example .env
 npm run smoke:memory-empty
+npm run smoke:memory-chain
 npm run doctor
 ```
 
@@ -107,6 +114,7 @@ Useful checks:
 
 ```bash
 npm run smoke:memory-empty
+npm run smoke:memory-chain
 npm run check
 node --test
 npm run shared:status

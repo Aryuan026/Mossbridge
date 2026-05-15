@@ -1,5 +1,5 @@
 const { CodexRpcClient } = require("./rpc-client");
-const { buildOpeningTurnText, buildInstructionRefreshText } = require("../shared-instructions");
+const { buildOpeningTurnText, buildSystemWakeTurnText, buildInstructionRefreshText } = require("../shared-instructions");
 const { mapCodexMessageToRuntimeEvent } = require("./events");
 const {
   extractAssistantText,
@@ -10,6 +10,7 @@ const {
   extractTurnIdFromParams,
   isAssistantItemCompleted,
 } = require("./message-utils");
+const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
 const { resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
 
@@ -17,6 +18,18 @@ function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
   let client = null;
   let readyState = null;
+  const configuredModel = normalizeText(config.codexModel);
+  const configuredModelProvider = normalizeText(config.codexModelProvider);
+
+  function resolveModel(model = "", storedParams = null) {
+    if (configuredModel) {
+      return configuredModel;
+    }
+    if (storedParams && normalizeText(storedParams.modelProvider) !== configuredModelProvider) {
+      return "";
+    }
+    return normalizeText(model);
+  }
 
   function ensureClient() {
     if (!client) {
@@ -38,6 +51,8 @@ function createCodexRuntimeAdapter(config) {
         kind: "runtime",
         endpoint: config.codexEndpoint || "(spawn)",
         sessionsFile: config.sessionsFile,
+        model: configuredModel,
+        modelProvider: configuredModelProvider,
       };
     },
     createClient() {
@@ -57,6 +72,22 @@ function createCodexRuntimeAdapter(config) {
     },
     getSessionStore() {
       return sessionStore;
+    },
+    getTurnCapabilities({ model = "" } = {}) {
+      const forcedNativeImageInput = config.codexNativeImageInput;
+      if (typeof forcedNativeImageInput === "boolean") {
+        return {
+          nativeImageInput: forcedNativeImageInput,
+          toolImageRead: false,
+        };
+      }
+      const effectiveModel = normalizeText(configuredModel) || normalizeText(model);
+      const catalog = sessionStore.getAvailableModelCatalog();
+      const catalogModel = findModelByQuery(catalog?.models, effectiveModel);
+      return {
+        nativeImageInput: hasImageInputModality(catalogModel),
+        toolImageRead: false,
+      };
     },
     async initialize() {
       const runtimeClient = ensureClient();
@@ -115,59 +146,105 @@ function createCodexRuntimeAdapter(config) {
     async resumeThread({ threadId }) {
       const runtimeClient = ensureClient();
       await this.initialize();
-      return runtimeClient.resumeThread({ threadId });
+      return runtimeClient.resumeThread({
+        threadId,
+        model: configuredModel,
+        modelProvider: configuredModelProvider,
+      });
     },
     async compactThread({ threadId }) {
       const runtimeClient = ensureClient();
       await this.initialize();
       return runtimeClient.compactThread({ threadId });
     },
-    async refreshThreadInstructions({ threadId, workspaceRoot, model = "" }) {
+    async refreshThreadInstructions({ threadId, workspaceRoot, model = "", modelProvider = "" }) {
       const runtimeClient = ensureClient();
       await this.initialize();
       const refreshText = buildInstructionRefreshText(config);
-      await runtimeClient.resumeThread({ threadId });
+      const desiredModel = resolveModel(model, { modelProvider });
+      await runtimeClient.resumeThread({
+        threadId,
+        model: desiredModel,
+        modelProvider: configuredModelProvider,
+      });
       const completion = waitForTurnCompletion(runtimeClient, threadId);
       await runtimeClient.sendUserMessage({
         threadId,
         text: refreshText,
-        model,
+        model: desiredModel,
+        modelProvider: configuredModelProvider,
         workspaceRoot,
       });
       const result = await completion;
       return { threadId, ...result };
     },
-    async sendTextTurn({ bindingKey, workspaceRoot, text, metadata = {}, model = "" }) {
+    async sendTextTurn(args) {
+      return this.sendTurn(args);
+    },
+    async sendTurn({ bindingKey, workspaceRoot, text, attachments = [], metadata = {}, model = "" }) {
       const runtimeClient = ensureClient();
       await this.initialize();
 
       let threadId = sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
-      let outboundText = text;
+      const storedParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
+      const desiredModel = resolveModel(model, storedParams);
+      const desiredModelProvider = configuredModelProvider;
+      if (threadId && !runtimeParamsMatch(storedParams, {
+        model: desiredModel,
+        modelProvider: desiredModelProvider,
+      })) {
+        sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
+        threadId = "";
+      }
+      sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, {
+        model: desiredModel,
+        modelProvider: desiredModelProvider,
+      });
+      const skipOpeningInstructions = Boolean(metadata?.skipOpeningInstructions);
+      let outboundText = skipOpeningInstructions ? buildSystemWakeTurnText(config, text) : text;
       if (!threadId) {
-        const response = await runtimeClient.startThread({ cwd: workspaceRoot });
+        const response = await runtimeClient.startThread({
+          cwd: workspaceRoot,
+          model: desiredModel,
+          modelProvider: desiredModelProvider,
+        });
         threadId = extractThreadId(response);
         if (!threadId) {
           throw new Error("thread/start did not return a thread id");
         }
         sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
-        outboundText = buildOpeningTurnText(config, text);
+        outboundText = skipOpeningInstructions ? buildSystemWakeTurnText(config, text) : buildOpeningTurnText(config, text);
       } else {
-        await runtimeClient.resumeThread({ threadId }).catch(async () => {
+        await runtimeClient.resumeThread({
+          threadId,
+          model: desiredModel,
+          modelProvider: desiredModelProvider,
+        }).catch(async () => {
           sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
-          const recreated = await runtimeClient.startThread({ cwd: workspaceRoot });
+          const recreated = await runtimeClient.startThread({
+            cwd: workspaceRoot,
+            model: desiredModel,
+            modelProvider: desiredModelProvider,
+          });
           threadId = extractThreadId(recreated);
           if (!threadId) {
             throw new Error("thread/start did not return a thread id");
           }
           sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
-          outboundText = buildOpeningTurnText(config, text);
+          sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, {
+            model: desiredModel,
+            modelProvider: desiredModelProvider,
+          });
+          outboundText = skipOpeningInstructions ? buildSystemWakeTurnText(config, text) : buildOpeningTurnText(config, text);
         });
       }
 
       const response = await runtimeClient.sendUserMessage({
         threadId,
         text: outboundText,
-        model,
+        attachments,
+        model: desiredModel,
+        modelProvider: desiredModelProvider,
         workspaceRoot,
       });
       return {
@@ -179,6 +256,20 @@ function createCodexRuntimeAdapter(config) {
 }
 
 module.exports = { createCodexRuntimeAdapter };
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function runtimeParamsMatch(storedParams, desiredParams) {
+  return normalizeText(storedParams?.model) === normalizeText(desiredParams?.model)
+    && normalizeText(storedParams?.modelProvider) === normalizeText(desiredParams?.modelProvider);
+}
+
+function hasImageInputModality(model) {
+  const modalities = Array.isArray(model?.inputModalities) ? model.inputModalities : [];
+  return modalities.some((item) => normalizeText(item).toLowerCase() === "image");
+}
 
 async function refreshModelCatalog(runtimeClient, sessionStore) {
   const modelResponse = await runtimeClient.listModels();

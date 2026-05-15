@@ -18,6 +18,9 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_IDENTITY_AGENT_ID",
   "MOSSBRIDGE_MAINTENANCE_PROFILE",
   "MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR",
+  "MOSSBRIDGE_MODEL_CHOICES",
+  "MOSSBRIDGE_CODEX_MODEL_CHOICES",
+  "MOSSBRIDGE_CLAUDE_MODEL_CHOICES",
 ];
 
 function withBridgeEnv(values, fn) {
@@ -131,5 +134,20 @@ test("readConfig lets public maintenance self-repair be explicitly enabled", () 
 
     assert.equal(config.maintenanceProfile, "private_cloud_ready");
     assert.equal(config.maintenanceAllowSelfRepair, true);
+  });
+});
+
+test("readConfig exposes model choices for WeChat model menus", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_MODEL_CHOICES: "fast=gpt-5.4-mini",
+    MOSSBRIDGE_CODEX_MODEL_CHOICES: "local=gemma4:26b-32k@ollama",
+    MOSSBRIDGE_CLAUDE_MODEL_CHOICES: "opus=claude-opus-4-6",
+  }, () => {
+    const config = readConfig();
+
+    assert.deepEqual(config.modelChoices, ["fast=gpt-5.4-mini"]);
+    assert.deepEqual(config.codexModelChoices, ["local=gemma4:26b-32k@ollama"]);
+    assert.deepEqual(config.claudeModelChoices, ["opus=claude-opus-4-6"]);
   });
 });

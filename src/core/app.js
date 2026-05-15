@@ -12,6 +12,12 @@ const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
 const { createClaudeCodeRuntimeAdapter } = require("../adapters/runtime/claudecode");
 const { findModelByQuery, normalizeModelCatalog } = require("../adapters/runtime/codex/model-catalog");
 const { createTimelineIntegration } = require("../integrations/timeline");
+const {
+  CONTROL_LAYER,
+  CONTROL_SCOPE,
+  CONTROL_SEVERITY,
+  createControlPlane,
+} = require("../control/control-plane");
 const { buildWeixinHelpText } = require("./command-registry");
 const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange } = require("./checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
@@ -37,7 +43,11 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
-const { recordUserMessage, recordAiReply } = require("./activity-tracker");
+const { getLastActivityAt, recordUserMessage, recordAiReply } = require("./activity-tracker");
+const {
+  isDreamingSystemTurn,
+  resolveDreamingAttemptId,
+} = require("../services/memory-metabolism-service");
 const {
   buildRuntimeCapacityNotice,
   formatBridgeNotice,
@@ -86,6 +96,10 @@ class MossbridgeApp {
     this.projectToolHost = projectTooling.toolHost;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
+    this.controlPlane = createControlPlane(config, {
+      runtimeId: this.runtimeAdapter.describe().id,
+    });
+    this.memoryMetabolismService = this.projectServices.memoryMetabolism || null;
     this.threadStateStore = new ThreadStateStore();
     this.runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
     this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
@@ -104,6 +118,7 @@ class MossbridgeApp {
     this.turnWritebackContextByRunKey = new Map();
     this.pendingTurnWritebackByThreadId = new Map();
     this.residentAnchorPreludeKeys = new Set();
+    this.stableTurnGuidanceKeys = new Set();
     this.systemMessageDispatcher = null;
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
@@ -119,6 +134,7 @@ class MossbridgeApp {
     this.pendingOperationByRunKey = new Map();
     this.lastSystemFailureNoticeAtByKey = new Map();
     this.runtimeEventChain = Promise.resolve();
+    this.nextDreamingPollAtMs = 0;
     this.runtimeAdapter.onEvent((event) => {
       this.clearRuntimeEventWatchdog(event?.payload?.threadId);
       this.threadStateStore.applyRuntimeEvent(event);
@@ -140,7 +156,9 @@ class MossbridgeApp {
       channel: this.channelAdapter.describe(),
       runtime: this.runtimeAdapter.describe(),
       timeline: this.timelineIntegration.describe(),
+      control: this.controlPlane?.status ? this.controlPlane.status({ limit: 50 }) : null,
       memory: this.projectDomains?.memory?.describe ? this.projectDomains.memory.describe() : null,
+      metabolism: this.memoryMetabolismService?.describe ? this.memoryMetabolismService.describe() : null,
       maintenance: {
         profile: this.config.maintenanceProfile,
         selfRepairAllowed: this.config.maintenanceAllowSelfRepair,
@@ -149,6 +167,19 @@ class MossbridgeApp {
       },
       threads: this.threadStateStore.snapshot(),
     }, null, 2));
+  }
+
+  recordControlEvent(event = {}) {
+    if (!this.controlPlane || typeof this.controlPlane.record !== "function") {
+      return null;
+    }
+    const runtimeId = normalizeText(event.runtimeId)
+      || normalizeText(this.runtimeAdapter?.describe?.().id)
+      || normalizeText(this.config?.runtime);
+    return this.controlPlane.record({
+      runtimeId,
+      ...event,
+    });
   }
 
   async login() {
@@ -193,6 +224,9 @@ class MossbridgeApp {
         console.error(`[mossbridge] checkin poller stopped: ${error.message}`);
       });
     }
+    if (this.config.startWithDreaming) {
+      console.log("[mossbridge] dreaming: enabled");
+    }
 
     const shutdown = createShutdownController(async () => {
       this.clearPendingImageInboundTimers();
@@ -205,6 +239,7 @@ class MossbridgeApp {
       while (!shutdown.stopped) {
         try {
           await Promise.all([
+            this.maybeQueueDreaming(account),
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
             this.flushPendingSystemMessages(),
@@ -231,6 +266,7 @@ class MossbridgeApp {
             this.endInboundUpdateBatch();
           }
           await Promise.all([
+            this.maybeQueueDreaming(account),
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
             this.flushPendingSystemMessages(),
@@ -456,7 +492,7 @@ class MossbridgeApp {
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
-    return this.deferredSystemReplyQueue.enqueue({
+    const queued = this.deferredSystemReplyQueue.enqueue({
       id: `${normalizeCommandArgument(threadId) || "system"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
       accountId: this.activeAccountId || this.channelAdapter.resolveAccount().accountId,
       senderId: userId,
@@ -467,6 +503,23 @@ class MossbridgeApp {
       failedAt: new Date().toISOString(),
       lastError: error instanceof Error ? error.message : String(error || ""),
     });
+    this.recordControlEvent?.({
+      type: "channel.reply.deferred",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.CHANNEL,
+      source: "app.deferSystemReply",
+      subject: threadId,
+      severity: CONTROL_SEVERITY.WARN,
+      reason: "send_failed_or_context_token_expired",
+      outcome: "queued",
+      payload: {
+        senderId: userId,
+        threadId,
+        kind,
+        lastError: queued.lastError,
+      },
+    });
+    return queued;
   }
 
   recordRuntimeNotice({ text = "", threadId = "", source = "", provider = "" } = {}) {
@@ -480,6 +533,23 @@ class MossbridgeApp {
       threadId,
     });
     if (cooldown) {
+      this.recordControlEvent?.({
+        type: "runtime.cooldown.entered",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.recordRuntimeNotice",
+        subject: cooldown.runtimeId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: cooldown.reason,
+        outcome: "cooldown_active",
+        correlationId: threadId,
+        payload: {
+          resetAt: cooldown.resetAt,
+          remainingMs: cooldown.remainingMs,
+          source: cooldown.source,
+          threadId: cooldown.threadId,
+        },
+      });
       console.warn(
         `[mossbridge] runtime cooldown active runtime=${cooldown.runtimeId} until=${cooldown.resetAt} source=${cooldown.source || "runtime_notice"}`
       );
@@ -572,20 +642,40 @@ class MossbridgeApp {
       status: 1,
       contextToken: prepared.contextToken,
     }).catch(() => {});
+    this.recordControlEvent?.({
+      type: "runtime.turn.dispatch_requested",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.dispatchPreparedTurn",
+      subject: prepared.systemRuntimeBinding ? "system_turn" : "user_turn",
+      reason: prepared.systemRuntimeBinding ? "system_runtime_binding" : "wechat_inbound",
+      correlationId: pendingScopeKey,
+      payload: {
+        bindingKey,
+        workspaceRoot,
+        provider: prepared.provider,
+        systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+        attachmentCount: Array.isArray(prepared.attachments) ? prepared.attachments.length : 0,
+        memoryDelivery: prepared.memoryContextPacket?.delivery || null,
+      },
+    });
 
     try {
       const dispatchedAtMs = Date.now();
+      const runtimeParams = this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
       const turn = await this.runtimeAdapter.sendTextTurn({
         bindingKey,
         workspaceRoot,
         text: prepared.text,
-        model: this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model,
+        attachments: prepared.attachments,
+        model: runtimeParams.model,
         metadata: {
           workspaceId: prepared.workspaceId,
           accountId: prepared.accountId,
           senderId: prepared.runtimeBindingSenderId || prepared.senderId,
           replySenderId: prepared.senderId,
           systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+          skipOpeningInstructions: Boolean(prepared.systemRuntimeBinding),
         },
       });
       this.runtimeContextStore?.setActiveContext?.({
@@ -612,6 +702,29 @@ class MossbridgeApp {
         this.streamDelivery.queueReplyTargetForThread(turn.threadId, replyTarget);
       }
       this.rememberTurnWritebackContext({ turn, prepared, bindingKey, workspaceRoot, dispatchedAtMs });
+      this.markMemoryMetabolismAttemptDispatched?.(prepared.systemTurn, {
+        threadId: turn.threadId,
+        turnId: turn.turnId,
+      });
+      this.recordControlEvent?.({
+        type: "runtime.turn.dispatch_accepted",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.dispatchPreparedTurn",
+        subject: turn.threadId,
+        reason: prepared.systemRuntimeBinding ? "system_turn_sent_to_runtime" : "user_turn_sent_to_runtime",
+        outcome: "accepted",
+        correlationId: buildRunKey(turn.threadId, turn.turnId),
+        payload: {
+          bindingKey,
+          workspaceRoot,
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+          openingTurn: Boolean(turn?.openingTurn),
+          provider: prepared.provider,
+          systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+        },
+      });
       this.scheduleRuntimeEventWatchdog({
         bindingKey,
         workspaceRoot,
@@ -630,6 +743,24 @@ class MossbridgeApp {
     } catch (error) {
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
       const messageText = error instanceof Error ? error.message : String(error || "unknown error");
+      this.recordControlEvent?.({
+        type: "runtime.turn.dispatch_failed",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.dispatchPreparedTurn",
+        subject: prepared.systemRuntimeBinding ? "system_turn" : "user_turn",
+        severity: CONTROL_SEVERITY.ERROR,
+        reason: "runtime_pre_dispatch_failure",
+        outcome: "failed",
+        correlationId: pendingScopeKey,
+        payload: {
+          bindingKey,
+          workspaceRoot,
+          provider: prepared.provider,
+          systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+          error: messageText,
+        },
+      });
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
         text: formatBridgeNotice("request_failed", [
@@ -645,6 +776,22 @@ class MossbridgeApp {
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
     const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
     if (cooldown) {
+      this.recordControlEvent?.({
+        type: "runtime.cooldown.blocked_turn",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.routePreparedInbound",
+        subject: this.config.runtime || "runtime",
+        severity: CONTROL_SEVERITY.WARN,
+        reason: cooldown.reason || "runtime_cooldown",
+        outcome: "blocked",
+        payload: {
+          resetAt: cooldown.resetAt,
+          remainingMs: cooldown.remainingMs,
+          provider: prepared.provider,
+          systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+        },
+      });
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
         text: buildRuntimeCapacityNotice(cooldown.messagePreview || "", {
@@ -875,6 +1022,23 @@ class MossbridgeApp {
       attachmentFailures: prepared.attachmentFailures || [],
     });
     this.pendingInboundByScope.set(scopeKey, current);
+    this.recordControlEvent?.({
+      type: "channel.inbound.buffered",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.CHANNEL,
+      source: "app.bufferPendingInboundMessage",
+      subject: prepared.senderId,
+      reason: "turn_dispatch_blocked",
+      outcome: "buffered",
+      correlationId: scopeKey,
+      payload: {
+        bindingKey,
+        workspaceRoot,
+        provider: prepared.provider,
+        messageCount: current.messages.length,
+        attachmentCount: Array.isArray(prepared.attachments) ? prepared.attachments.length : 0,
+      },
+    });
     void this.channelAdapter.sendTyping({
       userId: prepared.senderId,
       status: 1,
@@ -975,6 +1139,23 @@ class MossbridgeApp {
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
         ];
+        this.recordControlEvent?.({
+          type: "runtime.first_event.waiting_notice",
+          layer: CONTROL_LAYER.OBSERVATION,
+          scope: CONTROL_SCOPE.RUNTIME,
+          source: "app.scheduleRuntimeEventWatchdog",
+          subject: normalizedThreadId,
+          severity: CONTROL_SEVERITY.WARN,
+          reason: "first_runtime_event_delayed",
+          outcome: "bridge_notice_sent",
+          correlationId: normalizedThreadId,
+          payload: {
+            runtimeName,
+            workspaceRoot,
+            openingTurn,
+            noticeTimeoutMs,
+          },
+        });
         await this.channelAdapter.sendText({
           userId: normalized.senderId,
           contextToken: normalized.contextToken,
@@ -1006,6 +1187,23 @@ class MossbridgeApp {
         isCodex ? "2. npm run shared:start" : "2. npm run shared:start:claudecode",
         isCodex ? "3. npm run shared:open" : "3. npm run shared:open:claudecode",
       ];
+      this.recordControlEvent?.({
+        type: "runtime.first_event.timeout",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.scheduleRuntimeEventWatchdog",
+        subject: normalizedThreadId,
+        severity: CONTROL_SEVERITY.ERROR,
+        reason: "first_runtime_event_timeout",
+        outcome: "bridge_notice_sent",
+        correlationId: normalizedThreadId,
+        payload: {
+          runtimeName,
+          workspaceRoot,
+          openingTurn,
+          failureTimeoutMs,
+        },
+      });
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
@@ -1120,6 +1318,23 @@ class MossbridgeApp {
       compactThresholdPercent: reason?.compactThresholdPercent,
     });
     this.streamDelivery.suppressNextRunForThread?.(normalizedThreadId);
+    this.recordControlEvent?.({
+      type: "runtime.context.auto_compact_requested",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.requestAutoCompact",
+      subject: normalizedThreadId,
+      reason: normalizeText(reason?.reason) || "context_threshold",
+      outcome: "requested",
+      correlationId: normalizedThreadId,
+      payload: {
+        workspaceRoot: linked.workspaceRoot,
+        currentTokens: reason?.currentTokens,
+        compactThresholdTokens: reason?.compactThresholdTokens,
+        contextWindow: reason?.contextWindow,
+        compactThresholdPercent: reason?.compactThresholdPercent,
+      },
+    });
     console.log(
       `[mossbridge] auto compact requested thread=${normalizedThreadId} current=${formatCompactNumber(reason?.currentTokens)} threshold=${formatCompactNumber(reason?.compactThresholdTokens)}`
     );
@@ -1127,6 +1342,7 @@ class MossbridgeApp {
       const result = await this.runtimeAdapter.compactThread({
         threadId: normalizedThreadId,
         workspaceRoot: linked.workspaceRoot,
+        bindingKey: linked.bindingKey,
         model: runtimeParams.model,
       });
       const compactTurnId = normalizeCommandArgument(result?.turnId);
@@ -1142,6 +1358,21 @@ class MossbridgeApp {
     } catch (error) {
       this.pendingAutoCompactByThreadId.delete(normalizedThreadId);
       this.streamDelivery.cancelSuppressedRunForThread?.(normalizedThreadId);
+      this.recordControlEvent?.({
+        type: "runtime.context.auto_compact_failed",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.requestAutoCompact",
+        subject: normalizedThreadId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "runtime_compact_failed",
+        outcome: "suppression_cancelled",
+        correlationId: normalizedThreadId,
+        payload: {
+          workspaceRoot: linked.workspaceRoot,
+          error: error instanceof Error ? error.message : String(error || "unknown error"),
+        },
+      });
       console.warn(
         `[mossbridge] auto compact failed thread=${normalizedThreadId}: ${error instanceof Error ? error.message : String(error || "unknown error")}`
       );
@@ -1179,6 +1410,23 @@ class MossbridgeApp {
         return;
       }
       watchdog.noticeSent = true;
+      this.recordControlEvent?.({
+        type: "runtime.turn.slow_notice",
+        layer: CONTROL_LAYER.OBSERVATION,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.scheduleRunningTurnWatchdog",
+        subject: normalizedThreadId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "runtime_turn_running_without_reply",
+        outcome: "bridge_notice_sent",
+        correlationId: runKey,
+        payload: {
+          runtimeName,
+          workspaceRoot,
+          turnId: normalizedTurnId,
+          noticeTimeoutMs,
+        },
+      });
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
@@ -1199,6 +1447,23 @@ class MossbridgeApp {
       }
       this.runningTurnWatchdogs.delete(runKey);
       this.watchdogCancelledRunKeys.add(runKey);
+      this.recordControlEvent?.({
+        type: "runtime.turn.stalled_released",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.RUNTIME,
+        source: "app.scheduleRunningTurnWatchdog",
+        subject: normalizedThreadId,
+        severity: CONTROL_SEVERITY.ERROR,
+        reason: "runtime_turn_stalled",
+        outcome: "cancel_requested",
+        correlationId: runKey,
+        payload: {
+          runtimeName,
+          workspaceRoot,
+          turnId: normalizedTurnId,
+          recoveryTimeoutMs,
+        },
+      });
       await this.channelAdapter.sendTyping({
         userId: normalized.senderId,
         status: 0,
@@ -1219,6 +1484,7 @@ class MossbridgeApp {
         threadId: normalizedThreadId,
         turnId: normalizedTurnId,
         workspaceRoot,
+        bindingKey,
       }).catch((error) => {
         console.error(`[mossbridge] stalled turn recovery failed thread=${normalizedThreadId}: ${error.message}`);
       });
@@ -1468,6 +1734,84 @@ class MossbridgeApp {
     }
   }
 
+  async maybeQueueDreaming(account) {
+    if (!this.config.startWithDreaming || !this.memoryMetabolismService) {
+      return null;
+    }
+    const nowMs = Date.now();
+    if (this.nextDreamingPollAtMs && nowMs < this.nextDreamingPollAtMs) {
+      return null;
+    }
+    const pollIntervalMs = typeof this.memoryMetabolismService.getPollIntervalMs === "function"
+      ? this.memoryMetabolismService.getPollIntervalMs()
+      : 15 * 60_000;
+    this.nextDreamingPollAtMs = nowMs + Math.max(60_000, pollIntervalMs);
+
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const senderId = resolvePreferredSenderId({
+      config: this.config,
+      accountId: account.accountId,
+      explicitUser: process.env.MOSSBRIDGE_DREAMING_USER_ID || process.env.MOSSBRIDGE_CHECKIN_USER_ID || "",
+      sessionStore,
+    });
+    const workspaceRoot = resolvePreferredWorkspaceRoot({
+      config: this.config,
+      accountId: account.accountId,
+      senderId,
+      explicitWorkspace: process.env.MOSSBRIDGE_DREAMING_WORKSPACE || process.env.MOSSBRIDGE_CHECKIN_WORKSPACE || "",
+      sessionStore,
+    });
+    const contextToken = senderId ? (this.channelAdapter.getKnownContextTokens()[senderId] || "") : "";
+    const result = this.memoryMetabolismService.maybeQueueDreaming({
+      accountId: account.accountId,
+      senderId,
+      workspaceRoot,
+      contextToken,
+      queue: this.systemMessageQueue,
+      queueHasPending: this.systemMessageQueue.hasPendingForAccount(account.accountId),
+      runtimeCooldown: this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex"),
+      lastActivityAt: getLastActivityAt(),
+      nowMs,
+    });
+    if (result?.queued) {
+      this.recordControlEvent?.({
+        type: "memory.dreaming.queued",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.maybeQueueDreaming",
+        subject: result.attempt_id,
+        reason: "quiet_window_source_records_ready",
+        outcome: "queued",
+        payload: {
+          attemptId: result.attempt_id,
+          sourceRecordCount: result.source_record_count,
+          senderId,
+          workspaceRoot,
+        },
+      });
+      console.log(
+        `[mossbridge] dreaming queued attempt=${result.attempt_id} records=${result.source_record_count}`,
+      );
+    } else if (result?.reason && !["disabled", "poll_interval", "insufficient_source_records"].includes(result.reason)) {
+      this.recordControlEvent?.({
+        type: "memory.dreaming.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.maybeQueueDreaming",
+        subject: result.reason,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: result.reason,
+        outcome: "skipped",
+        payload: {
+          senderId,
+          workspaceRoot,
+        },
+      });
+      console.log(`[mossbridge] dreaming skipped: ${result.reason}`);
+    }
+    return result;
+  }
+
   resolveReminderWorkspaceRoot(reminder) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: this.config.workspaceId,
@@ -1486,6 +1830,21 @@ class MossbridgeApp {
     if (isCheckinOpportunityMessage(message)) {
       const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
       if (cooldown) {
+        this.recordControlEvent?.({
+          type: "system.checkin.dropped",
+          layer: CONTROL_LAYER.TACTICAL,
+          scope: CONTROL_SCOPE.SYSTEM_TURN,
+          source: "app.dispatchSystemMessage",
+          subject: message.id,
+          severity: CONTROL_SEVERITY.WARN,
+          reason: "runtime_cooldown",
+          outcome: "dropped",
+          payload: {
+            runtime: this.config.runtime || "codex",
+            resetAt: cooldown.resetAt,
+            remainingMs: cooldown.remainingMs,
+          },
+        });
         console.log(
           `[mossbridge] checkin dropped: runtime cooldown until ${cooldown.resetAt || cooldown.resetAtMs || ""}`,
         );
@@ -1533,6 +1892,52 @@ class MossbridgeApp {
     );
     preparedForDispatch.memoryContextPacket = memoryContext.packet;
     return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared: preparedForDispatch });
+  }
+
+  markMemoryMetabolismAttemptDispatched(systemTurn = {}, { threadId = "", turnId = "" } = {}) {
+    if (!this.memoryMetabolismService || !isDreamingSystemTurn(systemTurn)) {
+      return;
+    }
+    const attemptId = resolveDreamingAttemptId(systemTurn);
+    if (!attemptId) {
+      return;
+    }
+    if (typeof this.memoryMetabolismService.markAttemptDispatched === "function") {
+      try {
+        this.memoryMetabolismService.markAttemptDispatched(attemptId, { threadId, turnId });
+        this.recordControlEvent?.({
+          type: "memory.dreaming.dispatched",
+          layer: CONTROL_LAYER.EXECUTIVE,
+          scope: CONTROL_SCOPE.MEMORY,
+          source: "app.markMemoryMetabolismAttemptDispatched",
+          subject: attemptId,
+          reason: "runtime_turn_started",
+          outcome: "receipt_pending",
+          correlationId: buildRunKey(threadId, turnId),
+          payload: {
+            attemptId,
+            threadId,
+            turnId,
+          },
+        });
+      } catch (error) {
+        this.recordControlEvent?.({
+          type: "memory.dreaming.dispatch_receipt_failed",
+          layer: CONTROL_LAYER.EXECUTIVE,
+          scope: CONTROL_SCOPE.MEMORY,
+          source: "app.markMemoryMetabolismAttemptDispatched",
+          subject: attemptId,
+          severity: CONTROL_SEVERITY.WARN,
+          reason: "mark_attempt_dispatched_failed",
+          outcome: "skipped",
+          payload: {
+            attemptId,
+            error: formatErrorMessage(error),
+          },
+        });
+        console.warn(`[mossbridge] dreaming dispatch receipt skipped attempt=${attemptId} ${formatErrorMessage(error)}`);
+      }
+    }
   }
 
   prepareSystemRuntimeBinding({ userBindingKey, workspaceRoot, prepared }) {
@@ -1786,10 +2191,13 @@ class MossbridgeApp {
         normalized,
         threadId,
       });
+      const runtimeParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
       await this.runtimeAdapter.refreshThreadInstructions({
         threadId,
         workspaceRoot,
-        model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model,
+        bindingKey,
+        model: runtimeParams.model,
+        modelProvider: runtimeParams.modelProvider,
       });
     } catch (error) {
       await this.channelAdapter.sendText({
@@ -1835,6 +2243,7 @@ class MossbridgeApp {
       await this.runtimeAdapter.compactThread({
         threadId,
         workspaceRoot,
+        bindingKey,
         model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model,
       }).then((result) => {
         const compactTurnId = normalizeCommandArgument(result?.turnId);
@@ -1884,6 +2293,7 @@ class MossbridgeApp {
     const resumed = await this.runtimeAdapter.resumeThread({
       threadId: targetThreadId,
       workspaceRoot,
+      bindingKey,
     });
     if (runtimeId === "claudecode") {
       sessionStore.setThreadIdForWorkspace(
@@ -1937,6 +2347,7 @@ class MossbridgeApp {
       threadId,
       turnId: threadState.turnId,
       workspaceRoot,
+      bindingKey,
     });
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
@@ -2070,46 +2481,53 @@ class MossbridgeApp {
       senderId: normalized.senderId,
     });
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
-    const query = normalizeCommandArgument(command.args);
+    const selection = parseModelSelectionArgs(command.args);
     const sessionStore = this.runtimeAdapter.getSessionStore();
     let catalog = sessionStore.getAvailableModelCatalog();
-    const currentModel = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot).model;
-    const runtimeId = this.runtimeAdapter.describe().id || "runtime";
+    const runtimeInfo = this.runtimeAdapter.describe();
+    const runtimeId = runtimeInfo.id || "runtime";
+    let modelCatalog = buildRuntimeModelCatalog({
+      runtimeId,
+      catalog,
+      config: this.config,
+    });
+    const currentParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
+    const currentModel = currentParams.model || "";
+    const currentProvider = currentParams.modelProvider || "";
+    const configuredModel = normalizeCommandArgument(runtimeInfo.model);
+    const configuredProvider = normalizeCommandArgument(runtimeInfo.modelProvider);
 
-    if (!query) {
+    if (!selection.model && !selection.clear && !selection.providerSpecified) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         text: formatModelStatusNotice({
           runtimeId,
           workspaceRoot,
           selectedModel: currentModel,
+          selectedProvider: currentProvider,
           runtimeDefaultModel: this.resolveRuntimeDefaultModel(runtimeId, catalog),
-          catalog,
+          configuredModel,
+          configuredProvider,
+          modelCatalog,
         }),
         contextToken: normalized.contextToken,
       });
       return;
     }
 
-    const normalizedAction = query.toLowerCase();
-    if (["default", "clear", "reset"].includes(normalizedAction)) {
-      sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, { model: "" });
-      catalog = sessionStore.getAvailableModelCatalog();
+    if (selection.error) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: formatBridgeNotice("model_selected", [
+        text: formatBridgeNotice("model_command_error", [
           `runtime: ${runtimeId}`,
-          `workspace: ${workspaceRoot}`,
-          "selected_model: (default)",
-          `effective_model: ${this.resolveEffectiveModelLabel(runtimeId, "", catalog)}`,
-          "applies_to: next_turn",
+          selection.error,
         ]),
         contextToken: normalized.contextToken,
       });
       return;
     }
 
-    if (normalizedAction === "refresh") {
+    if (selection.model.toLowerCase() === "refresh" && !selection.clear && !selection.providerSpecified) {
       await this.handleModelRefreshCommand({ normalized, runtimeId, workspaceRoot });
       return;
     }
@@ -2119,23 +2537,48 @@ class MossbridgeApp {
       if (refreshed?.models?.length) {
         sessionStore.setAvailableModelCatalog(refreshed.models);
         catalog = sessionStore.getAvailableModelCatalog();
+        modelCatalog = buildRuntimeModelCatalog({
+          runtimeId,
+          catalog,
+          config: this.config,
+        });
       }
     }
 
-    let matched = findModelByQuery(catalog?.models || [], query);
-    if (!matched && !catalog?.models?.length) {
-      matched = { model: query };
+    let nextModel = "";
+    if (!selection.clear) {
+      let matched = findRuntimeModelChoice(modelCatalog, selection.model);
+      const hasKnownChoices = modelCatalog.length > 0;
+      const allowRawModel = !hasKnownChoices;
+      if (!matched && allowRawModel && selection.model) {
+        matched = { model: selection.model };
+      }
+      if (!matched) {
+        await this.channelAdapter.sendText({
+          userId: normalized.senderId,
+          text: buildModelNotFoundText(selection.model, modelCatalog, runtimeId),
+          contextToken: normalized.contextToken,
+        });
+        return;
+      }
+      nextModel = matched.model;
+      if (runtimeId === "codex" && !selection.providerSpecified && normalizeModelProviderArg(matched.modelProvider)) {
+        selection.provider = matched.modelProvider;
+        selection.providerSpecified = true;
+      }
     }
-    if (!matched) {
-      const models = catalog?.models || [];
+
+    const nextProvider = runtimeId === "codex"
+      ? (selection.clear ? "" : (selection.providerSpecified ? selection.provider : currentProvider))
+      : currentProvider;
+
+    if (!selection.clear && !nextModel && !selection.providerSpecified) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         text: formatBridgeNotice("model_not_found", [
           `runtime: ${runtimeId}`,
-          `query: ${query}`,
-          `catalog: ${models.length} models`,
-          `available_models: ${formatModelList(models)}`,
-          "hint: /model refresh",
+          "query: (empty)",
+          modelCatalog.length ? `available_models: ${formatRuntimeModelCatalog(modelCatalog)}` : modelChoiceConfigHint(runtimeId),
         ]),
         contextToken: normalized.contextToken,
       });
@@ -2143,18 +2586,28 @@ class MossbridgeApp {
     }
 
     sessionStore.setRuntimeParamsForWorkspace(bindingKey, workspaceRoot, {
-      model: matched.model,
+      model: nextModel,
+      ...(runtimeId === "codex" ? { modelProvider: nextProvider } : {}),
     });
+    const noticeLines = [
+      `runtime: ${runtimeId}`,
+      `workspace: ${workspaceRoot}`,
+      `selected_model: ${nextModel || "(default)"}`,
+      `effective_model: ${this.resolveEffectiveModelLabel(runtimeId, nextModel, catalog)}`,
+      modelCatalog.length ? "source: model_choices_or_catalog" : "source: raw_model_id",
+      "applies_to: next_turn",
+    ];
+    if (runtimeId === "codex") {
+      noticeLines.splice(3, 0, `selected_provider: ${nextProvider || "(default)"}`);
+      if (configuredModel || configuredProvider) {
+        noticeLines.push("note: MOSSBRIDGE_CODEX_MODEL / MOSSBRIDGE_CODEX_MODEL_PROVIDER is active and may override this session selection until the bridge is restarted with those env values cleared or changed.");
+      } else if (selection.providerSpecified) {
+        noticeLines.push("note: if this provider needs a different Codex launcher, restart shared mode after updating MOSSBRIDGE_CODEX_COMMAND.");
+      }
+    }
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
-      text: formatBridgeNotice("model_selected", [
-        `runtime: ${runtimeId}`,
-        `workspace: ${workspaceRoot}`,
-        `selected_model: ${matched.model}`,
-        `effective_model: ${matched.model}`,
-        catalog?.models?.length ? "source: catalog" : "source: raw_model_id",
-        "applies_to: next_turn",
-      ]),
+      text: formatBridgeNotice("model_selected", noticeLines),
       contextToken: normalized.contextToken,
     });
   }
@@ -2177,17 +2630,22 @@ class MossbridgeApp {
       const catalog = models.length
         ? this.runtimeAdapter.getSessionStore().setAvailableModelCatalog(models)
         : null;
+      const modelCatalog = buildRuntimeModelCatalog({
+        runtimeId,
+        catalog,
+        config: this.config,
+      });
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: formatBridgeNotice(models.length ? "model_catalog_refreshed" : "model_catalog_unavailable", [
+        text: formatBridgeNotice(modelCatalog.length ? "model_catalog_refreshed" : "model_catalog_unavailable", [
           `runtime: ${runtimeId}`,
           `workspace: ${workspaceRoot}`,
-          `catalog: ${models.length} models`,
+          `catalog: ${modelCatalog.length} models`,
           refreshed?.source ? `source: ${refreshed.source}` : "",
           refreshed?.unavailableReason ? `reason: ${refreshed.unavailableReason}` : "",
           refreshed?.acceptsRawModel ? "raw_model_id: accepted" : "",
           catalog?.updatedAt ? `updated_at: ${catalog.updatedAt}` : "",
-          models.length ? `available_models: ${formatModelList(models)}` : "",
+          modelCatalog.length ? `available_models: ${formatRuntimeModelCatalog(modelCatalog)}` : modelChoiceConfigHint(runtimeId),
         ]),
         contextToken: normalized.contextToken,
       });
@@ -2496,6 +2954,9 @@ class MossbridgeApp {
       if (!bindingKey) {
         continue;
       }
+      if (binding?.systemRuntimeBinding) {
+        continue;
+      }
 
       const target = this.resolveReplyTargetForBinding(bindingKey);
       if (target) {
@@ -2514,6 +2975,7 @@ class MossbridgeApp {
         await this.runtimeAdapter.resumeThread({
           threadId: normalizedThreadId,
           workspaceRoot: normalizedWorkspaceRoot,
+          bindingKey,
           model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, normalizedWorkspaceRoot).model,
         }).catch(() => {});
       }
@@ -2555,6 +3017,12 @@ class MossbridgeApp {
       const residentAlreadyDelivered = Boolean(
         residentPreludeKey && this.residentAnchorPreludeKeys.has(residentPreludeKey),
       );
+      const stableGuidanceKey = this.resolveStableTurnGuidanceKey?.(normalized, workspaceRoot) || "";
+      const includeStableTurnGuidance = shouldIncludeStableTurnGuidance(
+        stableGuidanceKey,
+        this.stableTurnGuidanceKeys,
+      );
+      const contextPressure = this.resolveMemoryContextPressureProfile?.(normalized, workspaceRoot) || null;
       const packet = await memoryDomain.captureContextPacket({
         userId: normalized.senderId,
         senderId: normalized.senderId,
@@ -2567,6 +3035,8 @@ class MossbridgeApp {
         currentTurnSignals: buildCurrentTurnSignalsForMemory(normalized),
         ...buildMemoryCapturePressureOptions(normalized, {
           residentAlreadyDelivered,
+          includeRuntimePreludeGuidance: includeStableTurnGuidance,
+          contextPressure,
         }),
       });
       if (
@@ -2577,20 +3047,71 @@ class MossbridgeApp {
         this.residentAnchorPreludeKeys.add(residentPreludeKey);
       }
       const prelude = normalizeText(packet?.runtime_prelude || packet?.summary);
-      const frontstageNote = buildWechatFrontstageTurnNote(normalized);
-      const toolHoverNote = buildWechatToolHoverNote(normalized);
+      const frontstageNote = includeStableTurnGuidance ? buildWechatFrontstageTurnNote(normalized) : "";
+      const toolHoverNote = includeStableTurnGuidance ? buildWechatToolHoverNote(normalized) : "";
       const sections = [frontstageNote, toolHoverNote, prelude].filter(Boolean);
+      const delivery = buildMemoryDeliveryReport({
+        normalized,
+        baseText,
+        frontstageNote,
+        toolHoverNote,
+        prelude,
+        sections,
+        contextPressure,
+        includeStableTurnGuidance,
+        residentAlreadyDelivered,
+      });
+      const packetWithDelivery = packet && typeof packet === "object"
+        ? { ...packet, delivery }
+        : packet;
+      this.recordControlEvent?.({
+        type: "memory.context.delivered",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.attachMemoryContextToPreparedText",
+        subject: normalized.provider === "system" ? "system_turn" : "wechat_turn",
+        reason: "context_packet_capture",
+        outcome: sections.length ? "prompt_augmented" : "packet_only",
+        payload: {
+          workspaceRoot,
+          sourceClient: normalized.provider === "system" ? "mossbridge_system_turn" : "mossbridge_wechat",
+          retrieval: packet?.retrieval || null,
+          warmHitCount: Number(packet?.warm_memory_packet?.hit_count) || 0,
+          residentHitCount: Number(packet?.resident_warm_packet?.hit_count) || 0,
+          ongoingHitCount: Number(packet?.ongoing_track_packet?.hit_count) || 0,
+          episodeHitCount: Number(packet?.episode_journal_packet?.hit_count) || 0,
+          observationHitCount: Number(packet?.observation_journal_packet?.hit_count) || 0,
+          delivery,
+        },
+      });
+      if (includeStableTurnGuidance && stableGuidanceKey && (frontstageNote || toolHoverNote)) {
+        this.markStableTurnGuidanceDelivered(stableGuidanceKey);
+      }
       if (!sections.length) {
         return {
           text: baseText,
-          packet,
+          packet: packetWithDelivery,
         };
       }
       return {
         text: `${sections.join("\n\n")}\n\n===== Current Inbound Message =====\n${baseText}`,
-        packet,
+        packet: packetWithDelivery,
       };
     } catch (error) {
+      this.recordControlEvent?.({
+        type: "memory.context.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.attachMemoryContextToPreparedText",
+        subject: normalized.provider === "system" ? "system_turn" : "wechat_turn",
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "context_packet_failed",
+        outcome: "base_text_only",
+        payload: {
+          workspaceRoot,
+          error: formatErrorMessage(error),
+        },
+      });
       console.warn(`[mossbridge] memory context skipped: ${formatErrorMessage(error)}`);
       return {
         text: baseText,
@@ -2625,6 +3146,74 @@ class MossbridgeApp {
       threadId = "";
     }
     return [runtimeId, identityKey, root, normalizeCommandArgument(threadId) || "opening"].join("::");
+  }
+
+  resolveStableTurnGuidanceKey(normalized = {}, workspaceRoot = "") {
+    return this.resolveResidentAnchorPreludeKey(normalized, workspaceRoot);
+  }
+
+  markStableTurnGuidanceDelivered(key) {
+    const normalized = normalizeCommandArgument(key);
+    if (!normalized) {
+      return;
+    }
+    if (!this.stableTurnGuidanceKeys) {
+      this.stableTurnGuidanceKeys = new Set();
+    }
+    this.stableTurnGuidanceKeys.add(normalized);
+    if (this.stableTurnGuidanceKeys.size > 500) {
+      const firstKey = this.stableTurnGuidanceKeys.values().next().value;
+      this.stableTurnGuidanceKeys.delete(firstKey);
+    }
+  }
+
+  resolveMemoryContextPressureProfile(normalized = {}, workspaceRoot = "") {
+    const runtimeId = normalizeCommandArgument(this.runtimeAdapter?.describe?.().id) || this.config?.runtime || "";
+    const threadId = this.resolvePreparedRuntimeThreadId?.(normalized, workspaceRoot) || "";
+    let context = null;
+    try {
+      context = this.runtimeContextUsageStore?.getContext?.({ threadId, runtimeId }) || null;
+    } catch {
+      context = null;
+    }
+    const currentTokens = Number(context?.currentTokens) || 0;
+    const contextWindow = Number(context?.contextWindow)
+      || (normalizeText(runtimeId).toLowerCase() === "claudecode" ? Number(this.config?.claudeContextWindow) || 0 : 0);
+    if (!currentTokens || !contextWindow) {
+      return { level: "normal", ratio: 0, currentTokens, contextWindow };
+    }
+    const ratio = currentTokens / contextWindow;
+    const level = ratio >= 0.75 ? "high" : (ratio >= 0.6 ? "warm" : "normal");
+    return { level, ratio, currentTokens, contextWindow, threadId };
+  }
+
+  resolvePreparedRuntimeThreadId(normalized = {}, workspaceRoot = "") {
+    const senderId = normalizeCommandArgument(normalized.runtimeBindingSenderId || normalized.senderId || normalized.chatId);
+    if (!senderId) {
+      return "";
+    }
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    if (!sessionStore || typeof sessionStore.buildBindingKey !== "function") {
+      return "";
+    }
+    let bindingKey = "";
+    try {
+      bindingKey = sessionStore.buildBindingKey({
+        workspaceId: normalized.workspaceId || this.config?.workspaceId,
+        accountId: normalized.accountId || this.activeAccountId || this.config?.accountId,
+        senderId,
+      });
+    } catch {
+      bindingKey = "";
+    }
+    if (!bindingKey || typeof sessionStore.getThreadIdForWorkspace !== "function") {
+      return "";
+    }
+    try {
+      return normalizeCommandArgument(sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot));
+    } catch {
+      return "";
+    }
   }
 
   rememberTurnWritebackContext({ turn, prepared, bindingKey, workspaceRoot, dispatchedAtMs = 0 }) {
@@ -2693,8 +3282,10 @@ class MossbridgeApp {
     const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
     const role = snapshot.prepared.provider === "system" ? "system" : "user";
     const incomingTextForCache = buildIncomingTextForConversationCache(snapshot.prepared);
+    let writebackResult = null;
+    let writebackError = null;
     try {
-      const writebackResult = await memoryDomain.writebackTurn({
+      writebackResult = await memoryDomain.writebackTurn({
         userId: snapshot.prepared.senderId,
         senderId: snapshot.prepared.senderId,
         accountId: snapshot.prepared.accountId,
@@ -2746,8 +3337,101 @@ class MossbridgeApp {
           completedAt: new Date().toISOString(),
         });
       }
+      this.recordControlEvent?.({
+        type: "memory.turn.writeback",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.writebackRuntimeTurn",
+        subject: event.payload.threadId,
+        reason: "runtime_turn_finished",
+        outcome: event.type === "runtime.turn.completed" && !runtimeCapacityNotice ? "ok" : "error",
+        correlationId: buildRunKey(event.payload.threadId, event.payload.turnId),
+        payload: {
+          provider: snapshot.prepared.provider,
+          transportId: snapshot.prepared.provider === "system" ? "system" : "weixin",
+          runtimeId: this.runtimeAdapter.describe().id,
+          endpointId: event.type,
+          model: snapshot.model,
+          latencyMs: snapshot.dispatchedAtMs ? Math.max(0, Date.now() - snapshot.dispatchedAtMs) : 0,
+          hasAssistantText: Boolean(assistantTextFinal),
+          runtimeCapacityNotice,
+          runtimeFailureNotice,
+        },
+      });
     } catch (error) {
+      writebackError = error;
+      this.recordControlEvent?.({
+        type: "memory.turn.writeback_failed",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.writebackRuntimeTurn",
+        subject: event?.payload?.threadId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "memory_writeback_failed",
+        outcome: "skipped",
+        correlationId: buildRunKey(event?.payload?.threadId, event?.payload?.turnId),
+        payload: {
+          provider: snapshot.prepared.provider,
+          error: formatErrorMessage(error),
+        },
+      });
       console.warn(`[mossbridge] writeback skipped thread=${event?.payload?.threadId || ""} ${formatErrorMessage(error)}`);
+    } finally {
+      this.completeMemoryMetabolismAttempt?.({
+        snapshot,
+        event,
+        assistantTextFinal: rawAssistantTextFinal,
+        writebackResult,
+        writebackError,
+      });
+    }
+  }
+
+  completeMemoryMetabolismAttempt({
+    snapshot = null,
+    event = null,
+    assistantTextFinal = "",
+    writebackResult = null,
+    writebackError = null,
+  } = {}) {
+    const systemTurn = snapshot?.prepared?.systemTurn || null;
+    if (!this.memoryMetabolismService || !isDreamingSystemTurn(systemTurn)) {
+      return;
+    }
+    try {
+      const result = this.memoryMetabolismService.completeRuntimeAttempt({
+        systemTurn,
+        eventType: event?.type || "",
+        assistantTextFinal,
+        writebackResult,
+        writebackError,
+      });
+      this.recordControlEvent?.({
+        type: result?.ok ? "memory.dreaming.completed" : "memory.dreaming.incomplete",
+        layer: CONTROL_LAYER.EXECUTIVE,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.completeMemoryMetabolismAttempt",
+        subject: resolveDreamingAttemptId(systemTurn) || "",
+        severity: result?.ok ? CONTROL_SEVERITY.INFO : CONTROL_SEVERITY.WARN,
+        reason: result?.reason || (result?.ok ? "receipt_complete" : "receipt_incomplete"),
+        outcome: result?.ok ? "complete" : "retry_later",
+        correlationId: buildRunKey(event?.payload?.threadId, event?.payload?.turnId),
+        payload: {
+          attemptId: resolveDreamingAttemptId(systemTurn) || "",
+          eventType: event?.type || "",
+          handled: Boolean(result?.handled),
+          ok: Boolean(result?.ok),
+          mutationCount: Number(result?.mutation_count) || Number(result?.mutationCount) || 0,
+          writebackError: writebackError ? formatErrorMessage(writebackError) : "",
+        },
+      });
+      if (result?.handled && !result.ok) {
+        console.warn(
+          `[mossbridge] dreaming incomplete attempt=${resolveDreamingAttemptId(systemTurn) || ""} reason=${result.reason || "unknown"}`,
+        );
+      }
+    } catch (error) {
+      console.warn(`[mossbridge] dreaming completion gate failed ${formatErrorMessage(error)}`);
     }
   }
 }
@@ -2856,14 +3540,27 @@ function isCheckinOpportunityMessage(message = {}) {
   return normalizeText(message?.kind) === "checkin_opportunity";
 }
 
-function buildMemoryCapturePressureOptions(normalized = {}, { residentAlreadyDelivered = false } = {}) {
+function buildMemoryCapturePressureOptions(
+  normalized = {},
+  {
+    residentAlreadyDelivered = false,
+    includeRuntimePreludeGuidance = false,
+    contextPressure = null,
+  } = {},
+) {
+  const pressureOptions = buildTokenPressureMemoryOptions(contextPressure, {
+    background: isBackgroundCheckinOpportunity(normalized),
+  });
   if (!isBackgroundCheckinOpportunity(normalized)) {
     return {
+      includeRuntimePreludeGuidance: Boolean(includeRuntimePreludeGuidance),
       residentLimit: residentAlreadyDelivered ? 0 : undefined,
+      ...pressureOptions,
     };
   }
   return {
     runtimeProfile: "proactive_lite",
+    includeRuntimePreludeGuidance: Boolean(includeRuntimePreludeGuidance),
     cacheLimit: 16,
     recallRecentRecordLimit: 4,
     temporalRecallLimit: 4,
@@ -2875,12 +3572,140 @@ function buildMemoryCapturePressureOptions(normalized = {}, { residentAlreadyDel
     preludeOngoingShadowLimit: 3,
     preludeObservationLimit: 1,
     preludeEpisodeLimit: 1,
+    preludeHotUpstreamLimit: 2,
+    preludeHotTurnLimit: 3,
+    preludeHotSnapshotLimit: 1,
     preludeRecentSnippetLimit: 3,
     preludeRecentThreadLimit: 2,
     coldLimit: 1,
     coldVineLimit: 2,
     coldVinePerRootLimit: 1,
+    ...pressureOptions,
   };
+}
+
+function shouldIncludeStableTurnGuidance(stableGuidanceKey = "", deliveredKeys = null) {
+  const key = normalizeCommandArgument(stableGuidanceKey);
+  if (!key || key.endsWith("::opening")) {
+    return false;
+  }
+  return !deliveredKeys || !deliveredKeys.has(key);
+}
+
+function buildTokenPressureMemoryOptions(contextPressure = null, { background = false } = {}) {
+  const level = normalizeText(contextPressure?.level);
+  if (level === "high") {
+    return background
+      ? {
+          cacheLimit: 10,
+          recallRecentRecordLimit: 3,
+          temporalRecallLimit: 3,
+          limit: 2,
+          preludeWarmLimit: 2,
+          preludeOngoingLimit: 2,
+          preludeOngoingShadowLimit: 2,
+          preludeObservationLimit: 1,
+          preludeEpisodeLimit: 1,
+          preludeHotUpstreamLimit: 1,
+          preludeHotTurnLimit: 2,
+          preludeHotSnapshotLimit: 1,
+          preludeRecentSnippetLimit: 2,
+          preludeRecentThreadLimit: 1,
+          coldLimit: 1,
+          coldVineLimit: 1,
+          coldVinePerRootLimit: 1,
+        }
+      : {
+          limit: 4,
+          preludeWarmLimit: 4,
+          preludeOngoingLimit: 3,
+          preludeOngoingShadowLimit: 3,
+          preludeObservationLimit: 2,
+          preludeEpisodeLimit: 2,
+          preludeHotUpstreamLimit: 2,
+          preludeHotTurnLimit: 3,
+          preludeHotSnapshotLimit: 1,
+          preludeRecentSnippetLimit: 2,
+          preludeRecentThreadLimit: 2,
+          coldLimit: 1,
+          coldVineLimit: 1,
+          coldVinePerRootLimit: 1,
+        };
+  }
+  if (level === "warm") {
+    return background
+      ? {
+          cacheLimit: 12,
+          limit: 3,
+          preludeHotUpstreamLimit: 2,
+          preludeHotTurnLimit: 3,
+          preludeHotSnapshotLimit: 1,
+          preludeRecentSnippetLimit: 2,
+          preludeRecentThreadLimit: 2,
+          coldVineLimit: 1,
+          coldVinePerRootLimit: 1,
+        }
+      : {
+          preludeRecentSnippetLimit: 4,
+          preludeRecentThreadLimit: 4,
+          preludeHotUpstreamLimit: 3,
+          preludeHotTurnLimit: 4,
+          preludeHotSnapshotLimit: 1,
+          coldVineLimit: 2,
+          coldVinePerRootLimit: 1,
+        };
+  }
+  return {};
+}
+
+function buildMemoryDeliveryReport({
+  normalized = {},
+  baseText = "",
+  frontstageNote = "",
+  toolHoverNote = "",
+  prelude = "",
+  sections = [],
+  contextPressure = null,
+  includeStableTurnGuidance = false,
+  residentAlreadyDelivered = false,
+} = {}) {
+  const sectionRows = [
+    ["frontstage_note", frontstageNote],
+    ["tool_hover_note", toolHoverNote],
+    ["memory_prelude", prelude],
+    ["current_inbound", baseText],
+  ].map(([name, text]) => {
+    const normalizedText = String(text || "");
+    return {
+      name,
+      delivered: Boolean(normalizedText.trim()),
+      chars: normalizedText.length,
+      estimated_tokens: estimatePromptTokens(normalizedText),
+    };
+  });
+  return {
+    mode: isBackgroundCheckinOpportunity(normalized) ? "heartbeat" : "inbound",
+    provider: normalizeText(normalized?.provider) || "weixin",
+    include_stable_guidance: Boolean(includeStableTurnGuidance),
+    resident_anchor_repeated: Boolean(residentAlreadyDelivered),
+    pressure_level: normalizeText(contextPressure?.level) || "normal",
+    pressure_ratio: Number(contextPressure?.ratio) || 0,
+    section_count: Array.isArray(sections) ? sections.length : 0,
+    sections: sectionRows,
+    total_chars: sectionRows.reduce((sum, row) => sum + row.chars, 0),
+    estimated_tokens: sectionRows.reduce((sum, row) => sum + row.estimated_tokens, 0),
+    policy: "Delivery report is stored for diagnostics only; it is not injected into the runtime prompt.",
+  };
+}
+
+function estimatePromptTokens(text = "") {
+  const normalized = String(text || "");
+  if (!normalized) {
+    return 0;
+  }
+  const cjk = (normalized.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
+  const nonCjk = Math.max(0, normalized.length - cjk);
+  return Math.ceil(cjk + (nonCjk / 4));
 }
 
 function normalizeReplyTarget(target) {
@@ -3153,6 +3978,52 @@ function parseChannelCommand(text) {
   };
 }
 
+function parseModelSelectionArgs(value) {
+  const tokens = splitCommandArgs(value);
+  const modelParts = [];
+  let provider = "";
+  let providerSpecified = false;
+  let clear = false;
+  let error = "";
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const normalizedToken = normalizeCommandArgument(token).toLowerCase();
+    if (token === "--clear" || ["default", "clear", "reset"].includes(normalizedToken)) {
+      clear = true;
+      continue;
+    }
+    if (token === "--provider" || token === "-p") {
+      providerSpecified = true;
+      index += 1;
+      provider = normalizeModelProviderArg(tokens[index]);
+      if (!tokens[index]) {
+        error = "--provider requires a provider value";
+        break;
+      }
+      continue;
+    }
+    if (token.startsWith("--provider=")) {
+      providerSpecified = true;
+      provider = normalizeModelProviderArg(token.slice("--provider=".length));
+      continue;
+    }
+    modelParts.push(token);
+  }
+
+  const model = modelParts.join(" ").trim();
+  if (clear && model) {
+    error = "Use either --clear/default or a model name, not both.";
+  }
+  return {
+    model,
+    provider,
+    providerSpecified,
+    clear,
+    error,
+  };
+}
+
 function normalizeCommandName(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
@@ -3232,6 +4103,54 @@ function normalizeCommandArgument(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeModelProviderArg(value) {
+  const normalized = normalizeCommandArgument(value).toLowerCase();
+  if (["", "default", "cloud", "none", "clear"].includes(normalized)) {
+    return "";
+  }
+  return normalizeCommandArgument(value);
+}
+
+function normalizeTextList(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = normalizeCommandArgument(value);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function mergeTextLists(left, right) {
+  return normalizeTextList([...normalizeTextList(left), ...normalizeTextList(right)]);
+}
+
+function splitCommandArgs(value) {
+  const text = normalizeCommandArgument(value);
+  if (!text) {
+    return [];
+  }
+  const tokens = [];
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+  let match = null;
+  while ((match = pattern.exec(text)) !== null) {
+    const raw = match[1] ?? match[2] ?? match[3] ?? "";
+    const unescaped = raw.replace(/\\(["'\\])/g, "$1").trim();
+    if (unescaped) {
+      tokens.push(unescaped);
+    }
+  }
+  return tokens;
+}
+
 function normalizeThreadId(value) {
   const normalized = normalizeCommandArgument(value);
   if (!normalized) {
@@ -3246,7 +4165,7 @@ function normalizeText(value) {
 
 function buildSystemRuntimeSenderId(senderId) {
   const normalized = normalizeText(senderId) || "unknown";
-  return `${normalized}#asherie-system`;
+  return `${normalized}#mossbridge-system`;
 }
 
 function clampSystemRuntimeText(value, maxChars = MAX_SYSTEM_RUNTIME_TEXT_CHARS) {
@@ -3259,7 +4178,7 @@ function clampSystemRuntimeText(value, maxChars = MAX_SYSTEM_RUNTIME_TEXT_CHARS)
   return [
     text.slice(0, keep).trimEnd(),
     "",
-    "[Mossbridge note: system-turn context was trimmed before ClaudeCode dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
+    "[Mossbridge note: system-turn context was trimmed before runtime dispatch to avoid prompt overflow. Search memory explicitly if this trigger needs more detail.]",
   ].join("\n");
 }
 
@@ -3319,22 +4238,42 @@ function formatModelStatusNotice({
   runtimeId = "",
   workspaceRoot = "",
   selectedModel = "",
+  selectedProvider = "",
   runtimeDefaultModel = "",
-  catalog = null,
+  configuredModel = "",
+  configuredProvider = "",
+  modelCatalog = [],
 } = {}) {
-  const models = catalog?.models || [];
   const selected = normalizeText(selectedModel);
+  const provider = normalizeModelProviderArg(selectedProvider);
   const runtimeDefault = normalizeText(runtimeDefaultModel);
-  return formatBridgeNotice("model_status", [
-    `runtime: ${normalizeText(runtimeId) || "runtime"}`,
+  const runtime = normalizeText(runtimeId) || "runtime";
+  const lines = [
+    `runtime: ${runtime}`,
     workspaceRoot ? `workspace: ${workspaceRoot}` : "",
     `selected_model: ${selected || "(default)"}`,
-    runtimeDefault ? `runtime_default: ${runtimeDefault}` : "runtime_default: (runtime default)",
-    `effective_model: ${selected || runtimeDefault || "(runtime default)"}`,
-    `catalog: ${models.length ? `${models.length} models` : "(not available)"}`,
-    catalog?.updatedAt ? `catalog_updated_at: ${catalog.updatedAt}` : "",
-    models.length ? `available_models: ${formatModelList(models)}` : "available_models: (not available)",
-    "commands: /model <id>, /model default, /model refresh",
+  ];
+  if (runtime === "codex") {
+    lines.push(`selected_provider: ${provider || "(default)"}`);
+  }
+  if (configuredModel || configuredProvider) {
+    lines.push(`env_override: model=${configuredModel || "(default)"} provider=${configuredProvider || "(default)"}`);
+  } else {
+    lines.push(runtimeDefault ? `runtime_default: ${runtimeDefault}` : "runtime_default: (runtime default)");
+  }
+  lines.push(`effective_model: ${configuredModel || selected || runtimeDefault || "(runtime default)"}`);
+  if (runtime === "codex") {
+    lines.push(`effective_provider: ${configuredProvider || provider || "(default)"}`);
+  }
+  lines.push(`catalog: ${modelCatalog.length ? `${modelCatalog.length} models` : "(not available)"}`);
+  lines.push(modelCatalog.length
+    ? `available_models: ${formatRuntimeModelCatalog(modelCatalog)}`
+    : modelChoiceConfigHint(runtime));
+  lines.push(runtime === "codex"
+    ? "commands: /model <alias-or-id>, /model --provider <id> <model>, /model default, /model refresh"
+    : "commands: /model <alias-or-id>, /model default, /model refresh");
+  return formatBridgeNotice("model_status", [
+    ...lines,
   ]);
 }
 
@@ -3346,6 +4285,218 @@ function formatModelList(models, limit = 12) {
   const shown = normalized.slice(0, Math.max(1, Number(limit) || 12)).map((item) => item.model);
   const suffix = normalized.length > shown.length ? `, +${normalized.length - shown.length} more` : "";
   return `${shown.join(", ")}${suffix}`;
+}
+
+function buildRuntimeModelCatalog({ runtimeId = "", catalog = {}, config = {} } = {}) {
+  const runtimeModels = Array.isArray(catalog?.models) ? catalog.models : [];
+  const configuredChoices = [
+    ...parseConfiguredModelChoices(config.modelChoices, runtimeId),
+    ...parseConfiguredModelChoices(
+      normalizeText(runtimeId).toLowerCase() === "codex"
+        ? config.codexModelChoices
+        : config.claudeModelChoices,
+      runtimeId,
+    ),
+  ];
+  const result = [];
+  const seen = new Set();
+  for (const item of [...runtimeModels, ...configuredChoices]) {
+    const model = normalizeCommandArgument(item?.model || item?.id);
+    if (!model) {
+      continue;
+    }
+    const provider = normalizeModelProviderArg(item?.modelProvider || item?.model_provider || "");
+    const key = `${model.toLowerCase()}@${provider.toLowerCase()}`;
+    if (seen.has(key)) {
+      const existing = result.find((candidate) =>
+        normalizeCommandArgument(candidate.model).toLowerCase() === model.toLowerCase()
+        && normalizeModelProviderArg(candidate.modelProvider).toLowerCase() === provider.toLowerCase()
+      );
+      if (existing) {
+        existing.aliases = mergeTextLists(existing.aliases, item.aliases);
+      }
+      continue;
+    }
+    seen.add(key);
+    result.push({
+      ...item,
+      id: normalizeCommandArgument(item?.id) || model,
+      model,
+      modelProvider: provider,
+      displayName: normalizeCommandArgument(item?.displayName || item?.display_name),
+      aliases: normalizeTextList(item?.aliases),
+    });
+  }
+  return result;
+}
+
+function parseConfiguredModelChoices(values, runtimeId = "") {
+  const result = [];
+  for (const raw of Array.isArray(values) ? values : []) {
+    const text = normalizeCommandArgument(raw);
+    if (!text) {
+      continue;
+    }
+    const eqIndex = text.indexOf("=");
+    const alias = eqIndex > 0 ? normalizeCommandArgument(text.slice(0, eqIndex)) : "";
+    const target = eqIndex > 0 ? normalizeCommandArgument(text.slice(eqIndex + 1)) : text;
+    if (!target) {
+      continue;
+    }
+    const split = splitModelProviderTarget(target, runtimeId);
+    if (!split.model) {
+      continue;
+    }
+    result.push({
+      id: split.model,
+      model: split.model,
+      modelProvider: split.provider,
+      aliases: alias ? [alias] : [],
+      displayName: alias,
+      configured: true,
+    });
+  }
+  return result;
+}
+
+function splitModelProviderTarget(target, runtimeId = "") {
+  const text = normalizeCommandArgument(target);
+  if (!text) {
+    return { model: "", provider: "" };
+  }
+  if (normalizeText(runtimeId).toLowerCase() !== "codex") {
+    return { model: text, provider: "" };
+  }
+  const atIndex = text.lastIndexOf("@");
+  if (atIndex <= 0 || atIndex === text.length - 1) {
+    return { model: text, provider: "" };
+  }
+  return {
+    model: normalizeCommandArgument(text.slice(0, atIndex)),
+    provider: normalizeModelProviderArg(text.slice(atIndex + 1)),
+  };
+}
+
+function findRuntimeModelChoice(models, query) {
+  const exact = findModelByQuery(models, query);
+  if (exact) {
+    return exact;
+  }
+  const normalizedQuery = normalizeCommandArgument(query).toLowerCase();
+  if (!normalizedQuery || !Array.isArray(models)) {
+    return null;
+  }
+  const aliasMatched = models.find((item) =>
+    normalizeTextList(item?.aliases).some((alias) => alias.toLowerCase() === normalizedQuery)
+    || normalizeCommandArgument(item?.displayName).toLowerCase() === normalizedQuery
+  );
+  if (aliasMatched) {
+    return aliasMatched;
+  }
+  const looseMatches = models.filter((item) => {
+    const candidates = [
+      normalizeCommandArgument(item?.model),
+      normalizeCommandArgument(item?.id),
+      normalizeCommandArgument(item?.displayName),
+      ...normalizeTextList(item?.aliases),
+    ].map((value) => value.toLowerCase()).filter(Boolean);
+    return candidates.some((candidate) => candidate.includes(normalizedQuery));
+  });
+  return looseMatches.length === 1 ? looseMatches[0] : null;
+}
+
+function formatRuntimeModelCatalog(models) {
+  return (Array.isArray(models) ? models : []).map((item) => {
+    const alias = normalizeTextList(item?.aliases)[0] || normalizeCommandArgument(item?.displayName);
+    const model = normalizeCommandArgument(item?.model);
+    const provider = normalizeModelProviderArg(item?.modelProvider);
+    const modelWithProvider = provider ? `${model}@${provider}` : model;
+    return alias ? `${alias}=${modelWithProvider}` : modelWithProvider;
+  }).filter(Boolean).join(", ");
+}
+
+function buildModelNotFoundText(query, models, runtimeId = "") {
+  const lines = [
+    "model_not_found",
+    `query: ${normalizeCommandArgument(query) || "(empty)"}`,
+  ];
+  const suggestions = suggestRuntimeModels(query, models);
+  if (suggestions.length) {
+    lines.push(`did_you_mean: ${suggestions.join(", ")}`);
+  }
+  if (Array.isArray(models) && models.length) {
+    lines.push(`available_models: ${formatRuntimeModelCatalog(models)}`);
+    lines.push("hint: /model refresh");
+  } else {
+    lines.push(modelChoiceConfigHint(runtimeId));
+  }
+  return formatBridgeNotice("model_not_found", lines);
+}
+
+function suggestRuntimeModels(query, models) {
+  const normalizedQuery = normalizeCommandArgument(query).toLowerCase();
+  if (!normalizedQuery || !Array.isArray(models)) {
+    return [];
+  }
+  return models
+    .map((item) => {
+      const candidates = [
+        normalizeCommandArgument(item?.model),
+        normalizeCommandArgument(item?.id),
+        normalizeCommandArgument(item?.displayName),
+        ...normalizeTextList(item?.aliases),
+      ].filter(Boolean);
+      const best = candidates
+        .map((candidate) => ({
+          value: candidate,
+          score: scoreModelCandidate(normalizedQuery, candidate.toLowerCase()),
+        }))
+        .sort((left, right) => right.score - left.score)[0];
+      return {
+        item,
+        score: best?.score || 0,
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 3)
+    .map((entry) => {
+      const alias = normalizeTextList(entry.item?.aliases)[0] || normalizeCommandArgument(entry.item?.displayName);
+      const model = normalizeCommandArgument(entry.item?.model);
+      return alias ? `${alias} (${model})` : model;
+    });
+}
+
+function scoreModelCandidate(query, candidate) {
+  if (!query || !candidate) {
+    return 0;
+  }
+  if (candidate === query) {
+    return 100;
+  }
+  if (candidate.includes(query)) {
+    return 70 + Math.min(20, query.length);
+  }
+  if (query.includes(candidate)) {
+    return 50 + Math.min(20, candidate.length);
+  }
+  const queryParts = query.split(/[^a-z0-9]+/u).filter(Boolean);
+  const candidateParts = candidate.split(/[^a-z0-9]+/u).filter(Boolean);
+  const overlap = queryParts.filter((part) => candidateParts.some((candidatePart) =>
+    candidatePart.includes(part) || part.includes(candidatePart)
+  )).length;
+  return overlap ? 20 + overlap * 10 : 0;
+}
+
+function modelChoiceConfigHint(runtimeId = "") {
+  const runtime = normalizeText(runtimeId).toLowerCase();
+  if (runtime === "claudecode") {
+    return "hint: set MOSSBRIDGE_CLAUDE_MODEL_CHOICES, for example opus=claude-opus-4-6,sonnet=claude-sonnet-4-6";
+  }
+  if (runtime === "codex") {
+    return "hint: set MOSSBRIDGE_CODEX_MODEL_CHOICES, for example oss=gpt-oss:20b,local=gemma4:26b-32k@ollama";
+  }
+  return "hint: set MOSSBRIDGE_MODEL_CHOICES or a runtime-specific model choices env";
 }
 
 function isClaudeRuntimeFailureText(text) {

@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const CHECKIN_OPPORTUNITY_TTL_MS = 60 * 60_000;
+const DREAMING_OPPORTUNITY_TTL_MS = 6 * 60 * 60_000;
 
 class SystemMessageQueueStore {
   constructor({ filePath }) {
@@ -82,14 +83,18 @@ class SystemMessageQueueStore {
 }
 
 function isExpiredSystemMessage(message) {
-  if (normalizeText(message?.kind) !== "checkin_opportunity") {
+  const kind = normalizeText(message?.kind);
+  if (kind !== "checkin_opportunity" && kind !== "dreaming_opportunity") {
     return false;
   }
   const createdAtMs = Date.parse(message?.createdAt || "");
   if (!Number.isFinite(createdAtMs)) {
     return false;
   }
-  return Date.now() - createdAtMs > CHECKIN_OPPORTUNITY_TTL_MS;
+  const ttlMs = kind === "dreaming_opportunity"
+    ? DREAMING_OPPORTUNITY_TTL_MS
+    : CHECKIN_OPPORTUNITY_TTL_MS;
+  return Date.now() - createdAtMs > ttlMs;
 }
 
 function normalizeSystemMessage(message) {

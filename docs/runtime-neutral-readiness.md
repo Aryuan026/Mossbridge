@@ -28,10 +28,10 @@ cannot be configured and audited as Mossbridge-native adapters.
 | WeChat login | QR login and allowed-user binding are runtime-independent | same account store | same account store |
 | Workspace bind | `/bind` maps WeChat to a workspace | Codex thread stored in session store | Claude Code session stored in session store |
 | Memory | hot context, notebook, warm memory, ongoing tracks, observation journal, episode journal, case index, and conversation cache use the same data root | same tools/context packet | same tools/context packet via MCP config |
-| Deferred app capture | ChatGPT web/app daily captures are a future local data source, not a first-version requirement | Codex can later help inspect/import captures | Claude Code can later read normalized memory once imported |
-| Wakeups | reminders and random checkins use the same system-turn queue and failure throttling | Codex adapter handles thread/RPC failure | Claude Code adapter handles session/API-result failure |
-| Deferred nightly dreaming | quiet-window dreaming completion gate is a future shared bridge feature, not a first-version guarantee | Codex should execute the same future JSON contract | Claude Code should execute the same future JSON contract |
-| Attachments | WeChat image/file intake, batching, inbox, and notes are shared | same prepared inbound text | same prepared inbound text, with local image `Read` guidance |
+| Web AI capture | ChatGPT/Claude/Gemini/Perplexity/Rikkahub daily captures can be manually imported into cache/hot memory; automatic browser sync is deferred | Codex can inspect/import captures | Claude Code can read normalized memory once imported |
+| Wakeups | reminders and random checkins use the same system-turn queue, short memory packet, safe action envelope, and failure throttling | Codex adapter handles thread/RPC failure without re-injecting full opening instructions into system turns | Claude Code adapter handles session/API-result failure without re-injecting full opening instructions into system turns |
+| Dreaming/metabolism | quiet-window dreaming uses shared bridge scheduling, source digest, receipt tool, completion gate, and retry metadata | Codex executes the same system-turn/tool contract | Claude Code executes the same system-turn/tool contract |
+| Attachments | WeChat image/file intake, batching, inbox, and notes are shared | saved images can be passed as Codex `localImage` input when using native image-capable models | same prepared inbound text, with local image `Read` guidance |
 | Failure visibility | runtime errors become user-readable bridge notices and do not enter assistant memory text | auth/RPC/compact failures covered | 400/prompt-too-long/session-id failures covered |
 
 ## Clean-Clone Smoke
@@ -57,6 +57,20 @@ MOSSBRIDGE_IDENTITY_USER_ID=owner
 MOSSBRIDGE_IDENTITY_REALM_ID=default
 MOSSBRIDGE_IDENTITY_AGENT_ID=moss
 ```
+
+Optional Codex model/provider controls:
+
+```dotenv
+MOSSBRIDGE_CODEX_MODEL=
+MOSSBRIDGE_CODEX_MODEL_PROVIDER=
+MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
+MOSSBRIDGE_CODEX_COMMAND=
+MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
+```
+
+If using a local provider such as Ollama, copy `templates/codex-local-provider.sh` outside the repo, `chmod +x` it, point `MOSSBRIDGE_CODEX_COMMAND` at the copied script, and keep model/provider values in `.env`. This keeps Codex cloud and local startup paths behind the same Mossbridge lifecycle commands.
+
+At runtime, `/model <id>` updates the current WeChat binding. If choices are configured, aliases work too, such as `/model local`. For Codex, `/model --provider ollama <id>` also stores the provider for that binding; `/model --clear` returns the binding to defaults. Env-level `MOSSBRIDGE_CODEX_MODEL` / `MOSSBRIDGE_CODEX_MODEL_PROVIDER` still win as deployment defaults, so clear or update them before restart if you want `/model` to control selection dynamically.
 
 For Claude Code, change only:
 
@@ -96,7 +110,7 @@ Pass criteria:
 - A warm memory write/read path can be exercised through the model tools.
 - A reminder or checkin can be scheduled or triggered without crashing the bridge.
 - Core memory delivery works from an empty local data root: context packet, hot context, notebook, warm memory, ongoing tracks, observation/episode journals, case index, and cold-version compatibility do not require a private external warehouse.
-- Nightly dreaming can remain disabled or manually supervised until the bridge-owned completion gate is implemented; do not document it as an active first-version guarantee.
+- If dreaming is enabled, the quiet-window scheduler must queue a `dreaming_opportunity`, require `mossbridge_memory_metabolism_receipt_write`, and retry the same attempt on missing receipt/runtime failure.
 
 ## Service Smoke
 
@@ -138,7 +152,7 @@ Verify:
 - WeChat context-token send failures defer or retry instead of evaporating.
 - repeated proactive failures are throttled so wakeups do not spam the user.
 - runtime failures are visible to the user/operator but do not become remembered conversation text.
-- if nightly dreaming is enabled in a later version, failures must not silently roll to the next day; they should retry with visible metadata until mutation/writeback succeeds or an operator intervenes.
+- dreaming failures must not silently roll to the next day; they should retry with visible metadata until mutation/writeback/no-op receipt succeeds or an operator intervenes.
 
 ## Public Release Blockers
 

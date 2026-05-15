@@ -218,6 +218,7 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
   const turnBindings = [];
   const queuedBindings = [];
   const order = [];
+  const runtimeTurns = [];
   const appLike = {
     channelAdapter: {
       async sendTyping() {
@@ -234,7 +235,8 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       releaseScope() {},
     },
     runtimeAdapter: {
-      async sendTextTurn() {
+      async sendTextTurn(payload) {
+        runtimeTurns.push(payload);
         return { threadId: "thread-1", turnId: "turn-1" };
       },
       getSessionStore() {
@@ -267,10 +269,20 @@ test("dispatchPreparedTurn binds reply target to the explicit turn id when runti
       contextToken: "ctx-1",
       provider: "system",
       text: "ping",
+      attachments: [{
+        absolutePath: "/workspace/wechat/inbox/photo.jpg",
+        contentType: "image/jpeg",
+        isImage: true,
+      }],
     },
   });
 
   assert.equal(dispatched, true);
+  assert.deepEqual(runtimeTurns[0].attachments, [{
+    absolutePath: "/workspace/wechat/inbox/photo.jpg",
+    contentType: "image/jpeg",
+    isImage: true,
+  }]);
   assert.deepEqual(turnBindings, [{
     threadId: "thread-1",
     turnId: "turn-1",

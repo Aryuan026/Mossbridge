@@ -4,7 +4,7 @@
 
 它记录当前私有备份已经完成到哪里、为什么现在还不适合直接公开分享、以及未来要把它交给朋友使用前必须补齐哪些东西。这里不记录私人记忆内容、账号 token、测试聊天原文或本地二维码数据。
 
-Last updated: 2026-05-14
+Last updated: 2026-05-15
 
 ## 当前结论
 
@@ -45,6 +45,11 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 2026-05-08：补入 dreaming completion-gate 提醒：公开版实现 Bridge-owned dreaming 时，不能把“触发过”当成“整理成功”。必须以 mutation/writeback 成功为完成条件；前台活跃、runtime 错误、解析错误或写入失败都要延迟重试同一任务，并留下 retry 回执。
 - 2026-05-13：同步公开版交付说明：README / AGENTS / quickstart / Codex memory setup 解释心跳系统、记忆递送、状态/数据/workspace 隔离和主要参数原因；公开示例 `agent_id` 改为 `moss`，默认未配置 data root 时落到 `mossbridge_data/`；桥提示改成明确 `[Mossbridge]` 运行层通知，避免和主 bot 口吻混淆；`/model` 扩展为 Codex / Claude Code 通用的下一轮模型覆盖命令。
 - 2026-05-14：补入内置 brain 边界：Mossbridge 第一版不是空桥外挂脑，data root 默认携带 hot context、notebook、小事记、warm、ongoing、episode、case、memory_tree 等位置；`diary` 兼容入口默认写入 `storage/notebook/`；嘴、手和 runtime adapter 不应直接写 brain 文件。
+- 2026-05-15：补入 `npm run smoke:memory-chain`，用独立 state/data/workspace 实写 warm、ongoing、observation、episode、case、solitude、notebook、conversation cache、local web AI capture import 和 sticker catalog，并验证 context packet 能召回核心上下文；`npm run smoke:memory-empty` 同步检查 hot/app-capture/dreaming 目录骨架。
+- 2026-05-15：接入 bridge-owned 自动 metabolism/dreaming 第一版：`MOSSBRIDGE_ENABLE_DREAMING` 或 `start --dreaming` 打开后，Mossbridge 会在安静窗口扫描 conversation cache，排队 `dreaming_opportunity` 系统轮次；runtime 需要用 `mossbridge_memory_metabolism_receipt_write` 写回 mutation/no-op receipt，bridge 才会把 attempt 标成完成，否则按 retry window 重试同一整理任务。
+- 2026-05-15：从 live 压测仓 `/Users/mac/Documents/Codex/asheriebridge` 只读同步低风险 Codex runtime 能力到公开仓：`MOSSBRIDGE_CODEX_MODEL` / `MOSSBRIDGE_CODEX_MODEL_PROVIDER` / `MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT`、Codex session `modelProvider`、RPC `modelProvider` 参数、已保存图片附件的 `localImage` input、模型目录的 `slug/inputModalities/outputModalities/contextWindow` 字段，以及 `templates/codex-local-provider.sh`。本轮没有合并 Cyberboss/私有仓的 vision inbound pipeline、Home coupling 或运行态路径。
+- 2026-05-15：继续只读同步 live 仓 Codex model menu 护栏：新增 `MOSSBRIDGE_MODEL_CHOICES` / `MOSSBRIDGE_CODEX_MODEL_CHOICES` / `MOSSBRIDGE_CLAUDE_MODEL_CHOICES`，微信 `/model` 与 `shared:model` 都支持 `alias=model`、Codex `alias=model@provider`、`/model --provider <id> <model>`、错误名提示和可用模型列表，避免用户在 WeChat 端盲填不存在的模型名。
+- 2026-05-15：吸收 cybernetics-agent 的控制论骨架为 Mossbridge 原生 control plane：新增 `src/control/` 和 `docs/control-plane.md`，把心跳 skip/queue、runtime cooldown/watchdog、memory packet delivery、dreaming receipt、writeback/deferred delivery 等自动动作写入 `MOSSBRIDGE_STATE_DIR/control-events.jsonl`。这是运行因果账本，不是用户记忆仓，也不接入外部告警或第三方权限系统。
 
 ## 当前已经具备的能力
 
@@ -61,6 +66,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 已有 hot context、notebook、warm memory、ongoing tracks、conversation cache、episode/observation/solitude journal、case index、memory version bank、cold root provider 的代码入口。
 - 前台模型可以通过工具读写温记忆、修改记忆、读取 context packet、处理 ongoing 追踪。
 - 主动唤醒已经接入记忆上下文，不再只是裸 reminder。
+- 自动 metabolism/dreaming 已有 bridge-owned 调度、quiet-window 判定、attempt 状态、mutation/no-op receipt、completion gate 和 retry metadata；Codex 与 Claude Code 共用同一份系统轮次和工具契约。
 - 记忆仓可配置到独立 data root，也可在明确迁移时兼容既有本地记忆仓路径。
 - 代码层面已经强调数据本体、测试数据、稳定记忆和本地账号状态分离。
 
@@ -70,6 +76,39 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 - 支持列出、选择、发送、保存、更新、删除表情包。
 - WeChat 图片和附件可进入 inbox，并生成面向上下文的文字说明。
 - 回复分段、短句合并、段落呼吸和 emoji shortcode 处理已经做过一轮优化。
+
+### 2026-05-15 本体功能对照检查
+
+这轮检查按“能否由 Mossbridge 本体稳定承载，而不是桥接私人 Home”来划线：
+
+- 已接通：warm memory 写入/搜索/读取/更新/删除、ongoing track、observation journal、episode journal、case index、cold version/root 读取与 patch、conversation cache 写回、notebook 写入、wakeup agenda、reminder、system turn、timeline、channel file、sticker catalog、自动 metabolism/dreaming completion gate、可选本地 whereabouts 摘要。
+- 已准备结构但仍偏第一版保守：hot context store/projection、app daily capture 验证/暂存/导入、memory_tree 目录。它们已可作为 dreaming 素材或未来拓扑落点，但网页插件自动同步、外源导入 runner、Notion 同步不进入第一版自动链路。
+- 不进入公开工具面：Home 权限管理、Gmail、米家/小米、第三方 OAuth/login executor、Notion 同步执行器、GPT/Rikkahub/Driftstone 外源导入执行器。相关内容只能作为后续文档契约或 staging 设计，不作为新用户部署依赖。
+- 表情包是 Mossbridge 本体能力：默认 catalog、inbox 安全保存、静态 PNG 预览发送、搜索/挑选/更新/删除都不依赖私人 Home。
+- 可选 whereabouts 是本地 presence 能力，不是 Home 授权系统；公开第一版只保留只读摘要工具和本地配置，不提供第三方账号登录或外部设备权限管理。
+
+### 2026-05-15 Home 可搬功能差距审计
+
+这轮只读对照 Home 和当前 bridge 代码后，新的判断是：Mossbridge 第一版已经有自带 brain 的主体仓位和工具链，剩下最值得搬的不是第三方工具，而是几块内部编排能力。
+
+可优先搬进 Mossbridge 本体的低耦合能力：
+
+- memory intent router：把“根据你对我的印象/偏好帮我选……”这类问题先分流到 warm / cold / case / observation 的合适召回方向，避免只靠关键词加分。
+- hot context store / projection：已补入上游包去重、basin head、turn slice、projection preview 和 prompt overlay。当前 importer 会把网页 AI capture 写进 `conversation_cache` 与 `cache/hot/`；后续重点是浏览器插件捕获质量和 dreaming 晋升质量。
+- cold tree 内部结构化能力：Mossbridge 现在能读/patch cold root 和 truth-layer vines，但还没有 Home 那套 root / vine / leaf / atomic fact / shadow snippets / warm-promoted / conservative warm-to-cold promotion 的完整本地版本。公开线应先搬轻量、文件制、可测的子集，不接私人外部树。
+- local calendar pending / action flow：Mossbridge 已有 reminder、calendar packet 和 sticky calendar prelude，但缺 Home 的 pending calendar action、改期/取消澄清、surfacing plan 到本地 calendar 的闭环。它适合做成纯本地日历/提醒能力，不接 Google/Gmail/OAuth。
+- wakeup surfacing/outbox planner：Mossbridge 已有 checkin、wakeup agenda、solitude 和 dreaming；Home 还有更完整的 wakeup context、outbox stale suppression、surfacing planner。可作为主动性第二阶段，不应阻塞第一版空仓部署。
+- health / body-state memory lane：陪伴型建议不能靠瞎猜。用户在对话里明说的健身、减脂、睡眠、饮食、压力、加班、体质、用药、过敏等信息，应作为一等 brain 线索写入 ongoing / warm / cold tags，并进入 context packet。它不是单独的健康区块，也不是医学诊断；可选的是 Apple Health、手表、戒指等传感器 importer，不是“身体状态参与建议”本身。
+
+可从当前 bridge 低风险同步、但不属于 Home 搬家：
+
+- session refresh request：当前 private bridge 多了“下一次正常用户消息前清掉旧 thread、开新 session”的请求队列。Mossbridge 可在后续同步，但必须改成 `MOSSBRIDGE_*` env、`MossbridgeApp` 命名，并避免后台 system turn 抢先刷新。
+- WeChat ingress diagnosis：private bridge 多了只读诊断脚本，可帮助判断 poll、context token、sync buffer 和队列是否健康。公开版可以保留为诊断工具，但输出必须去私人路径、账号细节和 live 术语。
+
+继续不搬或暂缓：
+
+- Gmail、米家/小米、第三方 OAuth/login、Cloudflare 公网 Home 网关、Notion 执行同步、Rikkahub/GPT/Driftstone 导入 runner、Home web/mobile debug UI、私人外部 cold tree service。
+- 网页 AI capture 插件只先对齐 `app_daily_captures -> conversation_cache/hot -> dreaming -> warm/ongoing/episode/case/tree` 的数据契约，第一版不自动同步、不直接写稳定记忆。
 
 ### 文档与架构说明
 
@@ -108,16 +147,19 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 
 当前判断是：WeChat 日常陪伴不应强依赖私人外部冷树。温记忆和 ongoing tracks 应该先保证日常连续性，冷层更适合做关系拓扑、时间拓扑和深层归档。
 
-第一版公开目标先停在完整本地记忆结构和已验证的记忆递送，不把自动 nightly dreaming 当成发布前 blocker。当前私人压测里，睡前 dreaming 仍主要由外部后台 scheduler 负责触发；这条线等压测成熟后再同步回公开仓。后续接入时，dreaming 必须做成 Bridge-owned、runtime-neutral 的后台能力：Codex 和 Claude Code 都只是可选执行器，不能让“有没有外部进程打开”决定它会不会整理记忆。
+第一版公开目标现在包含 bridge-owned dreaming 的最小可用链路，但不把“高质量自动归档策略”伪装成已经压测完成。当前实现负责安静窗口触发、同一 attempt 重试、receipt gate 和审计日志；真正的记忆判断仍由当前 runtime 执行同一份工具契约。Codex 和 Claude Code 都只是执行器，不决定 Mossbridge 有没有 dreaming 能力。
 
-后续重新打开 dreaming 线时需要验证：
+已接入并通过隔离 smoke / unit test 的部分：
 
 - dreaming 在用户静默后能稳定触发。
-- 没有外部 scheduler 进程时，Bridge 自己也能按静默窗口触发 nightly dreaming，并把结果写入本地 `dreaming_mutation_log` / `warm_memory` / `memory_tree`。
+- 没有外部 scheduler 进程时，Bridge 自己也能按静默窗口触发 dreaming，并把 attempt / receipt / completion 写入本地 `dreaming_mutation_log`。
 - dreaming 的完成状态必须由真实 mutation/writeback 成功决定；若只是 scheduler 碰到任务、模型未返回、JSON 解析失败、warm/cold 写入失败或用户仍在前台活跃，都不能标记完成。
-- dreaming 失败或被静默窗口 hold 时，必须延迟重试同一任务（默认可参考 20 分钟），保留 `retry_count`、`retry_after`、`last_status`、`last_error` 这类可审计字段，直到成功或用户/维护者明确介入。
-- Codex runtime 与 Claude Code runtime 都能执行同一份 dreaming JSON 契约；若某个 runtime 暂不可用，要给用户可见但不入记忆的故障报告。
-- dreaming 产出的 `memory_metabolism`、warm/cold mutation、cold patch 或 batch promotion 不能只停在 executor 内部，必须进入可审计日志或回执。
+- dreaming 失败或被静默窗口 hold 时，延迟重试同一任务，保留 `retry_count`、`retry_after`、`last_status`、`last_error` 这类可审计字段，直到成功或用户/维护者明确介入。
+- Codex runtime 与 Claude Code runtime 执行同一份 dreaming system-turn / MCP tool 契约；若某个 runtime 暂不可用，attempt 会进入 retry，而不是静默滚到下一天。
+- dreaming 产出的 `memory_metabolism`、warm/cold mutation、cold patch 或 no-op 必须进入 `mossbridge_memory_metabolism_receipt_write` receipt，不能只停在 executor 内部。
+
+后续还需要继续压测的部分：
+
 - dreaming prompt 只能整理记忆，不能把前台人格整理成冷冰冰的工作报告，也不能生成关键词式表达限制。
 - WeChat 与其他窗口写入的 conversation cache 都能进入整理素材。
 - ongoing tracks 能被整理进温层，而不是过早冻结到冷层。
@@ -142,7 +184,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 
 第一版公开目标收窄为 Mossbridge 本体：WeChat 对话、Codex / Claude Code runtime、当前已验证的记忆递送、warm / ongoing / observation / episode / case / cold-version compatibility 等本地记忆结构。
 
-GPT / Rikkahub / Driftstone / Notion staging、ChatGPT 网页/app capture、Notion stable memory 同步都不作为第一版 blocker，也不接入第一版启动路径。它们保留为后续扩展设计，等私人压测线成熟后再同步回公开仓。
+GPT / Rikkahub / Driftstone / Notion staging、网页 AI capture 自动同步、Notion stable memory 同步都不作为第一版 blocker，也不接入第一版启动路径。手动 capture bundle 可以进入 `conversation_cache`/`cache/hot`，但不直接写稳定记忆。
 
 后续重新打开这条线时，仍需在独立 `MOSSBRIDGE_DATA_ROOT` 中验证：
 
@@ -198,12 +240,11 @@ GPT / Rikkahub / Driftstone / Notion staging、ChatGPT 网页/app capture、Noti
 ### 暂缓到后续压测成熟后再接入
 
 - 外源 GPT / Rikkahub / Driftstone / Notion staging 导入。
-- ChatGPT 网页/app daily capture 插件与导入器。
+- 网页 AI daily capture 自动插件。
 - Notion stable memory 与本地 warm/tree/case 的导入导出契约。
 - Driftstone/Notion staging 归一化层。
-- 官方 app / ChatGPT web daily capture 到 conversation cache 的同步链路。
-- Bridge-owned nightly dreaming 触发器、completion gate、retry metadata 和 mutation receipt。
-- dreaming 与 ongoing/warm/cold 的自动整理链路。
+- 网页 AI daily capture 到 conversation cache/hot 的自动同步链路。
+- dreaming 质量压测、跨端 capture 素材合流、memory_tree 拓扑晋升策略。
 
 ### 运行稳定性
 

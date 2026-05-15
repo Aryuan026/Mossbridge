@@ -8,7 +8,7 @@
 
 ## The Shape
 
-Mossbridge 可以想成四块。
+Mossbridge 可以想成五块。
 
 第一层是嘴：WeChat channel。
 
@@ -29,7 +29,11 @@ Mossbridge 可以想成四块。
 
 它负责记忆布局、热上下文、温记忆、ongoing、小事记、事件簿、case、拓扑候选和上下文包。当前实现仍在历史目录 `src/asherie/`、`src/services/asherie-memory-service.js` 和 `src/asherie/storage-layout.js`，`src/brain/README.md` 是公开线的边界标记。
 
-这四块中，嘴和手可以把材料递给脑，但不应该直接改脑的数据文件；runtime adapter 只负责发动机协议，不拥有记忆策略。
+第五块是控制层：control plane。
+
+它负责记录桥为什么行动：为什么心跳被跳过，为什么 runtime 进入冷却，为什么 memory packet 被缩短，为什么 dreaming 要重试。对应代码在 `src/control/`，账本写在 `MOSSBRIDGE_STATE_DIR/control-events.jsonl`。它不保存用户记忆，也不替主 AI 说话。
+
+这五块中，嘴和手可以把材料递给脑，但不应该直接改脑的数据文件；runtime adapter 只负责发动机协议，不拥有记忆策略；control plane 只记因果和状态，不把运行噪音沉淀成用户记忆。
 
 ## The Three Roots
 
@@ -37,11 +41,11 @@ Mossbridge 特别在意把三类东西分开。
 
 `MOSSBRIDGE_STATE_DIR` 是运行状态。
 
-这里放账号、会话、队列、日志、冷却状态、WeChat 配置。默认是 `~/.mossbridge`。它像桥的随身包，不应该提交到 git。
+这里放账号、会话、队列、日志、冷却状态、control ledger、WeChat 配置。默认是 `~/.mossbridge`。它像桥的随身包，不应该提交到 git。
 
 `MOSSBRIDGE_DATA_ROOT` 是记忆仓。
 
-这里放 hot context、warm memory、notebook、ongoing tracks、conversation cache、observation journal、episode journal、case index、cold-version compatibility、mutation log。它像桥的长期笔记本和短期工作台。第一版公开部署先只验证这套本地结构，不接外源记忆导入、不接 Notion、不接 ChatGPT capture sync。
+这里放 hot context、warm memory、notebook、ongoing tracks、conversation cache、observation journal、episode journal、case index、cold-version compatibility、mutation log。它像桥的长期笔记本和短期工作台。第一版公开部署先验证这套本地结构；网页 AI capture 可以手动导入到 cache/hot，但不接自动同步、不接 Notion、不接外源稳定记忆导入。
 
 `MOSSBRIDGE_WORKSPACE_ROOT` 是工作区。
 
@@ -75,6 +79,8 @@ WeChat
 - 这一轮要带多少 memory prelude。
 - 失败提示是否应该作为 `[Mossbridge]` 桥层通知，而不是伪装成主 bot 的自然回复。
 
+现在这些判断会同步落一份轻量 control event，方便压测时回看“桥为什么这样做”。这份账本是运行因果，不是用户记忆。
+
 ## Memory Is Delivery, Not A Cage
 
 Mossbridge 的记忆系统不是“人设锁”，也不是关键词控制器。它的目标是把该知道的上下文递给前台模型，让模型更连续、更少失忆。
@@ -93,7 +99,7 @@ Mossbridge 的记忆系统不是“人设锁”，也不是关键词控制器。
 
 记忆递送入口在 `src/services/asherie-memory-service.js`。底层 store 主要在 `src/asherie/`。
 
-第一版公开目标是：空仓也能启动，能写温记忆，能维护 ongoing，能留下 notebook/case/episode 的落点，能把近期对话和相关记忆递进 runtime。更复杂的多端同步、Notion、ChatGPT capture、自动 nightly dreaming 都先作为后续扩展。
+第一版公开目标是：空仓也能启动，能写温记忆，能维护 ongoing，能留下 notebook/case/episode 的落点，能把近期对话和相关记忆递进 runtime，并且能在安静窗口里跑最小可审计的 dreaming/metabolism。更复杂的多端同步、Notion、自动网页 AI capture 和高质量拓扑晋升策略仍然作为后续扩展。
 
 ## Runtime-Neutral By Design
 
@@ -164,17 +170,34 @@ Mossbridge 的主动唤醒不是“隔一段时间发一句你好”。它更像
 
 同一个原则也适用于记忆：失败提示、额度提示、维护碎碎念不应该写进用户记忆。
 
+## Control Plane Keeps It From Becoming A Pile
+
+Mossbridge 吸收的是控制论骨架，而不是把另一个框架塞进来。每个自动动作尽量走同一个图景：
+
+```text
+signal -> decision -> action -> feedback -> ledger
+```
+
+举几个例子：
+
+- check-in：看到时间窗口和上下文压力，决定排队或跳过，然后记录原因。
+- runtime：看到 quota/timeout/stall，决定冷却、提示、释放或重试，然后记录结果。
+- memory：看到当前 turn 和 token 压力，决定递多少上下文，然后记录 delivery report。
+- dreaming：看到 quiet window 和 source records，决定启动代谢，最后用 receipt 标记完成或重试。
+
+这层的价值是把“自动性”变成可审计的工程行为。它不会去改 warm memory，不会替 Codex/Claude Code 决定协议，也不会把桥状态装成携带 soul 的主 AI 回复。
+
 ## What Is Deferred
 
 第一版先保持 Mossbridge 本体完整，不急着把所有未来想象接上。
 
 暂缓的线包括：
 
-- ChatGPT web/app capture 插件同步
+- 网页 AI capture 插件自动同步
 - GPT / Rikkahub / Driftstone 外源记忆导入
 - Notion stable memory 同步
-- 自动 nightly dreaming completion gate
 - 更完整的 memory_tree topology provider
+- dreaming 质量压测、跨端素材合流、自动拓扑晋升策略
 
 这些都不是被否定，而是还没有到适合公开第一版承诺的成熟度。后续可以等私有压测线稳定，再按同一套 data root 和 runtime-neutral 原则迁回公开仓。
 
@@ -209,10 +232,13 @@ Mossbridge 的主动唤醒不是“隔一段时间发一句你好”。它更像
 9. `src/services/asherie-memory-service.js` 和 `src/asherie/`
    记忆仓、召回、上下文包怎么工作。
 
-10. `docs/brain-layer-boundary.md` 和 `src/brain/README.md`
+10. `src/control/` 和 `docs/control-plane.md`
+    心跳、runtime、记忆递送、dreaming 的因果账本怎么工作。
+
+11. `docs/brain-layer-boundary.md` 和 `src/brain/README.md`
     嘴、手、runtime engine、brain 的边界怎么划。
 
-11. `src/tools/tool-host.js`
+12. `src/tools/tool-host.js`
     runtime 能调用哪些手。
 
 ## The Small Philosophy

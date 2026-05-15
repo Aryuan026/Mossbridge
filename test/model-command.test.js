@@ -6,11 +6,15 @@ const { MossbridgeApp } = require("../src/core/app");
 function createHarness({
   runtimeId = "codex",
   selectedModel = "",
+  selectedProvider = "",
   catalog = null,
   refreshResult,
   claudeModel = "",
+  config = {},
+  runtimeDescribe = {},
 } = {}) {
   let model = selectedModel;
+  let modelProvider = selectedProvider;
   let currentCatalog = catalog;
   const sent = [];
   const sessionStore = {
@@ -18,10 +22,13 @@ function createHarness({
       return "default:account:user";
     },
     getRuntimeParamsForWorkspace() {
-      return { model };
+      return { model, modelProvider };
     },
     setRuntimeParamsForWorkspace(_bindingKey, _workspaceRoot, next) {
       model = String(next?.model || "").trim();
+      if (Object.prototype.hasOwnProperty.call(next || {}, "modelProvider")) {
+        modelProvider = String(next?.modelProvider || "").trim();
+      }
     },
     getAvailableModelCatalog() {
       return currentCatalog;
@@ -36,7 +43,7 @@ function createHarness({
   };
   const runtimeAdapter = {
     describe() {
-      return { id: runtimeId };
+      return { id: runtimeId, ...runtimeDescribe };
     },
     getSessionStore() {
       return sessionStore;
@@ -46,7 +53,7 @@ function createHarness({
     runtimeAdapter.refreshModelCatalog = async () => refreshResult;
   }
   const appLike = {
-    config: { claudeModel },
+    config: { claudeModel, ...config },
     runtimeAdapter,
     resolveWorkspaceRoot() {
       return "/workspace";
@@ -64,6 +71,7 @@ function createHarness({
     appLike,
     sent,
     getModel: () => model,
+    getProvider: () => modelProvider,
     getCatalog: () => currentCatalog,
   };
 }
@@ -169,4 +177,39 @@ test("model command rejects unknown ids when a catalog is available", async () =
   assert.equal(getModel(), "gpt-5.4");
   assert.match(sent[0].text, /^\[Mossbridge] model_not_found/);
   assert.match(sent[0].text, /hint: \/model refresh/);
+});
+
+test("wechat model command lists configured aliases and accepts a human alias", async () => {
+  const { appLike, sent, getModel, getProvider } = createHarness({
+    config: {
+      codexModelChoices: ["local=gemma4:26b-32k@ollama", "cloud=gpt-5.4"],
+    },
+  });
+
+  await MossbridgeApp.prototype.handleModelCommand.call(appLike, normalizedMessage(), { args: "" });
+
+  assert.match(sent[0].text, /available_models: local=gemma4:26b-32k@ollama, cloud=gpt-5.4/);
+
+  await MossbridgeApp.prototype.handleModelCommand.call(appLike, normalizedMessage(), { args: "local" });
+
+  assert.equal(getModel(), "gemma4:26b-32k");
+  assert.equal(getProvider(), "ollama");
+  assert.match(sent[1].text, /^\[Mossbridge] model_selected/);
+  assert.match(sent[1].text, /selected_model: gemma4:26b-32k/);
+  assert.match(sent[1].text, /selected_provider: ollama/);
+});
+
+test("wechat model command suggests configured models when the name is mistyped", async () => {
+  const { appLike, sent, getModel } = createHarness({
+    runtimeId: "claudecode",
+    config: {
+      claudeModelChoices: ["opus=claude-opus-4-6", "sonnet=claude-sonnet-4-6"],
+    },
+  });
+
+  await MossbridgeApp.prototype.handleModelCommand.call(appLike, normalizedMessage(), { args: "opuz" });
+
+  assert.equal(getModel(), "");
+  assert.match(sent[0].text, /^\[Mossbridge] model_not_found/);
+  assert.match(sent[0].text, /available_models: opus=claude-opus-4-6, sonnet=claude-sonnet-4-6/);
 });

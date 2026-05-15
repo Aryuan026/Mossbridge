@@ -10,6 +10,12 @@ const { RuntimeCooldownStore } = require("../core/runtime-cooldown-store");
 const { RuntimeContextUsageStore } = require("../core/runtime-context-usage-store");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
 const {
+  CONTROL_LAYER,
+  CONTROL_SCOPE,
+  CONTROL_SEVERITY,
+  createControlPlane,
+} = require("../control/control-plane");
+const {
   ACTIVE_WINDOW_MS,
   HOT_ACTIVITY_MIN_EVENTS,
   HOT_ACTIVITY_RECENT_MS,
@@ -37,6 +43,10 @@ const INTERNAL_CHECKIN_TRIGGER_TEMPLATES = [
 
 async function runSystemCheckinPoller(config) {
   const account = resolveSelectedAccount(config);
+  const controlPlane = createControlPlane(config, {
+    source: "mossbridge.checkin_poller",
+    runtimeId: config.runtime || "codex",
+  });
   const queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
   const deferredQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
   const runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
@@ -61,6 +71,23 @@ async function runSystemCheckinPoller(config) {
     });
     const effectiveRange = applyCheckinTokenPressureBackoff(currentRange, tokenBackoff, config);
     if (tokenBackoff.active) {
+      recordControl(controlPlane, {
+        type: "system.checkin.interval_backoff",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "checkin_poller.schedule",
+        subject: target.senderId,
+        reason: tokenBackoff.reason,
+        outcome: "interval_stretched",
+        payload: {
+          runtimeId: tokenBackoff.runtimeId,
+          ratio: tokenBackoff.ratio,
+          currentTokens: tokenBackoff.currentTokens,
+          contextWindow: tokenBackoff.contextWindow,
+          multiplier: tokenBackoff.multiplier,
+          range: effectiveRange,
+        },
+      });
       console.log(
         `[mossbridge] checkin token backoff active ratio=${round(tokenBackoff.ratio, 3)} current=${tokenBackoff.currentTokens} range=${formatRangeMinutes(effectiveRange)}`,
       );
@@ -80,18 +107,51 @@ async function runSystemCheckinPoller(config) {
       runtimeContextUsageStore,
     });
     if (!readiness.ready) {
+      recordControl(controlPlane, {
+        type: "system.checkin.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "checkin_poller.readiness",
+        subject: target.senderId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: readiness.reason,
+        outcome: "skipped",
+        payload: readiness,
+      });
       console.log(`[mossbridge] checkin skipped: ${formatCheckinSkipReason(readiness)}`);
       continue;
     }
 
     if (hasRecentActivity()) {
       const windowMin = Math.round(ACTIVE_WINDOW_MS / 60_000);
+      recordControl(controlPlane, {
+        type: "system.checkin.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "checkin_poller.activity",
+        subject: target.senderId,
+        reason: "active_conversation",
+        outcome: "skipped",
+        payload: {
+          windowMinutes: windowMin,
+        },
+      });
       console.log(`[mossbridge] checkin skipped: conversation active in last ${windowMin}m`);
       continue;
     }
 
     const heat = resolveCheckinConversationHeat(config);
     if (heat.hot) {
+      recordControl(controlPlane, {
+        type: "system.checkin.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "checkin_poller.heat",
+        subject: target.senderId,
+        reason: "hot_conversation",
+        outcome: "skipped",
+        payload: heat,
+      });
       console.log(
         `[mossbridge] checkin skipped: hot conversation ${heat.eventCount} events in ${Math.round(heat.windowMs / 60000)}m, last activity ${formatDuration(heat.ageMs)} ago`,
       );
@@ -112,8 +172,29 @@ async function runSystemCheckinPoller(config) {
       },
       createdAt: new Date().toISOString(),
     });
+    recordControl(controlPlane, {
+      type: "system.checkin.queued",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.SYSTEM_TURN,
+      source: "checkin_poller.queue",
+      subject: target.senderId,
+      reason: "random_checkin_window",
+      outcome: "queued",
+      payload: {
+        id: queued.id,
+        workspaceRoot: target.workspaceRoot,
+        accountId: account.accountId,
+      },
+    });
     console.log(`[mossbridge] checkin queued id=${queued.id}`);
   }
+}
+
+function recordControl(controlPlane, event = {}) {
+  if (!controlPlane || typeof controlPlane.record !== "function") {
+    return null;
+  }
+  return controlPlane.record(event);
 }
 
 function resolveCheckinReadiness({
@@ -357,7 +438,9 @@ function resolveOptionalPositiveNumber(value, fallback) {
 
 function isSystemCheckinContext(context = {}) {
   const bindingKey = normalizeText(context.bindingKey);
-  return bindingKey.includes("#asherie-system") || normalizeText(context.source) === "system";
+  return bindingKey.includes("#mossbridge-system")
+    || bindingKey.includes("#asherie-system")
+    || normalizeText(context.source) === "system";
 }
 
 function getShanghaiDayKey(value) {

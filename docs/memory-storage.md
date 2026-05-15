@@ -13,8 +13,8 @@ Bridge 可以作为独立产品运行，不应该默认依赖私人外部冷层�
 - 日常关系、口吻、偏好、象征物、用户固定印象、近期待办，优先进入 `warm_memory/` 和 `ongoing_tracks.json`。
 - 既有私人冷层树可以作为迁移/兼容来源、深层归档、关系拓扑和时间拓扑参考，但不作为 WeChat 日常人格连续性的主要文本召回层。
 - Mossbridge 不提供私人外部执行器接口：不桥接不可公开的外部执行器。公开线需要的简单能力应成为 Mossbridge 本体能力或清晰的可选 adapter。
-- 第一版公开路径是 `WeChat -> Mossbridge built-in brain -> Codex/Claude Code runtime -> WeChat 延续`。ChatGPT 网页/app daily capture、多端同步和 Notion 对齐先作为后续扩展，不进入第一版启动链路。
-- Mossbridge 要准备热记忆层。未来 ChatGPT 端抓取合流时，raw capture 先进 `cache/app_daily_captures/`，再进入 `cache/conversation_cache/` 和 `cache/hot/`，不能直接写成稳定温卡或 case。
+- 第一版公开路径是 `WeChat -> Mossbridge built-in brain -> Codex/Claude Code runtime -> WeChat 延续`。网页 AI 对话抓取插件、多端同步和 Notion 对齐仍是后续扩展，不进入第一版启动链路。
+- Mossbridge 已准备热记忆层。ChatGPT、Claude、Gemini、Perplexity、Rikkahub 或其他网页 AI 窗口的 raw capture 先进 `cache/app_daily_captures/`，再导入 `cache/conversation_cache/` 和 `cache/hot/`，不能直接写成稳定温卡或 case。
 - Bridge 的冷层不应该只是另一套温卡检索器。它更适合保存“卡与卡之间为什么连在一起”：家族分支、关系网、跨时间因果、证据来源，以及 case/file-work provenance。
 - 231 张来自旧冷层、实际语义更像温卡的内容，迁入 bridge 时应作为温层材料处理。
 
@@ -119,6 +119,8 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 - `last_touched_at`: 最近一次被真正触碰的时间
 
 ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传文件方便才换到另一个窗口，事件本身不应该被拆开。
+
+健康、健身、减脂、睡眠、饮食、压力和加班这类信息不是旁支。只要用户在对话里明文给出，它们就应进入 ongoing 或 warm/cold 的 tags 与摘要，作为未来建议的依据。Mossbridge 第一版不需要单独复制 Home 的可穿戴设备 `body_signal` 区块；传感器、Apple Health、智能戒指等只是后续数据源。对话中形成的身体状态线索优先走 `kind=health`、`tags=["health","fitness","diet","sleep","stress","workload","recovery"]` 这类可召回标签，并明确区分“用户说过/设备测到/模型推测”。
 
 ### `storage/notebook/`
 
@@ -255,7 +257,7 @@ Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是�
 
 ### `cache/conversation_cache/`
 
-近期对话沉淀池。第一版主要由 WeChat 和本地 runtime 写入；后续 ChatGPT 网页/app daily capture 或其他 chatbox 可以作为数据源接进这里。
+近期对话沉淀池。第一版主要由 WeChat 和本地 runtime 写入；网页 AI daily capture 或其他 chatbox 可以通过 importer 作为数据源接进这里。
 
 它不是每轮都要完整塞给前台模型的全文聊天记录。运行时应该从这里整理出可读工作包，而不是盲目复读。
 
@@ -270,7 +272,7 @@ Episode 可以携带 `topology_refs`，用于生成候选冷层边，而不是�
 
 ### `cache/hot/`
 
-热记忆层。它保存刚发生、还没有被整理成稳定记忆的上下文，专门给跨窗口继续、未来 ChatGPT capture 合流和本轮 runtime 投影使用。
+热记忆层。它保存刚发生、还没有被整理成稳定记忆的上下文，专门给跨窗口继续、网页 AI capture 合流和本轮 runtime 投影使用。
 
 当前目录：
 
@@ -284,20 +286,27 @@ cache/hot/
 
 职责：
 
-- `upstream_context_merge/`: 预留给 ChatGPT web/app 或其他窗口的合流材料。
-- `context_basin/`: 临近上下文素材池。
-- `projections/`: 给某一轮 runtime 的短投影。
+- `upstream_context_merge/`: ChatGPT web、Claude web、Gemini、Perplexity、Rikkahub 或其他窗口的去重合流包。
+- `context_basin/`: 临近上下文素材池，保存 turn slice、basin head、open loop 和 active thread。
+- `projections/`: 给 runtime prelude 的短投影。
 - `snapshots/`: 合流或递送前后的快照。
 
 热记忆可以影响下一轮上下文，但不直接等于长期事实。只有经过本地整理、证据保留和用户可纠正路径后，材料才进入 warm、ongoing、episode、case 或 memory_tree。
 
 ### `cache/app_daily_captures/`
 
-后续官方 app / ChatGPT web 抓取插件的每日对话入口。第一版不启用同步，只保留目录和验证契约作为未来扩展位。
+网页 AI 抓取插件的每日对话入口。第一版不启用自动浏览器同步，但已经提供验证、暂存和本地导入契约。
 
-它解决的是“官方 app 端的上文怎么进入沉淀池”，不是“固有记忆怎么长期同步”。推荐一日一个目录，先保存 raw/daily capture，再归一化进 `conversation_cache/`。
+它解决的是“其他 AI 窗口的上文怎么进入沉淀池”，不是“固有记忆怎么长期同步”。推荐一日一个目录，先保存 raw/daily capture，再归一化进 `conversation_cache/` 和 `hot/`。
 
 这个目录可以接浏览器插件、网页抓取脚本或官方导出的每日对话记录。进入这里的内容默认是近期素材，不是稳定记忆。
+
+导入命令：
+
+```bash
+npm run capture:validate -- /path/to/capture-bundle.json
+MOSSBRIDGE_STATE_DIR=/tmp/moss-state MOSSBRIDGE_DATA_ROOT=/tmp/moss-data npm run capture:import -- /path/to/capture-bundle.json
+```
 
 ### `storage/memory_versions/`
 
@@ -537,7 +546,7 @@ app_daily_captures / conversation_cache / notebook / hot -> dreaming -> warm_mem
 - 近期状态、日常节律和相处默契，先进入 observation journal。
 - 已完成的工程、文件工作、调试结论，进入 case index。
 - 小事记和轻量日记先留在 `notebook`，由后续整理决定是否晋升。
-- 后续如果启用官方 app / ChatGPT web 每日抓取，先进入 `app_daily_captures`，再归一化进 `conversation_cache` 和 `hot`。
+- 网页 AI 每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache` 和 `hot`；自动浏览器插件成熟前也可以手动导入 bundle。
 - 后续如果启用跨端固有记忆，再通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
 - 不要把短期事件默认推进冷层。

@@ -6,7 +6,7 @@ Mossbridge 第一阶段不是空桥外挂脑。它应该能自己部署、自己
 
 ## Code Areas
 
-把代码想成四个区域：
+把代码想成五个区域：
 
 - 嘴：`src/adapters/channel/weixin/`
   负责微信登录、收消息、发消息、附件入口和桥层提示。
@@ -16,6 +16,8 @@ Mossbridge 第一阶段不是空桥外挂脑。它应该能自己部署、自己
   负责文件、提醒、贴纸、timeline、状态检查等可调用能力。
 - 脑：`src/asherie/`、`src/services/asherie-memory-service.js`、`src/asherie/storage-layout.js`
   负责记忆布局、召回、上下文包、写入权威、热记忆、温记忆、case 和拓扑候选。
+- 控制层：`src/control/`
+  负责心跳、runtime、递送、冷却、dreaming 这类自动动作的因果账本。
 
 `src/brain/README.md` 是边界标记。现在先不大搬目录，因为 `src/asherie/` 里有已经验证过的记忆代码；后续 rename 必须作为迁移做，而不是一次搜索替换。
 
@@ -25,12 +27,14 @@ Mossbridge 第一阶段不是空桥外挂脑。它应该能自己部署、自己
 
 如果它们需要保存东西，应通过 memory service、service domain 或 project tool 进入。这样数据布局、identity scope、case refs 和 future migration 才不会因为某个通道修复被打散。
 
+控制层也遵守这条规则。`control-events.jsonl` 放在 `MOSSBRIDGE_STATE_DIR`，只记录运行因果和安全摘要；它不是 warm/cold memory，也不是对用户生活事实的权威来源。
+
 ## Data Routes
 
 | Material | First Landing Zone | Notes |
 | --- | --- | --- |
-| 微信/ChatGPT 刚聊完的上下文尾巴 | `cache/conversation_cache/` 和 `cache/hot/` | 近期素材，不是稳定事实 |
-| ChatGPT web/app 每日抓取 | `cache/app_daily_captures/` | 先验 schema，再归一化，不直写温卡 |
+| 微信/网页 AI 刚聊完的上下文尾巴 | `cache/conversation_cache/` 和 `cache/hot/` | 近期素材，不是稳定事实 |
+| 网页 AI 每日抓取 | `cache/app_daily_captures/` | 先验 schema，再归一化，不直写温卡 |
 | 小事记、轻量日记、随手备注 | `storage/notebook/` | 人能读的原材料层 |
 | 还没结束的事 | `storage/ongoing_tracks.json` | 让它保持浮在前台 |
 | 有起止的小故事/照片/旅行/小任务 | `storage/episode_journal/` | 可导出、可回看，可被温卡引用 |
@@ -54,12 +58,12 @@ Episode 介于两者之间：如果一个小事记长成了有起止的故事，
 - `cache/hot/context_basin/` 保存临近窗口的上下文素材。
 - `cache/hot/projections/` 保存给当前 runtime 的短投影。
 - `cache/hot/snapshots/` 保存某次合流前后的快照。
-- `cache/hot/upstream_context_merge/` 预留给 ChatGPT/web/app 捕获合流。
+- `cache/hot/upstream_context_merge/` 用于 ChatGPT、Claude、Gemini、Perplexity、Rikkahub 或其他网页 AI 窗口的捕获合流。
 
-未来 ChatGPT 网页抓取插件应该先把 raw daily capture 放到 `cache/app_daily_captures/`，再整理进 `conversation_cache` 和 hot basin。只有经过本地整理、确认和引用的内容，才进入 warm、ongoing、episode 或 case。
+未来网页 AI 抓取插件应该先把 raw daily capture 放到 `cache/app_daily_captures/`，再整理进 `conversation_cache` 和 hot basin。只有经过本地整理、确认和引用的内容，才进入 warm、ongoing、episode 或 case。
 
 ## Public First Version
 
 公开第一版先承诺这件事：Mossbridge clone 后有自己的本地 brain，能空仓启动，能写温记忆和 ongoing，能保留 notebook/case/episode 的位置，能把记忆递给 Codex 或 Claude Code。
 
-外源 GPT / Rikkahub / Driftstone / Notion / ChatGPT capture 都是后续入口。它们应该接入这套 data route，而不是绕过 Mossbridge 的 brain 边界。
+外源 GPT / Rikkahub / Driftstone / Notion / web AI capture 都是后续入口。它们应该接入这套 data route，而不是绕过 Mossbridge 的 brain 边界。

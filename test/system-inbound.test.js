@@ -56,6 +56,124 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
   assert.match(result.text, /warm-card: Meteor necklace/);
 });
 
+test("checkin system turn stays lean while preserving safe action affordances", () => {
+  const dispatcher = new SystemMessageDispatcher({
+    queueStore: { hasPendingForAccount() { return false; }, drainForAccount() { return []; }, enqueue() {} },
+    config: {
+      workspaceId: "default",
+      workspaceRoot: "/workspace",
+    },
+    accountId: "wx-account",
+  });
+
+  const prepared = dispatcher.buildPreparedMessage({
+    id: "checkin-1",
+    senderId: "user-1",
+    text: "User comes to mind again.",
+    kind: "checkin_opportunity",
+    priority: "normal",
+    title: "random_checkin",
+    createdAt: "2026-05-15T12:00:00.000Z",
+  }, "ctx-1");
+
+  assert.match(prepared.text, /SYSTEM ACTION MODE/);
+  assert.match(prepared.text, /low-risk maintenance pass/);
+  assert.match(prepared.text, /Safe scope:/);
+  assert.match(prepared.text, /wakeup decision record/);
+  assert.match(prepared.text, /natural WeChat/);
+  assert.match(prepared.text, /emotional continuity/);
+  assert.match(prepared.text, /Bridge status reports come from \[Mossbridge\]/);
+  assert.doesNotMatch(prepared.text, /WECHAT SESSION INSTRUCTIONS/);
+  assert.doesNotMatch(prepared.text, /front-stage style/);
+  assert.ok(prepared.text.length < 2400);
+});
+
+test("stable WeChat guidance is delivered once per runtime thread and pressure trims memory prelude", async () => {
+  const captureArgs = [];
+  const appLike = {
+    config: {
+      workspaceId: "default",
+      claudeContextWindow: 200000,
+    },
+    activeAccountId: "account-1",
+    stableTurnGuidanceKeys: new Set(),
+    residentAnchorPreludeKeys: new Set(),
+    projectDomains: {
+      memory: {
+        async captureContextPacket(args) {
+          captureArgs.push(args);
+          return {
+            runtime_prelude: "- warm: useful card",
+          };
+        },
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    runtimeContextUsageStore: {
+      getContext() {
+        return {
+          currentTokens: 160000,
+          contextWindow: 200000,
+        };
+      },
+    },
+    resolveResidentAnchorPreludeKey: MossbridgeApp.prototype.resolveResidentAnchorPreludeKey,
+    resolveStableTurnGuidanceKey: MossbridgeApp.prototype.resolveStableTurnGuidanceKey,
+    markStableTurnGuidanceDelivered: MossbridgeApp.prototype.markStableTurnGuidanceDelivered,
+    resolveMemoryContextPressureProfile: MossbridgeApp.prototype.resolveMemoryContextPressureProfile,
+    resolvePreparedRuntimeThreadId: MossbridgeApp.prototype.resolvePreparedRuntimeThreadId,
+  };
+  const normalized = {
+    provider: "weixin",
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    originalText: "今天聊点轻松的",
+    text: "今天聊点轻松的",
+  };
+
+  const first = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call(
+    appLike,
+    normalized,
+    normalized.text,
+    "/workspace",
+  );
+  const second = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call(
+    appLike,
+    normalized,
+    normalized.text,
+    "/workspace",
+  );
+
+  assert.match(first.text, /微信前台对话提醒/);
+  assert.doesNotMatch(second.text, /微信前台对话提醒/);
+  assert.equal(captureArgs[0].includeRuntimePreludeGuidance, true);
+  assert.equal(captureArgs[1].includeRuntimePreludeGuidance, false);
+  assert.equal(captureArgs[0].preludeRecentThreadLimit, 2);
+  assert.equal(captureArgs[0].preludeHotUpstreamLimit, 2);
+  assert.equal(captureArgs[0].preludeHotTurnLimit, 3);
+  assert.equal(captureArgs[0].coldVineLimit, 1);
+  assert.equal(first.packet.delivery.mode, "inbound");
+  assert.equal(first.packet.delivery.include_stable_guidance, true);
+  assert.ok(first.packet.delivery.estimated_tokens > 0);
+  assert.equal(second.packet.delivery.include_stable_guidance, false);
+  assert.equal(second.packet.delivery.policy.includes("not injected"), true);
+});
+
 test("queued system messages attach fresh memory before runtime dispatch", async () => {
   const dispatched = [];
   const clearedThreads = [];
@@ -82,7 +200,7 @@ test("queued system messages attach fresh memory before runtime dispatch", async
             return `binding:${senderId}`;
           },
           getThreadIdForWorkspace(bindingKey) {
-            return String(bindingKey).includes("#asherie-system") ? "" : "user-thread";
+            return String(bindingKey).includes("#mossbridge-system") ? "" : "user-thread";
           },
           getRuntimeParamsForWorkspace() {
             return { model: "claude-opus-4-6" };
@@ -152,8 +270,8 @@ test("queued system messages attach fresh memory before runtime dispatch", async
 
   assert.equal(ok, true);
   assert.equal(dispatched.length, 1);
-  assert.equal(dispatched[0].bindingKey, "binding:user-1#asherie-system");
-  assert.deepEqual(clearedThreads, [["binding:user-1#asherie-system", "/workspace"]]);
+  assert.equal(dispatched[0].bindingKey, "binding:user-1#mossbridge-system");
+  assert.deepEqual(clearedThreads, [["binding:user-1#mossbridge-system", "/workspace"]]);
   assert.equal(updatedBindings[0][1].replySenderId, "user-1");
   assert.match(dispatched[0].prepared.text, /ongoing: 起床提醒/);
   assert.match(dispatched[0].prepared.text, /Trigger kind: reminder_due/);
@@ -195,7 +313,7 @@ test("reply system messages are delivered directly instead of re-entering the ru
   }]);
 });
 
-test("ordinary wechat turns prepend a front-stage note that resists terse defaults", async () => {
+test("ordinary wechat turns keep dynamic memory context lean when no runtime thread key is available", async () => {
   const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call({
     projectDomains: {
       memory: {
@@ -212,10 +330,8 @@ test("ordinary wechat turns prepend a front-stage note that resists terse defaul
     text: "宝宝😏？",
   }, "宝宝😏？", "/workspace");
 
-  assert.match(result.text, /\[微信前台对话提醒\]/);
-  assert.match(result.text, /传输占位符/);
-  assert.match(result.text, /后台 short\/concise 不支配前台表达/);
-  assert.match(result.text, /先接住这一拍的情绪和关系节奏/);
+  assert.doesNotMatch(result.text, /\[微信前台对话提醒\]/);
+  assert.doesNotMatch(result.text, /\[当前可用动作提醒\]/);
   assert.match(result.text, /resident-anchor: relation line/);
   assert.match(result.text, /宝宝😏？/);
 });
