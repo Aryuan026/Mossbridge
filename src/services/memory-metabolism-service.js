@@ -352,6 +352,47 @@ class MemoryMetabolismService {
     return { ok: true, attempt };
   }
 
+  deferAttempt(attemptId = "", {
+    reason = "deferred",
+    retryAfterMs = 0,
+    nowMs = Date.now(),
+  } = {}) {
+    const id = normalizeText(attemptId);
+    if (!id) {
+      return { ok: false, error: "attempt_id is required" };
+    }
+    const normalizedNowMs = normalizeNowMs(nowMs);
+    const state = this.readState();
+    const attempt = state.attempts[id];
+    if (!attempt) {
+      return { ok: false, error: `attempt not found: ${id}` };
+    }
+    const nextRetryAtMs = Math.max(
+      normalizedNowMs + this.getRetryDelayMs(),
+      Number(retryAfterMs) || 0,
+    );
+    attempt.status = "retrying";
+    attempt.defer_count = Math.max(0, Number(attempt.defer_count) || 0) + 1;
+    attempt.retry_after = new Date(nextRetryAtMs).toISOString();
+    attempt.last_error = normalizeText(reason) || "deferred";
+    state.retry_after_ms = nextRetryAtMs;
+    this.writeState(pruneState(state));
+    this.appendLog({
+      event: "attempt_deferred",
+      attempt_id: id,
+      reason: attempt.last_error,
+      defer_count: attempt.defer_count,
+      retry_after: attempt.retry_after,
+      ts_utc: new Date(normalizedNowMs).toISOString(),
+    });
+    return {
+      ok: true,
+      reason: attempt.last_error,
+      retry_after: attempt.retry_after,
+      attempt: summarizeAttempt(attempt),
+    };
+  }
+
   recordReceipt(args = {}) {
     const attemptId = normalizeText(args.attempt_id || args.attemptId);
     if (!attemptId) {

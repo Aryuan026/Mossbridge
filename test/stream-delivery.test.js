@@ -8,7 +8,7 @@ const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 ==
 const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
-function createHarness({ sendText, getKnownContextTokens } = {}) {
+function createHarness({ sendText, getKnownContextTokens, onOutboundDelivery } = {}) {
   const sent = [];
   const channelAdapter = {
     async sendText(payload) {
@@ -33,7 +33,7 @@ function createHarness({ sendText, getKnownContextTokens } = {}) {
     },
   };
 
-  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore });
+  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore, onOutboundDelivery });
   return { sent, streamDelivery, bindingByThreadId };
 }
 
@@ -105,6 +105,35 @@ test("suppressNextRunForThread suppresses one ordinary reply run", async () => {
   });
 
   assert.deepEqual(sent.map((payload) => payload.text), ["visible reply"]);
+});
+
+test("plain reply records outbound delivery success", async () => {
+  const outbound = [];
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({
+    onOutboundDelivery(payload) {
+      outbound.push(payload);
+    },
+  });
+  bindingByThreadId.set("thread-audit", { bindingKey: "binding-audit" });
+  streamDelivery.setReplyTarget("binding-audit", {
+    userId: "user-audit",
+    contextToken: "ctx-audit",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-audit",
+    turnId: "turn-audit",
+    itemId: "item-audit",
+    text: "visible reply",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(outbound.length, 1);
+  assert.equal(outbound[0].status, "sent");
+  assert.equal(outbound[0].attempt, "initial");
+  assert.equal(outbound[0].kind, "plain_reply");
+  assert.equal(outbound[0].textPreview, "visible reply");
 });
 
 test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {

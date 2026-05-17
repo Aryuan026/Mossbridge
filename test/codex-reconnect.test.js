@@ -60,6 +60,12 @@ test("codex adapter reinitializes when the websocket transport has dropped", asy
     filename: mcpConfigPath,
     loaded: true,
     exports: {
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
+      },
       resolveCodexProjectToolMcpServerConfig() {
         return null;
       },
@@ -164,6 +170,12 @@ test("codex adapter lets configured env model override stored session model", as
     filename: mcpConfigPath,
     loaded: true,
     exports: {
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
+      },
       resolveCodexProjectToolMcpServerConfig() {
         return null;
       },
@@ -369,6 +381,12 @@ test("codex adapter skips full opening instructions for system runtime turns", a
     filename: mcpConfigPath,
     loaded: true,
     exports: {
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
+      },
       resolveCodexProjectToolMcpServerConfig() {
         return null;
       },
@@ -410,6 +428,127 @@ test("codex adapter skips full opening instructions for system runtime turns", a
     assert.match(sent[1], /STABLE WECHAT RULE/);
     assert.match(sent[1], /Bridge\/system status reports are emitted by Mossbridge itself/);
     assert.match(sent[1], /WAKE INPUT\nSYSTEM ACTION MODE/);
+  } finally {
+    delete require.cache[indexPath];
+    if (originalIndex) {
+      require.cache[indexPath] = originalIndex;
+    }
+    if (originalRpc) {
+      require.cache[rpcClientPath] = originalRpc;
+    } else {
+      delete require.cache[rpcClientPath];
+    }
+    if (originalMcp) {
+      require.cache[mcpConfigPath] = originalMcp;
+    } else {
+      delete require.cache[mcpConfigPath];
+    }
+  }
+});
+
+test("codex adapter uses a no-tool client for lightweight checkins", async () => {
+  const indexPath = path.resolve(__dirname, "../src/adapters/runtime/codex/index.js");
+  const rpcClientPath = path.resolve(__dirname, "../src/adapters/runtime/codex/rpc-client.js");
+  const mcpConfigPath = path.resolve(__dirname, "../src/adapters/runtime/codex/mcp-config.js");
+
+  const originalIndex = require.cache[indexPath];
+  const originalRpc = require.cache[rpcClientPath];
+  const originalMcp = require.cache[mcpConfigPath];
+  const constructed = [];
+
+  class MockCodexRpcClient {
+    constructor(options = {}) {
+      this.options = options;
+      this.isReady = false;
+      this.transportReady = false;
+      constructed.push(this);
+    }
+    async connect() {
+      this.transportReady = true;
+    }
+    async initialize() {
+      this.isReady = true;
+    }
+    isTransportReady() {
+      return this.transportReady;
+    }
+    async listModels() {
+      return { result: { data: [] } };
+    }
+    onMessage() {
+      return () => {};
+    }
+    async startThread() {
+      return { result: { thread: { id: `thread-${constructed.length}` } } };
+    }
+    async resumeThread() {
+      return { result: {} };
+    }
+    async sendUserMessage() {
+      return { result: { turn: { id: "turn-1" } } };
+    }
+    async close() {}
+  }
+
+  delete require.cache[indexPath];
+  require.cache[rpcClientPath] = {
+    id: rpcClientPath,
+    filename: rpcClientPath,
+    loaded: true,
+    exports: { CodexRpcClient: MockCodexRpcClient },
+  };
+  require.cache[mcpConfigPath] = {
+    id: mcpConfigPath,
+    filename: mcpConfigPath,
+    loaded: true,
+    exports: {
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
+      },
+      resolveCodexProjectToolMcpServerConfig({ toolProfile = "" } = {}) {
+        return toolProfile === "checkin_lite" ? null : { name: "mossbridge_tools" };
+      },
+    },
+  };
+
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-codex-tool-profile-"));
+    const workspaceRoot = path.join(tempDir, "workspace");
+    fs.mkdirSync(workspaceRoot);
+
+    const { createCodexRuntimeAdapter } = require(indexPath);
+    const adapter = createCodexRuntimeAdapter({
+      sessionsFile: path.join(tempDir, "sessions.json"),
+      stateDir: tempDir,
+    });
+
+    await adapter.sendTextTurn({
+      bindingKey: "system-checkin",
+      workspaceRoot,
+      text: "SYSTEM ACTION MODE\nTrigger kind: checkin_opportunity.",
+      metadata: {
+        systemRuntimeBinding: true,
+        skipOpeningInstructions: true,
+        systemToolProfile: "checkin_lite",
+      },
+    });
+    await adapter.sendTextTurn({
+      bindingKey: "system-reminder",
+      workspaceRoot,
+      text: "SYSTEM ACTION MODE\nTrigger kind: reminder_due.",
+      metadata: {
+        systemRuntimeBinding: true,
+        skipOpeningInstructions: true,
+        systemToolProfile: "full",
+      },
+    });
+
+    assert.equal(constructed.length, 2);
+    assert.equal(constructed[0].options.mcpServerConfig, null);
+    assert.deepEqual(constructed[1].options.mcpServerConfig, { name: "mossbridge_tools" });
   } finally {
     delete require.cache[indexPath];
     if (originalIndex) {

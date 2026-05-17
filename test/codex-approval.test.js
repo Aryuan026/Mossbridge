@@ -3,9 +3,12 @@ const assert = require("node:assert/strict");
 
 const { MossbridgeApp } = require("../src/core/app");
 const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
-const { buildCodexMcpConfigArgs } = require("../src/adapters/runtime/codex/mcp-config");
+const {
+  buildCodexMcpConfigArgs,
+  resolveCodexProjectToolMcpServerConfig,
+} = require("../src/adapters/runtime/codex/mcp-config");
 
-test("codex MCP config auto-approves mossbridge tools", () => {
+test("codex MCP config auto-approves foreground mossbridge tools by default", () => {
   const args = buildCodexMcpConfigArgs({
     name: "mossbridge_tools",
     command: "/usr/bin/node",
@@ -26,13 +29,20 @@ test("codex MCP config auto-approves mossbridge tools", () => {
     args.join("\n"),
     /mcp_servers\.mossbridge_tools\.tools\.mossbridge_reminder_create\.approval_mode="auto"/
   );
-  assert.match(
+  assert.doesNotMatch(
     args.join("\n"),
     /mcp_servers\.mossbridge_tools\.tools\.mossbridge_timeline_screenshot\.approval_mode="auto"/
   );
-  assert.match(
+  assert.doesNotMatch(
     args.join("\n"),
     /mcp_servers\.mossbridge_tools\.tools\.whereabouts_snapshot\.approval_mode="auto"/
+  );
+});
+
+test("codex lightweight checkins do not attach the project MCP server", () => {
+  assert.equal(
+    resolveCodexProjectToolMcpServerConfig({ toolProfile: "checkin_lite" }),
+    null,
   );
 });
 

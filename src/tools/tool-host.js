@@ -6,6 +6,12 @@ const {
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
 const { ControlLedgerStore } = require("../control/control-plane");
+const { resolveCheckinDailyBudget } = require("../app/system-checkin-poller");
+
+const TOOL_PROFILE_FULL = "full";
+const TOOL_PROFILE_FOREGROUND = "foreground";
+const TOOL_PROFILE_TASK = "task";
+const TOOL_PROFILE_CHECKIN_LITE = "checkin_lite";
 
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
@@ -14,17 +20,22 @@ class ProjectToolHost {
     this.extraToolHosts = createExtraToolHosts(services);
   }
 
-  listTools() {
+  listTools({ toolProfile = "" } = {}) {
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
     const builtIn = PROJECT_TOOLS.map((tool) => ({
       name: tool.name,
       description: buildToolDescription(tool),
       inputSchema: tool.inputSchema,
     }));
     const extra = this.extraToolHosts.flatMap((host) => host.listTools());
-    return [...builtIn, ...extra];
+    return filterToolsByProfile([...builtIn, ...extra], normalizedToolProfile);
   }
 
   async invokeTool(toolName, args = {}, context = {}) {
+    const normalizedToolProfile = normalizeToolProfile(context.toolProfile);
+    if (!isToolAllowedInProfile(toolName, normalizedToolProfile)) {
+      throw new Error(`Tool ${toolName} is not available in ${normalizedToolProfile} profile.`);
+    }
     const spec = PROJECT_TOOLS.find((candidate) => candidate.name === toolName);
     const normalizedArgs = args && typeof args === "object" ? args : {};
     if (spec) {
@@ -62,11 +73,13 @@ class ProjectToolHost {
   }
 }
 
-function listProjectToolNames() {
-  return [
+function listProjectToolNames({ toolProfile = "" } = {}) {
+  const names = [
     ...PROJECT_TOOLS.map((tool) => tool.name),
     ...STATIC_EXTRA_TOOL_NAMES,
   ];
+  const normalizedToolProfile = normalizeToolProfile(toolProfile);
+  return names.filter((name) => isToolAllowedInProfile(name, normalizedToolProfile));
 }
 
 const PROJECT_TOOLS = [
@@ -96,17 +109,17 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_reminder_create",
-    description: "Create a reminder in Mossbridge.",
-    shortHint: "Create a reminder with direct text plus delayMinutes or dueAt.",
+    description: "Create a Mossbridge AI-calendar wakeup for a future checkpoint or follow-up. Due reminders wake with the full tool profile; random check-ins do not.",
+    shortHint: "Create an AI-calendar wakeup with text plus delayMinutes or dueAt.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
       required: ["text"],
       properties: {
-        text: { type: "string", description: "Reminder text to send back later." },
-        delayMinutes: { type: "integer", description: "Minutes from now before the reminder fires." },
-        dueAt: { type: "string", description: "Absolute time such as 2026-04-07T21:30+08:00." },
-        userId: { type: "string", description: "Optional explicit WeChat user id." },
+        text: { type: "string", description: "Future-self agenda for the wakeup." },
+        delayMinutes: { type: "integer", description: "Minutes from now." },
+        dueAt: { type: "string", description: "Absolute time, e.g. 2026-04-07T21:30+08:00." },
+        userId: { type: "string", description: "Optional WeChat user id." },
       },
       additionalProperties: false,
     },
@@ -120,13 +133,13 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_reminder_list",
-    description: "List all pending (not yet fired) reminders for the current user. Use this to get reminder IDs before cancelling.",
+    description: "List pending reminders for the current user. Use before cancelling.",
     shortHint: "List pending reminders with their IDs and due times.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
       properties: {
-        userId: { type: "string", description: "Optional explicit WeChat user id." },
+        userId: { type: "string", description: "Optional WeChat user id." },
       },
       additionalProperties: false,
     },
@@ -144,14 +157,14 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_reminder_cancel",
-    description: "Cancel a pending reminder by its id before it fires. Use reminder_list first to get the id.",
+    description: "Cancel one pending reminder by id.",
     shortHint: "Cancel one pending reminder by id.",
     topics: ["reminder"],
     inputSchema: {
       type: "object",
       required: ["reminder_id"],
       properties: {
-        reminder_id: { type: "string", description: "The reminder id to cancel." },
+        reminder_id: { type: "string", description: "Reminder id." },
       },
       additionalProperties: false,
     },
@@ -167,7 +180,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_system_send",
-    description: "Queue an internal Mossbridge system trigger for the current bound workspace and chat. Do not use this to reply to the user's current message; write ordinary front-stage replies directly as assistant text.",
+    description: "Queue an internal Mossbridge system trigger. Not for replying to the current user turn.",
     shortHint: "Queue an internal system message for the current workspace.",
     topics: ["system"],
     inputSchema: {
@@ -194,16 +207,16 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_bridge_status",
-    description: "Read a low-risk Mossbridge status snapshot. Especially useful during a random check-in or heartbeat maintenance window before deciding whether to message the user. This tool is read-only: it inspects queues, pending reminders, runtime cooldowns, context pressure, and recent control-plane decisions without changing them.",
+    description: "Read-only Mossbridge status for reminder/calendar/dreaming/maintenance wakeups. Random check-ins usually run in a lightweight no-tool profile; use this in full-tool passes to inspect queues, reminders, cooldowns, context pressure, and control events.",
     shortHint: "Inspect bridge queues, reminders, runtime cooldown, context pressure, and control events.",
     topics: ["system", "wakeup"],
     inputSchema: {
       type: "object",
       properties: {
-        includeRuntime: { type: "boolean", description: "Include runtime context/cooldown status. Defaults to true." },
-        includeQueues: { type: "boolean", description: "Include system/deferred queue counts. Defaults to true." },
-        includeReminders: { type: "boolean", description: "Include pending reminder count and next due preview. Defaults to true." },
-        includeControl: { type: "boolean", description: "Include recent control-plane event summary. Defaults to true." },
+        includeRuntime: { type: "boolean", description: "Include runtime/cooldown status." },
+        includeQueues: { type: "boolean", description: "Include system/deferred queues." },
+        includeReminders: { type: "boolean", description: "Include reminder count/next due." },
+        includeControl: { type: "boolean", description: "Include recent control events." },
       },
       additionalProperties: false,
     },
@@ -264,14 +277,14 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_wakeup_agenda_read",
-    description: "Read the recent wakeup/self-agenda ledger for the current user. Use during heartbeat/checkin windows before deciding whether to continue a pending backstage task, stay silent, or contact the user.",
+    description: "Read recent wakeup/self-agenda records before a full-tool reminder, calendar, dreaming, case, or maintenance pass.",
     shortHint: "Read recent wakeup outcomes and pending next actions.",
     topics: ["memory", "wakeup", "maintenance"],
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "integer", description: "Optional number of recent wakeup records, default 6, max 50." },
-        includeCleared: { type: "boolean", description: "Include cleared wakeup records. Defaults to false." },
+        limit: { type: "integer", description: "Recent record limit." },
+        includeCleared: { type: "boolean", description: "Include cleared records." },
         userId: { type: "string" },
       },
       additionalProperties: false,
@@ -289,21 +302,21 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_wakeup_decision_write",
-    description: "Write the final outcome of a heartbeat/checkin wakeup. Use this before returning the final JSON for checkin_opportunity so the bridge keeps a continuity ledger: why it woke, what it did, whether it contacted the user, and what should be revisited next. Store only concise shareable summaries, never raw hidden chain-of-thought.",
+    description: "Write the final outcome of a full-tool wakeup. Store concise shareable summaries only; never raw hidden chain-of-thought.",
     shortHint: "Record a wakeup decision and next action.",
     topics: ["memory", "wakeup", "maintenance"],
     inputSchema: {
       type: "object",
       required: ["decision", "intent_summary"],
       properties: {
-        decision: { type: "string", description: "send, silent, maintenance, defer, budget_hold, continue_case, reminder, or sticker." },
-        wake_motive: { type: "string", description: "What woke this pass: random_checkin, reminder_due, dreaming_aftercare, case_followup, budget_guard, etc." },
-        intent_summary: { type: "string", description: "Concise shareable summary of the judgment and outcome." },
-        actions_taken: { type: "array", items: { type: "string" }, description: "Tools or backstage actions completed during this wakeup." },
-        next_actions: { type: "array", items: { type: "string" }, description: "Concrete handles for a future wakeup, if any." },
-        budget_posture: { type: "string", description: "Optional budget/context note such as ample, cautious, cooldown, or daily_budget_near_limit." },
-        contact_channel: { type: "string", description: "wechat, sticker, none, or later. Do not assume uninstalled external account/device channels exist." },
-        context_key: { type: "string", description: "Optional stable key for the wake context, e.g. travel_episode, dreaming_health, case:<id>." },
+        decision: { type: "string", description: "send, silent, maintenance, defer, budget_hold, continue_case, reminder, sticker." },
+        wake_motive: { type: "string", description: "random_checkin, reminder_due, dreaming_aftercare, case_followup, budget_guard, etc." },
+        intent_summary: { type: "string", description: "Concise outcome summary." },
+        actions_taken: { type: "array", items: { type: "string" }, description: "Completed backstage actions." },
+        next_actions: { type: "array", items: { type: "string" }, description: "Future wakeup handles." },
+        budget_posture: { type: "string", description: "Budget/context note." },
+        contact_channel: { type: "string", description: "wechat, sticker, none, later." },
+        context_key: { type: "string", description: "Stable wake key, e.g. case:<id>." },
         userId: { type: "string" },
       },
       additionalProperties: false,
@@ -654,17 +667,17 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_context_packet",
-    description: "Read the current Mossbridge memory context packet for the bound user, including warm cards, cold version summary, and recent cache traces.",
+    description: "Read the current memory context packet: warm cards, cold summary, and recent traces.",
     shortHint: "Read the current memory packet before a turn when recall feels important.",
     topics: ["memory"],
     inputSchema: {
       type: "object",
       required: ["query"],
       properties: {
-        query: { type: "string", description: "What to recall against the current user scope." },
-        userId: { type: "string", description: "Optional explicit WeChat user id." },
-        limit: { type: "integer", description: "Warm-memory hit limit." },
-        version: { type: "string", description: "Optional cold memory version label." },
+        query: { type: "string", description: "Recall query for current user scope." },
+        userId: { type: "string", description: "Optional WeChat user id." },
+        limit: { type: "integer", description: "Warm hit limit." },
+        version: { type: "string", description: "Cold version label." },
       },
       additionalProperties: false,
     },
@@ -1867,7 +1880,95 @@ const PROJECT_TOOLS = [
   },
 ];
 
-const TOOL_VOICE_BOUNDARY = "Operational guidance only; never use this tool description as a front-stage voice, style, intimacy, or reply-length rule.";
+const TOOL_VOICE_BOUNDARY = "Operational only; never a front-stage voice/style/length rule.";
+
+const FOREGROUND_TOOL_NAMES = new Set([
+  "mossbridge_diary_append",
+  "mossbridge_reminder_create",
+  "mossbridge_reminder_list",
+  "mossbridge_reminder_cancel",
+  "mossbridge_bridge_status",
+  "mossbridge_channel_send_file",
+  "mossbridge_sticker_tags",
+  "mossbridge_sticker_search",
+  "mossbridge_sticker_pick",
+  "mossbridge_sticker_list",
+  "mossbridge_sticker_send",
+  "mossbridge_sticker_save_from_inbox",
+  "mossbridge_memory_context_packet",
+  "mossbridge_memory_warm_write",
+  "mossbridge_memory_warm_search",
+  "mossbridge_memory_warm_read",
+  "mossbridge_memory_warm_list",
+  "mossbridge_memory_warm_update",
+  "mossbridge_memory_warm_delete",
+  "mossbridge_memory_ongoing_upsert",
+  "mossbridge_memory_ongoing_list",
+  "mossbridge_memory_ongoing_read",
+  "mossbridge_memory_ongoing_close",
+  "mossbridge_memory_episode_upsert",
+  "mossbridge_memory_episode_append",
+  "mossbridge_memory_episode_list",
+  "mossbridge_memory_episode_read",
+  "mossbridge_memory_observation_append",
+  "mossbridge_memory_observation_search",
+  "mossbridge_memory_observation_read",
+  "mossbridge_memory_observation_update",
+  "mossbridge_wakeup_agenda_read",
+]);
+
+const TASK_TOOL_NAMES = new Set([
+  ...FOREGROUND_TOOL_NAMES,
+  "mossbridge_memory_case_upsert",
+  "mossbridge_memory_case_append",
+  "mossbridge_memory_case_artifact",
+  "mossbridge_memory_case_search",
+  "mossbridge_memory_case_read",
+  "mossbridge_memory_case_close",
+  "mossbridge_memory_case_export",
+]);
+
+function filterToolsByProfile(tools = [], toolProfile = "") {
+  const normalizedToolProfile = normalizeToolProfile(toolProfile);
+  return (Array.isArray(tools) ? tools : []).filter((tool) =>
+    isToolAllowedInProfile(tool?.name, normalizedToolProfile)
+  );
+}
+
+function isToolAllowedInProfile(toolName = "", toolProfile = "") {
+  const name = normalizeText(toolName);
+  const normalizedToolProfile = normalizeToolProfile(toolProfile);
+  if (!name) {
+    return false;
+  }
+  if (normalizedToolProfile === TOOL_PROFILE_CHECKIN_LITE) {
+    return false;
+  }
+  if (normalizedToolProfile === TOOL_PROFILE_FOREGROUND) {
+    return FOREGROUND_TOOL_NAMES.has(name);
+  }
+  if (normalizedToolProfile === TOOL_PROFILE_TASK) {
+    return TASK_TOOL_NAMES.has(name);
+  }
+  return true;
+}
+
+function normalizeToolProfile(value = "") {
+  const normalized = normalizeText(value).toLowerCase();
+  if (normalized === TOOL_PROFILE_CHECKIN_LITE) {
+    return TOOL_PROFILE_CHECKIN_LITE;
+  }
+  if (normalized === TOOL_PROFILE_FOREGROUND || normalized === "frontstage" || normalized === "daily") {
+    return TOOL_PROFILE_FOREGROUND;
+  }
+  if (normalized === TOOL_PROFILE_TASK || normalized === "case") {
+    return TOOL_PROFILE_TASK;
+  }
+  if (normalized === "maintenance" || normalized === "dreaming") {
+    return TOOL_PROFILE_FULL;
+  }
+  return TOOL_PROFILE_FULL;
+}
 
 const STATIC_EXTRA_TOOL_NAMES = new WhereaboutsToolHost({ service: null })
   .listTools()
@@ -1931,6 +2032,12 @@ function buildBridgeStatusSnapshot(
     const currentTokens = readNonNegativeNumber(contextSnapshot?.currentTokens);
     const configuredWindow = readNonNegativeNumber(config.claudeContextWindow);
     const contextWindow = readNonNegativeNumber(contextSnapshot?.contextWindow) || configuredWindow;
+    const dailyCheckinBudget = buildDailyCheckinBudgetStatus({
+      config,
+      usagePayload,
+      runtimeId,
+      nowMs,
+    });
     snapshot.runtime = {
       active_cooldown_count: activeCooldowns.length,
       active_cooldowns: activeCooldowns.slice(0, 3).map((record) => ({
@@ -1949,6 +2056,7 @@ function buildBridgeStatusSnapshot(
       auto_compact_events: Array.isArray(usagePayload?.autoCompactEvents)
         ? usagePayload.autoCompactEvents.length
         : 0,
+      daily_checkin_budget: dailyCheckinBudget,
     };
   }
 
@@ -2018,6 +2126,7 @@ function buildBridgeStatusRecommendations(snapshot = {}) {
   const queue = snapshot.queues || {};
   const runtime = snapshot.runtime || {};
   const context = runtime.context || {};
+  const dailyBudget = runtime.daily_checkin_budget || {};
   const canRepair = Boolean(policy.self_repair_allowed);
 
   if ((queue.deferred_replies || 0) > 0) {
@@ -2036,6 +2145,21 @@ function buildBridgeStatusRecommendations(snapshot = {}) {
       code: "runtime_cooldown_active",
       action: "skip_nonessential_proactive_send",
       message: "Runtime cooldown is active; skip nonessential heartbeat speech and avoid adding pressure.",
+    });
+  }
+  if (dailyBudget.exceeded) {
+    recommendations.push({
+      level: "yellow",
+      code: "daily_checkin_budget_exceeded",
+      action: "hold_checkins_defer_dreaming_keep_due_reminders_compact",
+      message: "Daily background budget is exhausted; random wakeups should stop until the next local day, dreaming should retry later, and due reminders may proceed with compact context.",
+    });
+  } else if (dailyBudget.near_limit) {
+    recommendations.push({
+      level: "yellow",
+      code: "daily_checkin_budget_near_limit",
+      action: "avoid_extra_background_turns",
+      message: "Daily heartbeat budget is near its limit; prefer quiet read-only maintenance over extra proactive turns.",
     });
   }
   if (typeof context.usage_ratio === "number" && context.usage_ratio >= 0.85) {
@@ -2097,11 +2221,15 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
   const runtime = snapshot.runtime || {};
   const control = snapshot.control || {};
   const context = runtime.context || {};
+  const dailyBudget = runtime.daily_checkin_budget || {};
   const usageText = context.context_window > 0
     ? `${context.current_tokens}/${context.context_window} (${Math.round((context.usage_ratio || 0) * 100)}%)`
     : "unknown";
+  const budgetText = dailyBudget.disabled
+    ? "disabled"
+    : `${dailyBudget.weighted_tokens ?? 0}/${dailyBudget.token_budget ?? 0} weighted, ${dailyBudget.thread_count ?? 0}/${dailyBudget.thread_budget ?? 0} threads`;
   const lines = [
-    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} controlEvents=${control.sample_size ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
+    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} checkinBudget=${budgetText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} controlEvents=${control.sample_size ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
   ];
   const recommendation = Array.isArray(snapshot.recommendations) ? snapshot.recommendations[0] : null;
   if (recommendation?.message) {
@@ -2121,6 +2249,54 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
     }
   }
   return lines.join("\n");
+}
+
+function buildDailyCheckinBudgetStatus({
+  config = {},
+  usagePayload = {},
+  runtimeId = "",
+  nowMs = Date.now(),
+} = {}) {
+  const resolvedRuntimeId = normalizeText(runtimeId) || normalizeText(config.runtime) || "codex";
+  const budget = resolveCheckinDailyBudget({
+    config: {
+      ...config,
+      runtime: resolvedRuntimeId,
+    },
+    runtimeContextUsageStore: {
+      load() {},
+      snapshot() {
+        return usagePayload && typeof usagePayload === "object" ? usagePayload : {};
+      },
+    },
+    nowMs,
+  });
+  const tokenUsageRatio = budget.tokenBudget > 0
+    ? roundStatusNumber((Number(budget.budgetTokens) || 0) / budget.tokenBudget)
+    : null;
+  const threadUsageRatio = budget.threadBudget > 0
+    ? roundStatusNumber((Number(budget.threadCount) || 0) / budget.threadBudget)
+    : null;
+  const nearLimit = !budget.exceeded && (
+    (typeof tokenUsageRatio === "number" && tokenUsageRatio >= 0.8)
+    || (typeof threadUsageRatio === "number" && threadUsageRatio >= 0.8)
+  );
+  return {
+    disabled: Boolean(budget.disabled),
+    day: normalizeText(budget.day),
+    runtime_id: normalizeText(budget.runtimeId) || resolvedRuntimeId,
+    current_tokens: Number(budget.currentTokens) || 0,
+    weighted_tokens: Number(budget.budgetTokens) || 0,
+    token_budget: Number(budget.tokenBudget) || 0,
+    token_usage_ratio: tokenUsageRatio,
+    token_exceeded: Boolean(budget.tokenExceeded),
+    thread_count: Number(budget.threadCount) || 0,
+    thread_budget: Number(budget.threadBudget) || 0,
+    thread_usage_ratio: threadUsageRatio,
+    thread_exceeded: Boolean(budget.threadExceeded),
+    near_limit: Boolean(nearLimit),
+    exceeded: Boolean(budget.exceeded),
+  };
 }
 
 function readControlStatus(filePath) {
@@ -2211,6 +2387,11 @@ function resolveLatestRuntimeContext(payload, runtimeId = "") {
 function readNonNegativeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function roundStatusNumber(value, digits = 3) {
+  const scale = 10 ** Math.max(0, Number(digits) || 0);
+  return Math.round((Number(value) || 0) * scale) / scale;
 }
 
 function resolveBoundUserId(args = {}, context = {}) {
@@ -2419,4 +2600,9 @@ function validateSchema(schema, value, toolName, path) {
 module.exports = {
   ProjectToolHost,
   listProjectToolNames,
+  normalizeToolProfile,
+  TOOL_PROFILE_CHECKIN_LITE,
+  TOOL_PROFILE_FOREGROUND,
+  TOOL_PROFILE_FULL,
+  TOOL_PROFILE_TASK,
 };

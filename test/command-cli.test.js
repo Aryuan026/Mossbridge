@@ -56,3 +56,64 @@ test("timeline failure message explains port conflicts", () => {
   assert.match(message, /port is already in use/i);
   assert.match(message, /4317/);
 });
+
+test("shared refresh resolves binding key from real sessions map shape", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-common-"));
+  const stateDir = path.join(tempRoot, "state");
+  const accountsDir = path.join(stateDir, "accounts");
+  const sessionsFile = path.join(stateDir, "sessions.json");
+  const workspaceRoot = path.join(tempRoot, "workspace");
+  const bindingKey = "default:account-1:user-1";
+  fs.mkdirSync(accountsDir, { recursive: true });
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.writeFileSync(path.join(accountsDir, "account-1.json"), JSON.stringify({
+    accountId: "account-1",
+    savedAt: "2026-05-16T10:00:00.000Z",
+  }), "utf8");
+  fs.writeFileSync(sessionsFile, JSON.stringify({
+    bindings: {
+      [bindingKey]: {
+        accountId: "account-1",
+        senderId: "user-1",
+        activeWorkspaceRoot: workspaceRoot,
+        updatedAt: "2026-05-16T10:01:00.000Z",
+        threadIdByWorkspaceRootByRuntime: {
+          claudecode: {
+            [workspaceRoot]: "thread-claude-1",
+          },
+        },
+      },
+    },
+  }), "utf8");
+
+  const previousEnv = {
+    MOSSBRIDGE_RUNTIME: process.env.MOSSBRIDGE_RUNTIME,
+    MOSSBRIDGE_STATE_DIR: process.env.MOSSBRIDGE_STATE_DIR,
+    MOSSBRIDGE_SESSIONS_FILE: process.env.MOSSBRIDGE_SESSIONS_FILE,
+  };
+  process.env.MOSSBRIDGE_RUNTIME = "claudecode";
+  process.env.MOSSBRIDGE_STATE_DIR = stateDir;
+  process.env.MOSSBRIDGE_SESSIONS_FILE = sessionsFile;
+  const modulePath = require.resolve("../scripts/shared-common");
+  delete require.cache[modulePath];
+  try {
+    const { resolveBoundThread } = require("../scripts/shared-common");
+    const target = resolveBoundThread(workspaceRoot);
+    assert.equal(target.bindingKey, bindingKey);
+    assert.equal(target.threadId, "thread-claude-1");
+    assert.equal(target.workspaceRoot, workspaceRoot);
+  } finally {
+    delete require.cache[modulePath];
+    restoreEnv(previousEnv);
+  }
+});
+
+function restoreEnv(previousEnv) {
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}

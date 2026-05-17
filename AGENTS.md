@@ -38,7 +38,7 @@ Do not describe Mossbridge as Claude Code-only.
 
 Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator layers:
 
-- Heartbeat system: random check-ins, due reminders, deferred replies, wakeup agenda, cooldowns, and safe self-checks are handled as runtime system turns. A heartbeat is a chance for the model to inspect context and decide what useful action exists; it is not just a timer that always sends text.
+- Heartbeat system: random check-ins, due reminders, deferred replies, wakeup agenda, cooldowns, and safe self-checks are handled as runtime system turns. Random check-ins use a lightweight no-tool profile and can only reconnect or stay silent from injected context; due reminders, calendar wakeups, dreaming, case, and explicit maintenance turns can use the full tool profile when there is actual work to do. A heartbeat is not just a timer that always sends text.
 - Memory delivery system: hot context, warm cards, resident anchors, notebook notes, ongoing tracks, observation journal, episode journal, conversation cache, case index, and cold-version compatibility are delivered as scoped context packets. These packets should ground continuity, not dictate one fixed front-stage voice.
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
@@ -141,6 +141,22 @@ npm run capture:validate -- /path/to/capture-bundle.json
 ```
 
 Daily captures belong under `MOSSBRIDGE_DATA_ROOT/cache/app_daily_captures/` after staging. They should not write directly to warm memory, cold memory, episode journals, or case indexes until a local importer/dreaming step accepts them.
+
+## Same-Format Memory Portability
+
+When validating existing Home/Mossbridge-shaped memory data, use the bundle
+boundary instead of pointing a public smoke at a mother warehouse:
+
+```bash
+npm run memory:export -- --source-data-root /path/to/source-data --out /private/tmp/mossbridge-memory-bundle --replace-output
+MOSSBRIDGE_STATE_DIR=/private/tmp/mossbridge-state MOSSBRIDGE_DATA_ROOT=/private/tmp/mossbridge-data npm run memory:import -- --bundle /private/tmp/mossbridge-memory-bundle
+```
+
+`memory:import` is dry-run by default. Only use `--apply --replace` with an
+isolated target data root. The importer rewrites same-format identity fields and
+scoped path names to the configured `MOSSBRIDGE_IDENTITY_*`, so this is the
+preferred check for whether user identity is externalized enough for a new
+WeChat deployment.
 
 ## Review Checklist
 

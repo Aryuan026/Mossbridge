@@ -144,7 +144,13 @@ Runtime 能通过 MCP 工具做事。工具定义在 `src/tools/tool-host.js`，
 
 ## Heartbeat Is Not A Greeting Timer
 
-Mossbridge 的主动唤醒不是“隔一段时间发一句你好”。它更像桥在后台醒一下，先看看有没有 due reminder、recent context、ongoing、observation、cooldown、runtime pressure，再决定要不要说话。
+Mossbridge 的主动唤醒不是“隔一段时间发一句你好”。它更像桥在后台醒一下，先由代码级门房看看有没有 due reminder、recent context、ongoing、observation、cooldown、runtime pressure，再决定要不要叫醒模型。
+
+这里分三层：
+
+- code patrol：可以高频运行，但只读本地队列、预算、冷却和活跃聊天状态，不消耗模型 token。
+- lightweight random checkin：只有随机模型窗口到期时才进入 Codex/Claude，且使用 no-tool 轻量 profile，只能根据注入的小纸条选择 `silent` 或轻触达。
+- full tool wakeup：AI-calendar reminder、dreaming、case/task、错误恢复等明确事项才携带完整工具。
 
 相关代码包括：
 

@@ -58,7 +58,7 @@ The control plane is the guardrail against "just adding another fallback". It ke
   Codex and Claude Code are both supported. Shared mode is the preferred daily workflow, with commands for opening the same thread from terminal and WeChat and for selecting the next-turn model when supported by the local runtime.
 
 - **Safe self-check by default**
-  Heartbeat maintenance can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
+  Random check-ins use a lightweight no-tool profile so they can reconnect or stay silent without loading the full MCP tool surface. Calendar, reminder, dreaming, and explicit maintenance wakeups can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
 
 - **Cybernetic control plane**
   Mossbridge records operational decisions in a local control ledger: why a heartbeat was queued or skipped, why a runtime cooled down, what memory packet was delivered, and whether a dreaming/metabolism pass completed. This keeps the bridge explainable without turning bridge status into the main assistant's voice.
@@ -71,7 +71,7 @@ Mossbridge carries more configuration than the original bridge because it is try
 - `MOSSBRIDGE_STATE_DIR/control-events.jsonl` is the control ledger: bridge/runtime/memory delivery decisions for debugging and pressure-test review. It is operational state, not durable user memory.
 - `MOSSBRIDGE_DATA_ROOT` is memory data: hot context, warm cards, notebook notes, ongoing tracks, observation and episode journals, conversation cache, case index, cold-version compatibility, and mutation logs. Fresh deployments should start with one clean data root.
 - `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
-- `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context.
+- `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context. Random check-ins keep a lightweight no-tool runtime profile; due reminders, calendar wakeups, dreaming, and explicit maintenance turns can still use the full tool profile when there is actual work to do.
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for how much context gets delivered into a turn. Keep these limits modest so memory helps the model land the current reply instead of flooding it.
 - `MOSSBRIDGE_MAINTENANCE_*` settings keep the public heartbeat posture read-only by default. Private operators can opt into repair, but public clone smoke tests should only inspect and report.
 
@@ -182,6 +182,15 @@ npm run capture:validate -- /path/to/capture-bundle.json
 npm run capture:import -- /path/to/capture-bundle.json
 ```
 
+Same-format Mossbridge/Home-shaped memory data can be copied through a portable bundle for isolated WeChat validation:
+
+```bash
+npm run memory:export -- --source-data-root /path/to/source-data --out /private/tmp/mossbridge-memory-bundle --replace-output
+MOSSBRIDGE_STATE_DIR=/private/tmp/mossbridge-state MOSSBRIDGE_DATA_ROOT=/private/tmp/mossbridge-data npm run memory:import -- --bundle /private/tmp/mossbridge-memory-bundle
+```
+
+Import is dry-run by default. Add `--apply --replace` only when the target data root is isolated and disposable.
+
 Useful WeChat commands:
 
 - `/bind /absolute/path`
@@ -204,6 +213,8 @@ Useful WeChat commands:
   Update the random proactive wakeup interval.
 - `/chunk <number>`
   Adjust minimum merge size for short WeChat reply chunks.
+
+Proactive check-ins also have a daily safety budget. The budget uses weighted tokens: fresh/cache-write/output tokens count fully, cache-read tokens count lightly by default. This keeps cache-heavy quiet patrols from freezing the whole day while still preventing background wakeups from burning through runtime quota.
 
 ## Data Boundaries
 
@@ -275,6 +286,7 @@ Before making this repository public, do a final naming and privacy pass:
 - [docs/control-plane.md](./docs/control-plane.md)
 - [docs/brain-layer-boundary.md](./docs/brain-layer-boundary.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
+- [docs/memory-portability.md](./docs/memory-portability.md)
 - [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 - [docs/runtime-neutral-readiness.md](./docs/runtime-neutral-readiness.md)
 - [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)

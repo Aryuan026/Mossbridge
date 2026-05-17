@@ -71,9 +71,31 @@ async function apiPost({ baseUrl, endpoint, token, body, timeoutMs = 0, label })
       throw new Error(`${label} http ${response.status}: ${redactSensitiveText(truncateForLog(raw, 512))}`);
     }
     return raw;
+  } catch (error) {
+    throw attachWeixinApiDiagnostics(error, { label, endpoint, timeoutMs: timeout });
   } finally {
     clearTimeout(timer);
   }
+}
+
+function attachWeixinApiDiagnostics(error, details = {}) {
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  try {
+    Object.defineProperty(error, "weixinApi", {
+      value: {
+        label: normalizeText(details.label),
+        endpoint: normalizeText(details.endpoint),
+        timeoutMs: Number(details.timeoutMs) || 0,
+      },
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // Best-effort diagnostics only; never mask the original transport error.
+  }
+  return error;
 }
 
 function parseJson(raw, label) {
@@ -82,6 +104,10 @@ function parseJson(raw, label) {
   } catch {
     throw new Error(`${label} returned invalid JSON: ${redactSensitiveText(truncateForLog(raw, 256))}`);
   }
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 async function sendMessage({ baseUrl, token, body, timeoutMs }) {

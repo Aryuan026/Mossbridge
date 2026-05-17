@@ -43,15 +43,14 @@ test("weixin operations explains sticker use without forcing sticker spam", () =
   assert.match(raw, /Do not spam stickers/i);
 });
 
-test("weixin operations treats random checkins as low-risk maintenance windows", () => {
+test("weixin operations separates random checkins from AI-calendar tool wakeups", () => {
   const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
   const raw = fs.readFileSync(templatePath, "utf8");
 
-  assert.match(raw, /small maintenance and solitude window/i);
-  assert.match(raw, /low-risk backstage state/i);
-  assert.match(raw, /Prefer read-only checks first/i);
-  assert.match(raw, /solitude journal entries/i);
+  assert.match(raw, /Use reminders as an AI calendar/i);
+  assert.match(raw, /wake with tools/i);
+  assert.match(raw, /lightweight reconnection window/i);
+  assert.match(raw, /no tools/i);
+  assert.match(raw, /schedule it as an AI-calendar reminder/i);
   assert.match(raw, /Do not store raw hidden chain-of-thought/i);
-  assert.match(raw, /bridge lacks the status surface/i);
-  assert.match(raw, /maintenance pass found nothing useful/i);
 });

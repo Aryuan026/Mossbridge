@@ -35,6 +35,7 @@ function readConfig() {
     accountId: readBridgeTextEnv("ACCOUNT_ID"),
     weixinBaseUrl: readBridgeTextEnv("WEIXIN_BASE_URL") || "https://ilinkai.weixin.qq.com",
     weixinCdnBaseUrl: readBridgeTextEnv("WEIXIN_CDN_BASE_URL") || "https://novac2c.cdn.weixin.qq.com/c2c",
+    attachmentDownloadTimeoutMs: readBridgeIntEnv("ATTACHMENT_DOWNLOAD_TIMEOUT_MS") || 30_000,
     weixinConfigFile: path.join(stateDir, "weixin-config.json"),
     weixinMinChunkChars: readBridgeIntEnv("WEIXIN_MIN_CHUNK_CHARS"),
     weixinQrBotType: readBridgeTextEnv("WEIXIN_QR_BOT_TYPE") || "3",
@@ -54,6 +55,10 @@ function readConfig() {
     checkinMaxBackoffMinutes: readBridgeIntEnv("CHECKIN_MAX_BACKOFF_MINUTES"),
     checkinDailyTokenBudget: readBridgeIntEnv("CHECKIN_DAILY_TOKEN_BUDGET"),
     checkinDailyThreadBudget: readBridgeIntEnv("CHECKIN_DAILY_THREAD_BUDGET"),
+    checkinDailyCacheReadWeight: readBridgeNumberEnv("CHECKIN_DAILY_CACHE_READ_WEIGHT"),
+    checkinModelMinGapMinutes: readBridgeNumberEnv("CHECKIN_MODEL_MIN_GAP_MINUTES"),
+    systemBudgetDreamingDeferMinutes: readBridgeIntEnv("SYSTEM_BUDGET_DREAMING_DEFER_MINUTES"),
+    systemBudgetCompactRuntimeTextMaxChars: readBridgeIntEnv("SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_MAX_CHARS"),
     checkinHotWindowMinutes: readBridgeIntEnv("CHECKIN_HOT_WINDOW_MINUTES"),
     checkinHotRecentMinutes: readBridgeIntEnv("CHECKIN_HOT_RECENT_MINUTES"),
     checkinHotMinEvents: readBridgeIntEnv("CHECKIN_HOT_MIN_EVENTS"),
@@ -171,6 +176,10 @@ function readBridgeIntEnv(suffix) {
   return readIntEnv(`MOSSBRIDGE_${suffix}`);
 }
 
+function readBridgeNumberEnv(suffix) {
+  return readNumberEnv(`MOSSBRIDGE_${suffix}`);
+}
+
 function readListEnv(name) {
   return String(process.env[name] || "")
     .split(",")
@@ -255,6 +264,15 @@ function readIntEnv(name) {
     return undefined;
   }
   const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readNumberEnv(name) {
+  const value = readTextEnv(name);
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 

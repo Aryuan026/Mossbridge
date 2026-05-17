@@ -54,14 +54,23 @@ function buildSystemInboundText(text, createdAt = "") {
   const priority = normalizeText(message?.priority) || "normal";
   const title = normalizeText(message?.title);
   const metadata = message?.metadata && typeof message.metadata === "object" ? message.metadata : {};
+  const toolProfile = normalizeText(metadata.systemToolProfile || metadata.toolProfile);
+  const liteCheckin = kind === "checkin_opportunity" && toolProfile === "checkin_lite";
   const sections = [
     ...(localTime ? [`[${localTime}]`, ""] : []),
     "SYSTEM ACTION MODE: internal trigger, not user-authored chat.",
     ...buildSystemTriggerHeader({ kind, priority, title }),
-    ...buildSystemTriggerGuidance({ kind, priority }),
+    ...buildSystemTriggerGuidance({ kind, priority, toolProfile }),
     ...buildSystemTriggerDetails(metadata),
-    "Use tools as affordances, not a checklist; read/write only when this trigger needs it.",
-    "Safe scope: memory, reminders, diary/notebook, episode/case/observation, timeline/status reads, stickers/files, capability requests. Do not restart services, rebind accounts, change credentials, delete memory, or perform account/device/OAuth work unless the human explicitly asked.",
+    ...(liteCheckin
+      ? [
+          "This random check-in runs with a lightweight tool profile: do not attempt backstage maintenance, file work, memory edits, email, stickers, device control, or searches.",
+          "Use only the injected memory/status context and decide whether to stay silent or send one natural WeChat message.",
+        ]
+      : [
+          "Use tools as affordances, not a checklist; read/write only when this trigger needs it.",
+          "Safe scope: memory, reminders, diary/notebook, episode/case/observation, timeline/status reads, stickers/files, capability requests. Do not restart services, rebind accounts, change credentials, delete memory, or perform account/device/OAuth work unless the human explicitly asked.",
+        ]),
     "Visible send_message is natural WeChat/front-stage continuity, not bridge status. Keep emotional continuity from memory/recent context; no tone template.",
     "Bridge status reports come from [Mossbridge]; if only status remains, return silent.",
     "Return one JSON object after tools:",
@@ -118,9 +127,10 @@ function buildSystemTriggerHeader({ kind = "", priority = "", title = "" } = {})
   return header;
 }
 
-function buildSystemTriggerGuidance({ kind = "", priority = "" } = {}) {
+function buildSystemTriggerGuidance({ kind = "", priority = "", toolProfile = "" } = {}) {
   const normalizedKind = normalizeText(kind);
   const normalizedPriority = normalizeText(priority);
+  const normalizedToolProfile = normalizeText(toolProfile);
   if (normalizedKind === "reminder_due" || normalizedKind === "calendar_due") {
     return [
       "This is a due obligation, not a random thought. Do not re-judge whether it matters.",
@@ -128,6 +138,13 @@ function buildSystemTriggerGuidance({ kind = "", priority = "" } = {}) {
     ];
   }
   if (normalizedKind === "checkin_opportunity") {
+    if (normalizedToolProfile === "checkin_lite") {
+      return [
+        "This is a lightweight reconnection window, not a task execution window.",
+        "Do not reduce the choice to 'send a greeting' versus 'do nothing': use the already-injected recent context to decide whether a small WeChat message would genuinely help.",
+        "If it is not the right moment to message, return {\"action\":\"silent\"}; silence should mean intentional quiet, not forgetting.",
+      ];
+    }
     return [
       "This is a lightweight maintenance and reconnection window, not a mandatory interruption.",
       "Do not reduce the choice to 'send a greeting' versus 'do nothing'. You may do a small, low-risk maintenance pass first: bridge status, wakeup agenda, pending reminders, memory/ongoing/episode/observation state, today's timeline/notebook, whereabouts/context signals, or other bridge-provided status surfaces when relevant.",
@@ -174,6 +191,8 @@ function buildSystemTriggerDetails(metadata = {}) {
     ["To", metadata.toLabel],
     ["Distance", metadata.distanceText],
     ["Observed at", metadata.observedAt],
+    ["Budget posture", metadata.budgetPosture],
+    ["Budget policy", metadata.budgetPolicy],
   ];
   for (const [label, value] of pairs) {
     const normalized = normalizeText(value);

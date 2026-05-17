@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const { ProjectToolHost } = require("../src/tools/tool-host");
 
@@ -567,6 +570,7 @@ test("tool host exposes a read-only bridge status tool for heartbeat maintenance
 
   assert.ok(statusTool);
   assert.match(statusTool.description, /read-only/i);
+  assert.match(statusTool.description, /Random check-ins usually run in a lightweight no-tool profile/i);
 
   const result = await host.invokeTool("mossbridge_bridge_status", {}, {
     runtimeId: "claudecode",
@@ -584,6 +588,64 @@ test("tool host exposes a read-only bridge status tool for heartbeat maintenance
   assert.equal(result.data.queues.system_pending, 0);
   assert.equal(result.data.reminders.pending_count, 1);
   assert.equal(result.data.reminders.next_due_at, "2026-05-09T12:00:00.000Z");
+});
+
+test("bridge status exposes weighted daily checkin budget pressure", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-status-budget-"));
+  const usageFile = path.join(tempRoot, "runtime-context-usage.json");
+  fs.writeFileSync(usageFile, `${JSON.stringify({
+    contextsByThreadId: {
+      "system-1": {
+        runtimeId: "claudecode",
+        bindingKey: "default:user#mossbridge-system",
+        currentTokens: 103_500,
+        inputTokens: 1_000,
+        cacheCreationInputTokens: 2_000,
+        cacheReadInputTokens: 100_000,
+        outputTokens: 500,
+        updatedAt: new Date().toISOString(),
+      },
+      "user-1": {
+        runtimeId: "claudecode",
+        bindingKey: "default:user",
+        currentTokens: 90_000,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  }, null, 2)}\n`, "utf8");
+
+  const host = new ProjectToolHost({
+    services: {
+      config: {
+        runtime: "claudecode",
+        runtimeContextUsageFile: usageFile,
+        checkinDailyTokenBudget: 12_000,
+        checkinDailyThreadBudget: 10,
+        checkinDailyCacheReadWeight: 0.1,
+      },
+    },
+    runtimeContextStore: {
+      resolveActiveContext() {
+        return {};
+      },
+    },
+  });
+
+  const result = await host.invokeTool("mossbridge_bridge_status", {
+    includeQueues: false,
+    includeReminders: false,
+    includeControl: false,
+  }, {
+    runtimeId: "claudecode",
+  });
+
+  assert.match(result.text, /checkinBudget=13500\/12000 weighted/);
+  assert.equal(result.data.runtime.daily_checkin_budget.weighted_tokens, 13_500);
+  assert.equal(result.data.runtime.daily_checkin_budget.current_tokens, 103_500);
+  assert.equal(result.data.runtime.daily_checkin_budget.thread_count, 1);
+  assert.equal(result.data.runtime.daily_checkin_budget.token_exceeded, true);
+  assert.equal(result.data.runtime.daily_checkin_budget.exceeded, true);
+  assert.equal(result.data.recommendations[0].code, "daily_checkin_budget_exceeded");
 });
 
 test("tool host exposes solitude journal tools for wakeup self-review", async () => {
@@ -695,6 +757,9 @@ test("tool host exposes structured timeline read tools", async () => {
 
 test("tool host validates structured reminder input types", async () => {
   const host = createHost();
+  const reminderCreate = host.listTools().find((tool) => tool.name === "mossbridge_reminder_create");
+  assert.match(reminderCreate.description, /AI-calendar wakeup/);
+  assert.match(reminderCreate.description, /full tool profile/);
   await assert.rejects(async () => {
     await host.invokeTool("mossbridge_reminder_create", {
       text: "ping me",
@@ -752,6 +817,37 @@ test("tool host descriptions include schema summary for models that only surface
   assert.match(timelineWrite.description, /Input:/);
   assert.match(timelineWrite.description, /date: string/);
   assert.match(timelineWrite.description, /events: \{/);
+});
+
+test("tool host filters MCP tools by runtime profile", async () => {
+  const host = createHost();
+  const foregroundNames = host.listTools({ toolProfile: "foreground" }).map((tool) => tool.name);
+  const taskNames = host.listTools({ toolProfile: "task" }).map((tool) => tool.name);
+  const fullNames = host.listTools({ toolProfile: "full" }).map((tool) => tool.name);
+  const liteNames = host.listTools({ toolProfile: "checkin_lite" }).map((tool) => tool.name);
+
+  assert.ok(foregroundNames.includes("mossbridge_reminder_create"));
+  assert.ok(foregroundNames.includes("mossbridge_sticker_send"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_warm_update"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_episode_append"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_observation_update"));
+  assert.ok(!foregroundNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(!foregroundNames.includes("mossbridge_memory_case_upsert"));
+  assert.ok(!foregroundNames.includes("mossbridge_timeline_write"));
+  assert.ok(!foregroundNames.includes("mossbridge_solitude_journal_write"));
+  assert.ok(!foregroundNames.includes("mossbridge_wakeup_decision_write"));
+  assert.ok(!foregroundNames.includes("whereabouts_snapshot"));
+
+  assert.ok(taskNames.includes("mossbridge_memory_case_upsert"));
+  assert.ok(!taskNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(fullNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(fullNames.includes("mossbridge_timeline_write"));
+  assert.deepEqual(liteNames, []);
+
+  await assert.rejects(
+    () => host.invokeTool("mossbridge_memory_cold_search", {}, { toolProfile: "foreground" }),
+    /not available in foreground profile/,
+  );
 });
 
 test("tool host exposes structured warm-memory lookup and exact-card mutation tools", async () => {

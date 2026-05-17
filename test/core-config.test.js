@@ -21,6 +21,10 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_MODEL_CHOICES",
   "MOSSBRIDGE_CODEX_MODEL_CHOICES",
   "MOSSBRIDGE_CLAUDE_MODEL_CHOICES",
+  "MOSSBRIDGE_CHECKIN_DAILY_CACHE_READ_WEIGHT",
+  "MOSSBRIDGE_CHECKIN_MODEL_MIN_GAP_MINUTES",
+  "MOSSBRIDGE_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES",
+  "MOSSBRIDGE_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_MAX_CHARS",
 ];
 
 function withBridgeEnv(values, fn) {
@@ -149,5 +153,22 @@ test("readConfig exposes model choices for WeChat model menus", () => {
     assert.deepEqual(config.modelChoices, ["fast=gpt-5.4-mini"]);
     assert.deepEqual(config.codexModelChoices, ["local=gemma4:26b-32k@ollama"]);
     assert.deepEqual(config.claudeModelChoices, ["opus=claude-opus-4-6"]);
+  });
+});
+
+test("readConfig loads weighted checkin budget tuning", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_CHECKIN_DAILY_CACHE_READ_WEIGHT: "0.1",
+    MOSSBRIDGE_CHECKIN_MODEL_MIN_GAP_MINUTES: "75",
+    MOSSBRIDGE_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES: "20",
+    MOSSBRIDGE_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_MAX_CHARS: "6000",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.checkinDailyCacheReadWeight, 0.1);
+    assert.equal(config.checkinModelMinGapMinutes, 75);
+    assert.equal(config.systemBudgetDreamingDeferMinutes, 20);
+    assert.equal(config.systemBudgetCompactRuntimeTextMaxChars, 6000);
   });
 });

@@ -31,14 +31,18 @@ const DEFAULT_CHECKIN_TOKEN_BACKOFF_MULTIPLIER = 3;
 const DEFAULT_CHECKIN_TOKEN_SEVERE_BACKOFF_MULTIPLIER = 6;
 const DEFAULT_CHECKIN_MAX_BACKOFF_MS = 2 * 60 * 60_000;
 const DEFAULT_CHECKIN_DAILY_TOKEN_BUDGET = 300_000;
-const DEFAULT_CHECKIN_DAILY_THREAD_BUDGET = 12;
+const DEFAULT_CHECKIN_DAILY_THREAD_BUDGET = 36;
+const DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT = 0.1;
+const DEFAULT_CHECKIN_MODEL_MIN_GAP_MINUTES = 90;
+const DEFAULT_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES = 20;
+const DEFAULT_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_CHARS = 6_000;
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATES = [
-  "%USER% comes to mind again; do a tiny maintenance pass, then decide whether to appear.",
-  "A small ordinary check-in window opens for %USER%; inspect light backstage state if useful, then decide whether a tiny hello would help.",
-  "You have not surfaced for a little while. Reassess %USER%'s current day, pending handles, and whether a light touch belongs here.",
-  "%USER% may be between tasks or quietly pushing through something. Consider whether to inspect continuity state, leave a backstage handle, or appear with a small, low-stakes message.",
-  "This is a non-meal, non-reminder check-in and maintenance window for %USER%; do not wait only for scheduled anchors.",
+  "%USER% comes to mind again; from the tiny injected wake note only, decide whether a small hello belongs here.",
+  "A small ordinary check-in window opens for %USER%; no tools are available in this random heartbeat, so use only injected context and either stay silent or send one light touch.",
+  "You have not surfaced for a little while. Use the short wake packet only; do not infer old tasks or try to inspect files.",
+  "%USER% may be between tasks or quietly pushing through something. If the injected context is too thin, stay silent instead of inventing a reason to appear.",
+  "This is a non-meal, non-reminder random check-in. AI-calendar and task wakeups handle real work; this heartbeat is only for light reconnection.",
 ];
 
 async function runSystemCheckinPoller(config) {
@@ -119,6 +123,24 @@ async function runSystemCheckinPoller(config) {
         payload: readiness,
       });
       console.log(`[mossbridge] checkin skipped: ${formatCheckinSkipReason(readiness)}`);
+      if (readiness.reason === "daily_checkin_budget") {
+        const pauseMs = resolveDailyBudgetPauseMs(Date.now());
+        recordControl(controlPlane, {
+          type: "system.checkin.pause",
+          layer: CONTROL_LAYER.TACTICAL,
+          scope: CONTROL_SCOPE.SYSTEM_TURN,
+          source: "checkin_poller.daily_budget",
+          subject: target.senderId,
+          reason: "daily_checkin_budget",
+          outcome: "paused_until_next_local_day",
+          payload: {
+            pauseMs,
+            dailyBudget: readiness.dailyBudget,
+          },
+        });
+        console.log(`[mossbridge] checkin daily budget pause until ${formatLocalTime(Date.now() + pauseMs)}`);
+        await sleep(pauseMs);
+      }
       continue;
     }
 
@@ -155,6 +177,25 @@ async function runSystemCheckinPoller(config) {
       console.log(
         `[mossbridge] checkin skipped: hot conversation ${heat.eventCount} events in ${Math.round(heat.windowMs / 60000)}m, last activity ${formatDuration(heat.ageMs)} ago`,
       );
+      continue;
+    }
+
+    const modelPreflight = resolveCheckinModelWakePreflight({
+      config,
+      runtimeContextUsageStore,
+    });
+    if (!modelPreflight.ready) {
+      recordControl(controlPlane, {
+        type: "system.checkin.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "checkin_poller.model_preflight",
+        subject: target.senderId,
+        reason: modelPreflight.reason,
+        outcome: "zero_token_patrol",
+        payload: modelPreflight,
+      });
+      console.log(`[mossbridge] checkin patrol skipped model wake: ${formatCheckinSkipReason(modelPreflight)}`);
       continue;
     }
 
@@ -225,13 +266,19 @@ function resolveCheckinReadiness({
     return { ready: false, reason: "runtime_cooldown", runtimeCooldown };
   }
 
-  const dailyBudget = resolveCheckinDailyBudget({
+  const budgetPolicy = resolveSystemTurnBudgetPolicy({
+    kind: "checkin_opportunity",
     config,
     runtimeContextUsageStore,
     nowMs,
   });
-  if (dailyBudget.exceeded) {
-    return { ready: false, reason: "daily_checkin_budget", dailyBudget };
+  if (budgetPolicy.action === "drop") {
+    return {
+      ready: false,
+      reason: "daily_checkin_budget",
+      dailyBudget: budgetPolicy.dailyBudget,
+      budgetPolicy,
+    };
   }
 
   const maxAgeMs = resolveCheckinContextTokenMaxAgeMs(config);
@@ -246,6 +293,60 @@ function resolveCheckinReadiness({
   }
 
   return { ready: true };
+}
+
+function resolveCheckinModelWakePreflight({
+  config = {},
+  runtimeContextUsageStore = null,
+  nowMs = Date.now(),
+} = {}) {
+  const minGapMinutes = resolveOptionalPositiveNumber(
+    config.checkinModelMinGapMinutes,
+    DEFAULT_CHECKIN_MODEL_MIN_GAP_MINUTES,
+  );
+  const minGapMs = Math.round(minGapMinutes * 60_000);
+  if (minGapMs <= 0) {
+    return { ready: true, reason: "model_gap_disabled", minGapMs: 0 };
+  }
+
+  try {
+    runtimeContextUsageStore?.load?.();
+  } catch {
+    // Stale diagnostics should not block the code-level patrol gate.
+  }
+
+  const latest = findLatestSystemCheckinContext({
+    snapshot: runtimeContextUsageStore?.snapshot?.() || {},
+    runtimeId: normalizeText(config.runtime) || "codex",
+  });
+  if (!latest.updatedAtMs) {
+    return {
+      ready: true,
+      reason: "first_model_wake_for_runtime",
+      minGapMs,
+    };
+  }
+
+  const elapsedMs = Math.max(0, nowMs - latest.updatedAtMs);
+  if (elapsedMs < minGapMs) {
+    return {
+      ready: false,
+      reason: "model_wake_min_gap",
+      minGapMs,
+      elapsedMs,
+      remainingMs: minGapMs - elapsedMs,
+      lastModelWakeAt: latest.updatedAt,
+      nextModelWakeAtMs: latest.updatedAtMs + minGapMs,
+    };
+  }
+
+  return {
+    ready: true,
+    reason: "model_wake_due",
+    minGapMs,
+    elapsedMs,
+    lastModelWakeAt: latest.updatedAt,
+  };
 }
 
 function resolveCheckinContextTokenMaxAgeMs(config = {}) {
@@ -285,9 +386,10 @@ function resolveCheckinDailyBudget({
   const usage = summarizeSystemCheckinUsageForLocalDay({
     snapshot: runtimeContextUsageStore?.snapshot?.() || {},
     runtimeId: normalizeText(config.runtime) || "codex",
+    cacheReadWeight: resolveCacheReadWeight(config.checkinDailyCacheReadWeight),
     nowMs,
   });
-  const tokenExceeded = tokenBudget > 0 && usage.currentTokens >= tokenBudget;
+  const tokenExceeded = tokenBudget > 0 && usage.budgetTokens >= tokenBudget;
   const threadExceeded = threadBudget > 0 && usage.threadCount >= threadBudget;
 
   return {
@@ -300,12 +402,84 @@ function resolveCheckinDailyBudget({
   };
 }
 
+function resolveSystemTurnBudgetPolicy({
+  kind = "",
+  config = {},
+  runtimeContextUsageStore = null,
+  nowMs = Date.now(),
+  dailyBudget = null,
+} = {}) {
+  const normalizedKind = normalizeText(kind).toLowerCase();
+  const budget = dailyBudget || resolveCheckinDailyBudget({
+    config,
+    runtimeContextUsageStore,
+    nowMs,
+  });
+  const base = {
+    kind: normalizedKind || "generic",
+    dailyBudget: budget,
+    budgetPosture: budget?.exceeded ? "daily_budget_exceeded" : "normal",
+    reason: budget?.exceeded ? "daily_system_budget" : "within_daily_budget",
+  };
+
+  if (!budget?.exceeded || budget?.disabled) {
+    return {
+      ...base,
+      action: "allow",
+    };
+  }
+
+  if (isRandomCheckinKind(normalizedKind)) {
+    return {
+      ...base,
+      action: "drop",
+      reason: "daily_checkin_budget",
+      pauseMs: resolveDailyBudgetPauseMs(nowMs),
+    };
+  }
+
+  if (isDreamingKind(normalizedKind)) {
+    const deferMs = resolvePositiveNumber(
+      config.systemBudgetDreamingDeferMinutes,
+      DEFAULT_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES,
+    ) * 60_000;
+    return {
+      ...base,
+      action: "defer",
+      deferMs,
+      retryAfterMs: nowMs + deferMs,
+    };
+  }
+
+  if (isReminderKind(normalizedKind)) {
+    return {
+      ...base,
+      action: "allow_compact",
+      compactRuntimeTextMaxChars: resolvePositiveNumber(
+        config.systemBudgetCompactRuntimeTextMaxChars,
+        DEFAULT_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_CHARS,
+      ),
+    };
+  }
+
+  return {
+    ...base,
+    action: "allow_compact",
+    compactRuntimeTextMaxChars: resolvePositiveNumber(
+      config.systemBudgetCompactRuntimeTextMaxChars,
+      DEFAULT_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_CHARS,
+    ),
+  };
+}
+
 function summarizeSystemCheckinUsageForLocalDay({
   snapshot = {},
   runtimeId = "codex",
+  cacheReadWeight = DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT,
   nowMs = Date.now(),
 } = {}) {
   const targetDay = getShanghaiDayKey(nowMs);
+  const normalizedCacheReadWeight = resolveCacheReadWeight(cacheReadWeight);
   const contexts = Object.values(snapshot.contextsByThreadId || {});
   return contexts.reduce((acc, context) => {
     if (normalizeText(context.runtimeId) !== runtimeId) {
@@ -318,14 +492,66 @@ function summarizeSystemCheckinUsageForLocalDay({
       return acc;
     }
     acc.currentTokens += Math.max(0, Number(context.currentTokens) || 0);
+    acc.budgetTokens += estimateCheckinBudgetTokens(context, normalizedCacheReadWeight);
     acc.threadCount += 1;
     return acc;
   }, {
     day: targetDay,
     runtimeId,
     currentTokens: 0,
+    budgetTokens: 0,
     threadCount: 0,
   });
+}
+
+function findLatestSystemCheckinContext({
+  snapshot = {},
+  runtimeId = "codex",
+} = {}) {
+  const normalizedRuntimeId = normalizeText(runtimeId) || "codex";
+  let latest = {
+    updatedAt: "",
+    updatedAtMs: 0,
+    threadId: "",
+  };
+  for (const context of Object.values(snapshot.contextsByThreadId || {})) {
+    if (normalizeText(context?.runtimeId) !== normalizedRuntimeId) {
+      continue;
+    }
+    if (!isSystemCheckinContext(context)) {
+      continue;
+    }
+    const updatedAtMs = Date.parse(context?.updatedAt || "");
+    if (!Number.isFinite(updatedAtMs) || updatedAtMs <= latest.updatedAtMs) {
+      continue;
+    }
+    latest = {
+      updatedAt: new Date(updatedAtMs).toISOString(),
+      updatedAtMs,
+      threadId: normalizeText(context?.threadId),
+    };
+  }
+  return latest;
+}
+
+function estimateCheckinBudgetTokens(context = {}, cacheReadWeight = DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT) {
+  const inputTokens = positiveNumber(context.inputTokens);
+  const cacheCreationInputTokens = positiveNumber(context.cacheCreationInputTokens);
+  const cacheReadInputTokens = positiveNumber(context.cacheReadInputTokens) + positiveNumber(context.cachedInputTokens);
+  const outputTokens = positiveNumber(context.outputTokens);
+  const freshTokens = inputTokens + cacheCreationInputTokens + outputTokens;
+  if (freshTokens > 0 || cacheReadInputTokens > 0) {
+    return Math.round(freshTokens + cacheReadInputTokens * resolveCacheReadWeight(cacheReadWeight));
+  }
+  return positiveNumber(context.currentTokens);
+}
+
+function resolveCacheReadWeight(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT;
+  }
+  return Math.max(0, Math.min(1, parsed));
 }
 
 function resolveCheckinTokenPressureBackoff({
@@ -436,10 +662,28 @@ function resolveOptionalPositiveNumber(value, fallback) {
   return resolvePositiveNumber(value, fallback);
 }
 
+function positiveNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function isRandomCheckinKind(kind = "") {
+  return normalizeText(kind).toLowerCase() === "checkin_opportunity";
+}
+
+function isDreamingKind(kind = "") {
+  const normalized = normalizeText(kind).toLowerCase();
+  return normalized === "dreaming_opportunity" || normalized === "memory_metabolism";
+}
+
+function isReminderKind(kind = "") {
+  const normalized = normalizeText(kind).toLowerCase();
+  return normalized === "reminder_due" || normalized === "calendar_due";
+}
+
 function isSystemCheckinContext(context = {}) {
   const bindingKey = normalizeText(context.bindingKey);
   return bindingKey.includes("#mossbridge-system")
-    || bindingKey.includes("#asherie-system")
     || normalizeText(context.source) === "system";
 }
 
@@ -472,7 +716,9 @@ function formatCheckinSkipReason(readiness = {}) {
     case "runtime_cooldown":
       return `runtime cooldown until ${formatLocalTime(readiness.runtimeCooldown?.resetAtMs || readiness.runtimeCooldown?.resetAt)} (${formatDuration(readiness.runtimeCooldown?.remainingMs)} remaining)`;
     case "daily_checkin_budget":
-      return `daily check-in budget reached (${readiness.dailyBudget?.currentTokens || 0}/${readiness.dailyBudget?.tokenBudget || 0} tokens, ${readiness.dailyBudget?.threadCount || 0}/${readiness.dailyBudget?.threadBudget || 0} system threads)`;
+      return `daily check-in budget reached (${readiness.dailyBudget?.budgetTokens || 0}/${readiness.dailyBudget?.tokenBudget || 0} weighted tokens, ${readiness.dailyBudget?.currentTokens || 0} context tokens, ${readiness.dailyBudget?.threadCount || 0}/${readiness.dailyBudget?.threadBudget || 0} system threads)`;
+    case "model_wake_min_gap":
+      return `model wake not due yet (${formatDuration(readiness.elapsedMs)} since last system wake, next in ${formatDuration(readiness.remainingMs)})`;
     case "missing_context_token":
       return "no usable WeChat context token for proactive delivery yet";
     case "stale_context_token":
@@ -492,6 +738,18 @@ function formatDuration(ms) {
     return `${hours}h`;
   }
   return `${Math.round(hours / 24)}d`;
+}
+
+function resolveDailyBudgetPauseMs(nowMs = Date.now()) {
+  const currentDay = getShanghaiDayKey(nowMs);
+  const stepMs = 15 * 60_000;
+  const maxMs = 36 * 60 * 60_000;
+  for (let offsetMs = stepMs; offsetMs <= maxMs; offsetMs += stepMs) {
+    if (getShanghaiDayKey(nowMs + offsetMs) !== currentDay) {
+      return offsetMs + 2 * 60_000;
+    }
+  }
+  return 6 * 60 * 60_000;
 }
 
 function resolvePollerTarget({ config, account, sessionStore }) {
@@ -565,11 +823,15 @@ function buildCheckinTrigger(config) {
 
 module.exports = {
   applyCheckinTokenPressureBackoff,
+  findLatestSystemCheckinContext,
   runSystemCheckinPoller,
   resolveCheckinDailyBudget,
   resolveCheckinConversationHeat,
   resolveCheckinContextTokenMaxAgeMs,
+  resolveCheckinModelWakePreflight,
   resolveCheckinReadiness,
   resolveCheckinTokenPressureBackoff,
+  resolveDailyBudgetPauseMs,
+  resolveSystemTurnBudgetPolicy,
   summarizeSystemCheckinUsageForLocalDay,
 };

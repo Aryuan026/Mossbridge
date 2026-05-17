@@ -18,6 +18,7 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
   const originalProjectSettings = require.cache[projectSettingsPath];
   const originalIpcServer = require.cache[ipcServerPath];
   const originalAdapter = require.cache[adapterPath];
+  const projectSettingCalls = [];
 
   class MockClaudeCodeProcessClient {
     static instances = [];
@@ -88,11 +89,18 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
     filename: projectSettingsPath,
     loaded: true,
     exports: {
-      ensureClaudeProjectMcpConfig() {
+      ensureClaudeProjectMcpConfig(args = {}) {
+        projectSettingCalls.push(args);
         return {
           configPath: path.join(tempRoot, "mock.mcp.json"),
           serverName: "mock_tools",
         };
+      },
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
       },
     },
   };
@@ -135,6 +143,7 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
     assert.equal(MockClaudeCodeProcessClient.instances.length, 1);
     assert.equal(MockClaudeCodeProcessClient.instances[0].model, "sonnet");
     assert.equal(firstTurn.threadId, "session-sonnet");
+    assert.equal(projectSettingCalls.at(-1).toolProfile, "foreground");
     assert.match(MockClaudeCodeProcessClient.instances[0].sentMessages[0], /WECHAT SESSION INSTRUCTIONS/);
     assert.match(MockClaudeCodeProcessClient.instances[0].sentMessages[0], /STABLE WECHAT RULE/);
 
@@ -153,6 +162,15 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
 
     const activeUserClient = MockClaudeCodeProcessClient.instances[1];
     const systemBindingKey = `${bindingKey}#mossbridge-system`;
+    sessionStore.updateBinding(systemBindingKey, {
+      workspaceId: "default",
+      accountId: "demo-account",
+      senderId: "demo-sender#mossbridge-system",
+      replySenderId: "demo-sender",
+      systemRuntimeBinding: true,
+      systemToolProfile: "checkin_lite",
+      activeWorkspaceRoot: workspaceRoot,
+    });
     const systemTurn = await adapter.sendTextTurn({
       bindingKey: systemBindingKey,
       workspaceRoot,
@@ -165,6 +183,7 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
     assert.equal(systemTurn.threadId, "session-opus");
     assert.equal(activeUserClient.alive, true);
     assert.equal(MockClaudeCodeProcessClient.instances[2].alive, true);
+    assert.equal(projectSettingCalls.at(-1).toolProfile, "checkin_lite");
     assert.match(MockClaudeCodeProcessClient.instances[2].sentMessages[0], /^MOSSBRIDGE WAKE ANCHOR/);
     assert.match(MockClaudeCodeProcessClient.instances[2].sentMessages[0], /STABLE WECHAT RULE/);
     assert.match(MockClaudeCodeProcessClient.instances[2].sentMessages[0], /WAKE INPUT\nbackground checkin/);
@@ -278,6 +297,12 @@ test("claudecode runtime adapter closes an opening client when session id verifi
           configPath: path.join(tempRoot, "mock.mcp.json"),
           serverName: "mock_tools",
         };
+      },
+      normalizeToolProfile(value) {
+        if (value === "checkin_lite") {
+          return "checkin_lite";
+        }
+        return value === "full" ? "full" : "foreground";
       },
     },
   };

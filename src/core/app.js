@@ -41,7 +41,10 @@ const {
   normalizeCommandTokens,
   splitCommandLine,
 } = require("../adapters/runtime/shared/approval-command");
-const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
+const {
+  resolveSystemTurnBudgetPolicy,
+  runSystemCheckinPoller,
+} = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
 const { getLastActivityAt, recordUserMessage, recordAiReply } = require("./activity-tracker");
 const {
@@ -61,9 +64,12 @@ const SESSION_EXPIRED_ERRCODE = -14;
 const RETRY_DELAY_MS = 2_000;
 const BACKOFF_DELAY_MS = 30_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
+const WEIXIN_TRANSPORT_RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 8_000;
 const FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 45_000;
-const OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS = 90_000;
+const CLAUDECODE_FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS = 75_000;
+const CLAUDECODE_FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS = 120_000;
+const OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS = 180_000;
 const RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 90_000;
 const RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 240_000;
 const CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS = 150_000;
@@ -74,6 +80,15 @@ const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 8_000;
 const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 6_000;
+
+function resolveFirstRuntimeEventFailureTimeoutMs({ isClaudeCode = false, openingTurn = false } = {}) {
+  if (!isClaudeCode) {
+    return FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS;
+  }
+  return openingTurn
+    ? OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS
+    : CLAUDECODE_FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS;
+}
 
 function createRuntimeAdapter(config) {
   if (config.runtime === "claudecode") {
@@ -113,6 +128,7 @@ class MossbridgeApp {
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
     this.inboundUpdateBatchDepth = 0;
+    this.inboundUpdateBatchImageSenders = new Set();
     this.deferredImageInboundFlushScopeKeys = new Set();
     this.turnBoundaryScopeKeys = new Set();
     this.turnWritebackContextByRunKey = new Map();
@@ -125,6 +141,7 @@ class MossbridgeApp {
       sessionStore: this.runtimeAdapter.getSessionStore(),
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
       onRuntimeNotice: (payload) => this.recordRuntimeNotice(payload),
+      onOutboundDelivery: (payload) => this.recordWeixinOutboundAudit(payload),
     });
     this.pendingRuntimeEventWatchdogs = new Map();
     this.runningTurnWatchdogs = new Map();
@@ -136,7 +153,9 @@ class MossbridgeApp {
     this.runtimeEventChain = Promise.resolve();
     this.nextDreamingPollAtMs = 0;
     this.runtimeAdapter.onEvent((event) => {
-      this.clearRuntimeEventWatchdog(event?.payload?.threadId);
+      if (shouldClearFirstRuntimeEventWatchdog(event)) {
+        this.clearRuntimeEventWatchdog(event?.payload?.threadId);
+      }
       this.threadStateStore.applyRuntimeEvent(event);
       this.recordRuntimeContextUsage(event);
       this.observeRunningTurnEvent(event);
@@ -236,25 +255,29 @@ class MossbridgeApp {
 
     try {
       let consecutiveFailures = 0;
+      let pollOutageStartedAtMs = 0;
       while (!shutdown.stopped) {
         try {
-          await Promise.all([
-            this.maybeQueueDreaming(account),
-            this.flushDueReminders(account),
-            this.flushPendingInboundMessages(),
-            this.flushPendingSystemMessages(),
-            this.flushPendingTimelineScreenshots(account),
-          ]);
+          if (consecutiveFailures <= 0) {
+            await this.flushOutboundQueues(account);
+          }
           const syncBufferBefore = this.channelAdapter.loadSyncBuffer();
           const response = await this.channelAdapter.getUpdates({
             syncBuffer: syncBufferBefore,
             timeoutMs: this.resolveLongPollTimeoutMs(),
           });
           assertWeixinUpdateResponse(response);
+          if (consecutiveFailures > 0) {
+            this.recordWeixinPollRecoveryAudit({
+              consecutiveFailures,
+              outageStartedAtMs: pollOutageStartedAtMs,
+            });
+          }
           consecutiveFailures = 0;
+          pollOutageStartedAtMs = 0;
           const messages = sortInboundUpdateMessages(Array.isArray(response?.msgs) ? response.msgs : []);
           this.recordWeixinPollAudit({ response, messages, syncBufferBefore });
-          this.beginInboundUpdateBatch(messages.length);
+          this.beginInboundUpdateBatch(messages.length, messages);
           try {
             for (const message of messages) {
               if (shutdown.stopped) {
@@ -265,13 +288,7 @@ class MossbridgeApp {
           } finally {
             this.endInboundUpdateBatch();
           }
-          await Promise.all([
-            this.maybeQueueDreaming(account),
-            this.flushDueReminders(account),
-            this.flushPendingInboundMessages(),
-            this.flushPendingSystemMessages(),
-            this.flushPendingTimelineScreenshots(account),
-          ]);
+          await this.flushOutboundQueues(account);
         } catch (error) {
           if (shutdown.stopped) {
             break;
@@ -281,9 +298,18 @@ class MossbridgeApp {
             throw new Error("The WeChat session has expired. Run `npm run login` again.");
           }
 
+          if (consecutiveFailures <= 0) {
+            pollOutageStartedAtMs = Date.now();
+          }
           consecutiveFailures += 1;
-          console.error(`[mossbridge] poll failed: ${formatErrorMessage(error)}`);
-          await sleep(consecutiveFailures >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS);
+          const retryDelayMs = resolveWeixinPollRetryDelayMs(consecutiveFailures, error);
+          const formattedError = formatErrorMessage(error);
+          this.recordWeixinPollFailureAudit(error, consecutiveFailures, formattedError, {
+            retryDelayMs,
+            outageStartedAtMs: pollOutageStartedAtMs,
+          });
+          console.error(`[mossbridge] poll failed: ${formattedError}; retry in ${Math.round(retryDelayMs / 1000)}s`);
+          await sleep(retryDelayMs);
         }
       }
     } finally {
@@ -312,6 +338,16 @@ class MossbridgeApp {
       return;
     }
     await this.projectDomains.presence.closeWhereaboutsServer();
+  }
+
+  async flushOutboundQueues(account) {
+    await Promise.all([
+      this.maybeQueueDreaming(account),
+      this.flushDueReminders(account),
+      this.flushPendingInboundMessages(),
+      this.flushPendingSystemMessages(),
+      this.flushPendingTimelineScreenshots(account),
+    ]);
   }
 
   handleLocationAccepted(result) {
@@ -472,6 +508,29 @@ class MossbridgeApp {
     }
   }
 
+  recordWeixinPollFailureAudit(error, consecutiveFailures = 0, formattedError = "", extra = {}) {
+    this.weixinIngressAuditStore?.recordPollFailure?.({
+      error: formattedError || formatErrorMessage(error),
+      name: normalizeText(error?.name),
+      ...buildErrorDiagnosticPayload(error),
+      retryDelayMs: Number.isFinite(Number(extra.retryDelayMs)) ? Number(extra.retryDelayMs) : null,
+      outageStartedAt: extra.outageStartedAtMs ? new Date(extra.outageStartedAtMs).toISOString() : "",
+      consecutiveFailures: Math.max(1, Number(consecutiveFailures) || 1),
+    });
+  }
+
+  recordWeixinPollRecoveryAudit({ consecutiveFailures = 0, outageStartedAtMs = 0 } = {}) {
+    const outageDurationMs = outageStartedAtMs ? Math.max(0, Date.now() - outageStartedAtMs) : 0;
+    this.weixinIngressAuditStore?.recordPollRecovery?.({
+      consecutiveFailures: Math.max(1, Number(consecutiveFailures) || 1),
+      outageStartedAt: outageStartedAtMs ? new Date(outageStartedAtMs).toISOString() : "",
+      outageDurationMs,
+    });
+    console.log(
+      `[mossbridge] weixin poll recovered after ${Math.max(1, Number(consecutiveFailures) || 1)} failures (${Math.round(outageDurationMs / 1000)}s)`
+    );
+  }
+
   recordWeixinInboundAudit({ stage = "", rawMessage = null, normalized = null, error = null } = {}) {
     const textPreview = normalized
       ? (normalizeText(normalized.originalText) || normalizeText(normalized.text))
@@ -489,6 +548,23 @@ class MossbridgeApp {
       const suffix = event.error ? ` error=${event.error}` : "";
       console.log(`[mossbridge] weixin inbound ${event.stage} message=${event.messageId || "(unknown)"}${suffix}`);
     }
+  }
+
+  recordWeixinOutboundAudit(payload = {}) {
+    this.weixinIngressAuditStore?.recordOutbound?.({
+      threadId: normalizeText(payload.threadId),
+      turnId: normalizeText(payload.turnId),
+      runKey: normalizeText(payload.runKey),
+      bindingKey: normalizeText(payload.bindingKey),
+      userId: normalizeText(payload.userId),
+      provider: normalizeText(payload.provider),
+      kind: normalizeText(payload.kind),
+      status: normalizeText(payload.status),
+      attempt: normalizeText(payload.attempt),
+      contextTokenPresent: Boolean(payload.contextTokenPresent),
+      textPreview: normalizeText(payload.textPreview),
+      error: normalizeText(payload.error),
+    });
   }
 
   deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
@@ -605,7 +681,13 @@ class MossbridgeApp {
       return;
     }
 
-    if (this.hasPendingImageInbound(bindingKey, workspaceRoot) && isPlainTextPreparedMessage(prepared)) {
+    if (
+      isPlainTextPreparedMessage(prepared)
+      && (
+        this.hasPendingImageInbound(bindingKey, workspaceRoot)
+        || this.currentInboundBatchMayContainImageForSender(normalized.senderId)
+      )
+    ) {
       this.enqueuePendingImageInbound({
         bindingKey,
         workspaceRoot,
@@ -627,12 +709,33 @@ class MossbridgeApp {
     if (!ignoreBoundary && scopeKey && this.turnBoundaryScopeKeys?.has(scopeKey)) {
       return true;
     }
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const threadId = sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
     if (this.turnGateStore.isPending(bindingKey, workspaceRoot)) {
-      return true;
+      if (isRuntimeTurnActuallyActiveForApp(this, { bindingKey, workspaceRoot, threadId })) {
+        return true;
+      }
+      this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
+      console.warn(
+        `[mossbridge] released stale turn gate binding=${bindingKey} workspace=${workspaceRoot} thread=${threadId || "(none)"}`
+      );
     }
-    const threadId = this.runtimeAdapter.getSessionStore().getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
+    if (
+      threadState?.status === "running"
+      && normalizeText(this.runtimeAdapter?.describe?.().id) === "claudecode"
+      && !isRuntimeTurnActuallyActiveForApp(this, { bindingKey, workspaceRoot, threadId })
+    ) {
+      console.warn(
+        `[mossbridge] ignored stale claudecode running state binding=${bindingKey} workspace=${workspaceRoot} thread=${threadId}`
+      );
+      return false;
+    }
     return threadState?.status === "running" || hasRpcId(threadState?.pendingApproval?.requestId);
+  }
+
+  isRuntimeTurnActuallyActive({ bindingKey = "", workspaceRoot = "", threadId = "" } = {}) {
+    return isRuntimeTurnActuallyActiveForApp(this, { bindingKey, workspaceRoot, threadId });
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
@@ -675,6 +778,7 @@ class MossbridgeApp {
           senderId: prepared.runtimeBindingSenderId || prepared.senderId,
           replySenderId: prepared.senderId,
           systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
+          systemToolProfile: prepared.systemToolProfile || prepared.systemTurn?.metadata?.systemToolProfile || "",
           skipOpeningInstructions: Boolean(prepared.systemRuntimeBinding),
         },
       });
@@ -813,11 +917,12 @@ class MossbridgeApp {
     return this.pendingImageInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
   }
 
-  beginInboundUpdateBatch(messageCount = 0) {
+  beginInboundUpdateBatch(messageCount = 0, messages = []) {
     if (Number(messageCount) <= 1) {
       return;
     }
     this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) || 0) + 1;
+    this.inboundUpdateBatchImageSenders = collectBatchImageSenders(messages);
   }
 
   endInboundUpdateBatch() {
@@ -827,11 +932,24 @@ class MossbridgeApp {
     this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) - 1);
     if (this.inboundUpdateBatchDepth === 0) {
       this.scheduleDeferredImageInboundFlushes();
+      this.inboundUpdateBatchImageSenders = new Set();
     }
   }
 
   shouldDeferImageInboundFlushUntilPollBatchEnds() {
     return Number(this.inboundUpdateBatchDepth) > 0;
+  }
+
+  currentInboundBatchMayContainImageForSender(senderId = "") {
+    if (!(Number(this.inboundUpdateBatchDepth) > 0)) {
+      return false;
+    }
+    const normalizedSenderId = normalizeText(senderId);
+    return Boolean(
+      normalizedSenderId
+      && this.inboundUpdateBatchImageSenders instanceof Set
+      && this.inboundUpdateBatchImageSenders.has(normalizedSenderId)
+    );
   }
 
   rememberDeferredImageInboundFlush(scopeKey) {
@@ -951,6 +1069,19 @@ class MossbridgeApp {
 
     const { batchMessages, remainingMessages } = takeImageContextBatchMessages(queued, MAX_INBOUND_STICKER_IMAGE_BATCH);
     if (!batchMessages.length) {
+      if (remainingMessages.length && this.pendingInboundByScope instanceof Map && typeof this.flushPendingInboundMessages === "function") {
+        const current = this.pendingInboundByScope.get(scopeKey) || {
+          bindingKey: draft.bindingKey,
+          workspaceRoot: draft.workspaceRoot,
+          messages: [],
+        };
+        current.messages.push(...remainingMessages.map((message) => clonePreparedInboundMessage(message)));
+        this.pendingInboundByScope.set(scopeKey, current);
+        await this.flushPendingInboundMessages({
+          bindingKey: draft.bindingKey,
+          workspaceRoot: draft.workspaceRoot,
+        });
+      }
       return false;
     }
 
@@ -1113,20 +1244,21 @@ class MossbridgeApp {
     const isCodex = runtimeName === "codex";
     const isClaudeCode = runtimeName === "claudecode";
     const suppressNotice = openingTurn && isClaudeCode;
-    const noticeTimeoutMs = suppressNotice ? 0 : FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS;
-    const failureTimeoutMs = openingTurn && isClaudeCode
-      ? OPENING_CLAUDECODE_FIRST_EVENT_FAILURE_TIMEOUT_MS
-      : FIRST_RUNTIME_EVENT_FAILURE_TIMEOUT_MS;
+    const noticeTimeoutMs = suppressNotice
+      ? 0
+      : isClaudeCode
+        ? CLAUDECODE_FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS
+        : FIRST_RUNTIME_EVENT_NOTICE_TIMEOUT_MS;
+    const failureTimeoutMs = resolveFirstRuntimeEventFailureTimeoutMs({
+      isClaudeCode,
+      openingTurn,
+    });
 
     this.clearRuntimeEventWatchdog(normalizedThreadId);
     const noticeTimer = noticeTimeoutMs > 0
       ? setTimeout(async () => {
         const watchdog = this.pendingRuntimeEventWatchdogs.get(normalizedThreadId);
         if (!watchdog) {
-          return;
-        }
-        const currentThreadState = this.threadStateStore.getThreadState(normalizedThreadId);
-        if (currentThreadState?.status === "running" || currentThreadState?.turnId) {
           return;
         }
         watchdog.noticeSent = true;
@@ -1166,10 +1298,6 @@ class MossbridgeApp {
       : null;
     const failureTimer = setTimeout(async () => {
       this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
-      const currentThreadState = this.threadStateStore.getThreadState(normalizedThreadId);
-      if (currentThreadState?.status === "running" || currentThreadState?.turnId) {
-        return;
-      }
       await this.channelAdapter.sendTyping({
         userId: normalized.senderId,
         status: 0,
@@ -1592,6 +1720,11 @@ class MossbridgeApp {
         });
         attachments = persisted.saved;
         attachmentFailures = persisted.failed;
+        this.recordWeixinAttachmentIntakeAudit?.({
+          normalized,
+          saved: attachments,
+          failed: attachmentFailures,
+        });
         if (attachmentFailures.length) {
           console.warn(
             `[mossbridge] attachment intake failed message=${normalized.messageId || ""} saved=${attachments.length} failed=${attachmentFailures.length} reasons=${attachmentFailures.map((item) => item.reason).join(" | ")}`
@@ -1627,6 +1760,26 @@ class MossbridgeApp {
       attachmentFailures,
       memoryContextPacket: memoryContext.packet,
     };
+  }
+
+  recordWeixinAttachmentIntakeAudit({ normalized = null, saved = [], failed = [] } = {}) {
+    const savedItems = Array.isArray(saved) ? saved : [];
+    const failedItems = Array.isArray(failed) ? failed : [];
+    this.weixinIngressAuditStore?.recordAttachmentIntake?.({
+      messageId: normalizeCommandArgument(String(normalized?.messageId || "")),
+      senderId: normalizeText(normalized?.senderId),
+      contextTokenPresent: Boolean(normalizeText(normalized?.contextToken)),
+      savedCount: savedItems.length,
+      failedCount: failedItems.length,
+      imageCount: savedItems.filter((item) => isImageAttachmentItem(item)).length,
+      fileCount: savedItems.filter((item) => !isImageAttachmentItem(item)).length,
+      savedFiles: savedItems.map((item) => normalizeText(item?.relativePath) || normalizeText(item?.fileName) || normalizeText(item?.absolutePath)).filter(Boolean),
+      failedReasons: failedItems.map((item) => {
+        const label = normalizeText(item?.sourceFileName) || normalizeText(item?.kind) || "attachment";
+        const reason = normalizeText(item?.reason) || "unknown";
+        return `${label}: ${reason}`;
+      }),
+    });
   }
 
   async flushPendingSystemMessages() {
@@ -1762,6 +1915,27 @@ class MossbridgeApp {
       sessionStore,
     });
     const contextToken = senderId ? (this.channelAdapter.getKnownContextTokens()[senderId] || "") : "";
+    const budgetPolicy = this.resolveSystemTurnBudgetPolicy({ kind: "dreaming_opportunity", nowMs });
+    if (budgetPolicy.action === "defer") {
+      const deferMs = Math.max(60_000, Number(budgetPolicy.deferMs) || pollIntervalMs);
+      this.nextDreamingPollAtMs = nowMs + deferMs;
+      this.recordControlEvent?.({
+        type: "memory.dreaming.deferred",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.maybeQueueDreaming",
+        subject: senderId || account.accountId,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: budgetPolicy.reason,
+        outcome: "deferred",
+        payload: {
+          retryAfterMs: nowMs + deferMs,
+          dailyBudget: budgetPolicy.dailyBudget,
+        },
+      });
+      console.log(`[mossbridge] dreaming deferred: daily system budget retry at ${formatWechatLocalTime(new Date(nowMs + deferMs).toISOString())}`);
+      return { queued: false, reason: "daily_system_budget", budgetPolicy };
+    }
     const result = this.memoryMetabolismService.maybeQueueDreaming({
       accountId: account.accountId,
       senderId,
@@ -1827,6 +2001,32 @@ class MossbridgeApp {
       return true;
     }
 
+    const budgetPolicy = resolveSystemTurnBudgetPolicyForDispatch(this, { kind: message?.kind });
+    if (budgetPolicy.action === "drop") {
+      this.recordControlEvent?.({
+        type: "system.checkin.dropped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "app.dispatchSystemMessage",
+        subject: message.id,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: budgetPolicy.reason,
+        outcome: "dropped",
+        payload: {
+          dailyBudget: budgetPolicy.dailyBudget,
+        },
+      });
+      console.log(
+        `[mossbridge] ${normalizeText(message?.kind) || "system"} dropped: daily system budget reached`,
+      );
+      return true;
+    }
+
+    if (budgetPolicy.action === "defer" && isDreamingSystemMessage(message)) {
+      this.deferMemoryMetabolismAttemptForBudget(message, budgetPolicy);
+      return true;
+    }
+
     if (isCheckinOpportunityMessage(message)) {
       const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
       if (cooldown) {
@@ -1852,7 +2052,9 @@ class MossbridgeApp {
       }
     }
 
-    const prepared = this.systemMessageDispatcher?.buildPreparedMessage(message, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
+    const budgetAdjustedMessage = applySystemBudgetPolicyToMessage(message, budgetPolicy);
+    const profiledMessage = applySystemToolProfileToMessage(budgetAdjustedMessage);
+    const prepared = this.systemMessageDispatcher?.buildPreparedMessage(profiledMessage, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
     if (!prepared) {
       throw new Error("system message could not be prepared");
     }
@@ -1878,6 +2080,7 @@ class MossbridgeApp {
       ...prepared,
       runtimeBindingSenderId: buildSystemRuntimeSenderId(prepared.senderId),
       systemRuntimeBinding: true,
+      systemToolProfile: resolveSystemToolProfileForMessage(profiledMessage),
     };
     const runtimeText = preparedForDispatch.runtimeText || preparedForDispatch.text;
     const memoryContext = await this.attachMemoryContextToPreparedText(
@@ -1938,6 +2141,44 @@ class MossbridgeApp {
         console.warn(`[mossbridge] dreaming dispatch receipt skipped attempt=${attemptId} ${formatErrorMessage(error)}`);
       }
     }
+  }
+
+  deferMemoryMetabolismAttemptForBudget(message = {}, budgetPolicy = {}) {
+    const attemptId = normalizeText(message?.metadata?.dreamingAttemptId || message?.metadata?.dreaming_attempt_id);
+    let deferred = null;
+    if (attemptId && typeof this.memoryMetabolismService?.deferAttempt === "function") {
+      deferred = this.memoryMetabolismService.deferAttempt(attemptId, {
+        reason: budgetPolicy.reason || "daily_system_budget",
+        retryAfterMs: budgetPolicy.retryAfterMs,
+      });
+    }
+    this.recordControlEvent?.({
+      type: "memory.dreaming.deferred",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.MEMORY,
+      source: "app.dispatchSystemMessage",
+      subject: attemptId || message.id,
+      severity: CONTROL_SEVERITY.WARN,
+      reason: budgetPolicy.reason || "daily_system_budget",
+      outcome: deferred?.ok === false ? "defer_record_failed" : "deferred",
+      payload: {
+        retryAfterMs: budgetPolicy.retryAfterMs,
+        dailyBudget: budgetPolicy.dailyBudget,
+        deferResult: deferred,
+      },
+    });
+    console.log(
+      `[mossbridge] dreaming deferred: daily system budget retry at ${formatWechatLocalTime(new Date(budgetPolicy.retryAfterMs || Date.now()).toISOString())}`,
+    );
+  }
+
+  resolveSystemTurnBudgetPolicy({ kind = "", nowMs = Date.now() } = {}) {
+    return resolveSystemTurnBudgetPolicy({
+      kind,
+      config: this.config,
+      runtimeContextUsageStore: this.runtimeContextUsageStore,
+      nowMs,
+    });
   }
 
   prepareSystemRuntimeBinding({ userBindingKey, workspaceRoot, prepared }) {
@@ -3023,6 +3264,7 @@ class MossbridgeApp {
         this.stableTurnGuidanceKeys,
       );
       const contextPressure = this.resolveMemoryContextPressureProfile?.(normalized, workspaceRoot) || null;
+      const forceRecentContext = this.shouldForceRecentContextForPrepared?.(normalized, workspaceRoot) || false;
       const packet = await memoryDomain.captureContextPacket({
         userId: normalized.senderId,
         senderId: normalized.senderId,
@@ -3033,10 +3275,12 @@ class MossbridgeApp {
         channelId: "weixin",
         workspaceRoot,
         currentTurnSignals: buildCurrentTurnSignalsForMemory(normalized),
+        forceRecentContext,
         ...buildMemoryCapturePressureOptions(normalized, {
           residentAlreadyDelivered,
           includeRuntimePreludeGuidance: includeStableTurnGuidance,
           contextPressure,
+          forceRecentContext,
         }),
       });
       if (
@@ -3213,6 +3457,55 @@ class MossbridgeApp {
       return normalizeCommandArgument(sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot));
     } catch {
       return "";
+    }
+  }
+
+  shouldForceRecentContextForPrepared(normalized = {}, workspaceRoot = "") {
+    if (normalizeText(normalized?.provider) === "system") {
+      return false;
+    }
+    const senderId = normalizeCommandArgument(normalized.runtimeBindingSenderId || normalized.senderId || normalized.chatId);
+    if (!senderId) {
+      return false;
+    }
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    if (!sessionStore || typeof sessionStore.buildBindingKey !== "function") {
+      return false;
+    }
+    let bindingKey = "";
+    try {
+      bindingKey = sessionStore.buildBindingKey({
+        workspaceId: normalized.workspaceId || this.config?.workspaceId,
+        accountId: normalized.accountId || this.activeAccountId || this.config?.accountId,
+        senderId,
+      });
+    } catch {
+      bindingKey = "";
+    }
+    if (!bindingKey) {
+      return false;
+    }
+    const runtimeId = normalizeCommandArgument(this.runtimeAdapter?.describe?.().id)
+      || normalizeCommandArgument(this.config?.runtime)
+      || "codex";
+    const root = normalizeCommandArgument(workspaceRoot) || normalizeCommandArgument(this.config?.workspaceRoot);
+    let threadId = "";
+    try {
+      threadId = sessionStore.getThreadIdForWorkspace?.(bindingKey, root) || "";
+    } catch {
+      threadId = "";
+    }
+    if (!threadId) {
+      return true;
+    }
+    try {
+      return Boolean(this.sessionRefreshRequests?.getPendingRequest?.({
+        bindingKey,
+        workspaceRoot: root,
+        runtimeId,
+      }));
+    } catch {
+      return false;
     }
   }
 
@@ -3458,7 +3751,8 @@ function buildWechatToolHoverNote(normalized = {}) {
     "[当前可用动作提醒]",
     "这些能力可以按需主动拿起，不必等用户点名；但它们不是本轮任务清单，也不是前台说话风格。不适合就完全忽略。",
     "- 表情包：当一张贴图能自然补一层温度、玩笑、庆祝、撒娇或软着陆时，可以先用自然意图搜索表情仓再发送；先说清楚该说的话，贴图只做附加表达。",
-    "- 记忆、提醒、日记、episode、观察：如果这一轮出现未来会复用的信息、跟进点、可修正印象或一个小事件，可以静默维护，不必等用户用工具名提醒。",
+    "- 记忆、日记、episode、观察：如果这一轮出现未来会复用的信息、可修正印象或一个小事件，可以静默维护，不必等用户用工具名提醒。",
+    "- AI 日历/提醒：如果你已经看见一个未来检查点、后续动作、持续任务，或“到那个时间再带着工具醒来处理”的机会，请直接创建提醒/AI 日历唤醒；到期唤醒会携带完整工具能力，适合执行、检查、写记录或决定是否联系用户，随机心跳只负责轻量续联。",
     "- 文件/附件：如果已经生成本地文件且当前通道支持发送，可以直接发送；不要假设未安装的外部账号、设备或私有执行器存在。",
     "不要把这些能力变成关键词条件；用完工具后继续自然聊天，不暴露内部 id、协议、队列或路径。",
   ];
@@ -3540,22 +3834,83 @@ function isCheckinOpportunityMessage(message = {}) {
   return normalizeText(message?.kind) === "checkin_opportunity";
 }
 
+function isDreamingSystemMessage(message = {}) {
+  const kind = normalizeText(message?.kind).toLowerCase();
+  return kind === "dreaming_opportunity" || kind === "memory_metabolism";
+}
+
+function applySystemBudgetPolicyToMessage(message = {}, budgetPolicy = {}) {
+  if (budgetPolicy?.action !== "allow_compact") {
+    return message;
+  }
+  return {
+    ...message,
+    metadata: {
+      ...(message?.metadata && typeof message.metadata === "object" ? message.metadata : {}),
+      budgetPosture: budgetPolicy.budgetPosture || "daily_budget_exceeded",
+      budgetPolicy: "compact",
+      budgetReason: budgetPolicy.reason || "daily_system_budget",
+      compactRuntimeTextMaxChars: Number(budgetPolicy.compactRuntimeTextMaxChars) || 0,
+    },
+  };
+}
+
+function applySystemToolProfileToMessage(message = {}) {
+  const systemToolProfile = resolveSystemToolProfileForMessage(message);
+  if (!systemToolProfile || systemToolProfile === "full") {
+    return message;
+  }
+  return {
+    ...message,
+    metadata: {
+      ...(message?.metadata && typeof message.metadata === "object" ? message.metadata : {}),
+      systemToolProfile,
+    },
+  };
+}
+
+function resolveSystemToolProfileForMessage(message = {}) {
+  return isCheckinOpportunityMessage(message) ? "checkin_lite" : "full";
+}
+
+function resolveSystemTurnBudgetPolicyForDispatch(appLike, { kind = "", nowMs = Date.now() } = {}) {
+  if (typeof appLike?.resolveSystemTurnBudgetPolicy === "function") {
+    return appLike.resolveSystemTurnBudgetPolicy({ kind, nowMs });
+  }
+  return resolveSystemTurnBudgetPolicy({
+    kind,
+    config: appLike?.config || {},
+    runtimeContextUsageStore: appLike?.runtimeContextUsageStore || null,
+    nowMs,
+  });
+}
+
 function buildMemoryCapturePressureOptions(
   normalized = {},
   {
     residentAlreadyDelivered = false,
     includeRuntimePreludeGuidance = false,
     contextPressure = null,
+    forceRecentContext = false,
   } = {},
 ) {
   const pressureOptions = buildTokenPressureMemoryOptions(contextPressure, {
     background: isBackgroundCheckinOpportunity(normalized),
   });
+  const forceRecentOptions = forceRecentContext
+    ? {
+        cacheLimit: 32,
+        recallRecentRecordLimit: 12,
+        preludeRecentSnippetLimit: 0,
+        preludeRecentThreadLimit: 6,
+      }
+    : {};
   if (!isBackgroundCheckinOpportunity(normalized)) {
     return {
       includeRuntimePreludeGuidance: Boolean(includeRuntimePreludeGuidance),
       residentLimit: residentAlreadyDelivered ? 0 : undefined,
       ...pressureOptions,
+      ...forceRecentOptions,
     };
   }
   return {
@@ -3581,6 +3936,7 @@ function buildMemoryCapturePressureOptions(
     coldVineLimit: 2,
     coldVinePerRootLimit: 1,
     ...pressureOptions,
+    ...forceRecentOptions,
   };
 }
 
@@ -3953,7 +4309,92 @@ function formatErrorMessage(error) {
   if (isSessionExpiredError(error)) {
     return "The WeChat session has expired. Run `npm run login` again.";
   }
-  return raw;
+  const details = formatErrorDiagnosticSuffix(buildErrorDiagnosticPayload(error));
+  return details ? `${raw} (${details})` : raw;
+}
+
+function buildErrorDiagnosticPayload(error) {
+  if (!error || typeof error !== "object") {
+    return {};
+  }
+  const cause = error.cause && typeof error.cause === "object" ? error.cause : null;
+  const api = error.weixinApi && typeof error.weixinApi === "object" ? error.weixinApi : null;
+  return pruneEmptyObject({
+    code: normalizeText(error.code),
+    causeName: normalizeText(cause?.name),
+    causeCode: normalizeText(cause?.code),
+    causeMessage: normalizeText(cause?.message).slice(0, 240),
+    apiLabel: normalizeText(api?.label),
+    apiEndpoint: normalizeText(api?.endpoint),
+    apiTimeoutMs: Number.isFinite(Number(api?.timeoutMs)) ? Number(api.timeoutMs) : null,
+  });
+}
+
+function formatErrorDiagnosticSuffix(details = {}) {
+  const parts = [];
+  if (details.causeCode) {
+    parts.push(`cause=${details.causeCode}`);
+  } else if (details.causeName) {
+    parts.push(`cause=${details.causeName}`);
+  }
+  if (details.apiLabel) {
+    parts.push(`api=${details.apiLabel}`);
+  }
+  if (details.apiEndpoint) {
+    parts.push(`endpoint=${details.apiEndpoint}`);
+  }
+  if (details.apiTimeoutMs) {
+    parts.push(`timeout=${details.apiTimeoutMs}ms`);
+  }
+  return parts.join(" ");
+}
+
+function resolveWeixinPollRetryDelayMs(consecutiveFailures = 0, error = null) {
+  const failureCount = Math.max(1, Number(consecutiveFailures) || 1);
+  if (!isLikelyWeixinTransportFailure(error)) {
+    return failureCount >= MAX_CONSECUTIVE_FAILURES ? BACKOFF_DELAY_MS : RETRY_DELAY_MS;
+  }
+  const index = Math.min(failureCount - 1, WEIXIN_TRANSPORT_RETRY_DELAYS_MS.length - 1);
+  return WEIXIN_TRANSPORT_RETRY_DELAYS_MS[index];
+}
+
+function isRuntimeTurnActuallyActiveForApp(appLike, { bindingKey = "", workspaceRoot = "", threadId = "" } = {}) {
+  if (typeof appLike?.runtimeAdapter?.hasActiveTurn !== "function") {
+    return true;
+  }
+  try {
+    return Boolean(appLike.runtimeAdapter.hasActiveTurn({ bindingKey, workspaceRoot, threadId }));
+  } catch {
+    return true;
+  }
+}
+
+function isLikelyWeixinTransportFailure(error = null) {
+  const message = normalizeText(error?.message).toLowerCase();
+  const name = normalizeText(error?.name).toLowerCase();
+  const causeCode = normalizeText(error?.cause?.code).toLowerCase();
+  const causeName = normalizeText(error?.cause?.name).toLowerCase();
+  return message.includes("fetch failed")
+    || message.includes("network")
+    || message.includes("socket")
+    || message.includes("timeout")
+    || name === "typeerror"
+    || Boolean(causeCode)
+    || causeName.includes("timeout");
+}
+
+function pruneEmptyObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => {
+      if (entry === null || entry === undefined) {
+        return false;
+      }
+      if (typeof entry === "string") {
+        return Boolean(entry.trim());
+      }
+      return true;
+    })
+  );
 }
 
 function sleep(ms) {
@@ -4183,6 +4624,15 @@ function clampSystemRuntimeText(value, maxChars = MAX_SYSTEM_RUNTIME_TEXT_CHARS)
 }
 
 function resolveSystemRuntimeTextMaxChars(prepared, config = {}) {
+  const metadata = prepared?.systemTurn?.metadata && typeof prepared.systemTurn.metadata === "object"
+    ? prepared.systemTurn.metadata
+    : {};
+  if (normalizeText(metadata.budgetPolicy) === "compact") {
+    return resolvePositiveInt(
+      metadata.compactRuntimeTextMaxChars || config.systemBudgetCompactRuntimeTextMaxChars,
+      6_000,
+    );
+  }
   const triggerKind = normalizeText(prepared?.systemTurn?.trigger_kind);
   if (triggerKind !== "checkin_opportunity") {
     return MAX_SYSTEM_RUNTIME_TEXT_CHARS;
@@ -4948,6 +5398,7 @@ function isImageContextPreparedMessage(message) {
 function takeImageContextBatchMessages(messages, maxAttachments) {
   const batchMessages = [];
   const remainingMessages = [];
+  const leadingPlainTextMessages = [];
   let remainingCapacity = Math.max(1, Number(maxAttachments) || 1);
   let hasImageInBatch = false;
 
@@ -4958,22 +5409,41 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
       batchMessages.push(message);
       continue;
     }
+    if (!attachments.length && isPlainTextPreparedMessage(message)) {
+      leadingPlainTextMessages.push(message);
+      continue;
+    }
     if (!attachments.length && imageContext) {
+      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+        batchMessages.push(...leadingPlainTextMessages.splice(0));
+      }
       batchMessages.push(message);
       hasImageInBatch = true;
       continue;
     }
     if (!attachments.length) {
+      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+        remainingMessages.push(...leadingPlainTextMessages.splice(0));
+      }
       remainingMessages.push(message);
       continue;
     }
     if (!imageContext) {
+      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+        remainingMessages.push(...leadingPlainTextMessages.splice(0));
+      }
       remainingMessages.push(message);
       continue;
     }
     if (remainingCapacity <= 0) {
+      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+        remainingMessages.push(...leadingPlainTextMessages.splice(0));
+      }
       remainingMessages.push(message);
       continue;
+    }
+    if (!hasImageInBatch && leadingPlainTextMessages.length) {
+      batchMessages.push(...leadingPlainTextMessages.splice(0));
     }
     if (attachments.length <= remainingCapacity) {
       batchMessages.push(message);
@@ -4993,10 +5463,37 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
     remainingCapacity = 0;
   }
 
+  if (leadingPlainTextMessages.length) {
+    if (hasImageInBatch) {
+      batchMessages.push(...leadingPlainTextMessages);
+    } else {
+      remainingMessages.push(...leadingPlainTextMessages);
+    }
+  }
+
   return {
     batchMessages,
     remainingMessages,
   };
+}
+
+function collectBatchImageSenders(messages = []) {
+  const senders = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!rawInboundMessageHasImageAttachment(message)) {
+      continue;
+    }
+    const senderId = normalizeText(message?.from_user_id);
+    if (senderId) {
+      senders.add(senderId);
+    }
+  }
+  return senders;
+}
+
+function rawInboundMessageHasImageAttachment(message = {}) {
+  const itemList = Array.isArray(message?.item_list) ? message.item_list : [];
+  return itemList.some((item) => Number(item?.type) === 2);
 }
 
 function clonePreparedInboundMessage(prepared) {
@@ -5236,6 +5733,16 @@ function formatWechatLocalTime(receivedAt) {
     minute: "2-digit",
     hour12: false,
   }).format(parsed).replace(/\//g, "-");
+}
+
+function shouldClearFirstRuntimeEventWatchdog(event) {
+  const threadId = normalizeCommandArgument(event?.payload?.threadId);
+  if (!threadId) {
+    return false;
+  }
+  // process-client emits this immediately after writing to stdin; it is local
+  // dispatch progress, not proof that the runtime has returned its first event.
+  return normalizeText(event?.type) !== "runtime.turn.started";
 }
 
 function stringifyRpcId(value) {

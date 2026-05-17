@@ -6,6 +6,7 @@ const { resolveWorkspaceOfficePaths } = require("../../../core/workspace-office-
 const MAX_FILE_NAME_LENGTH = 120;
 const MAX_AUTO_NOTE_SUMMARY_CHARS = 700;
 const MAX_AUTO_NOTE_DETAILS_CHARS = 4000;
+const DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS = [0, 500, 1_500];
 
 async function persistIncomingWeixinAttachments({
@@ -33,6 +34,7 @@ async function persistIncomingWeixinAttachments({
       const persisted = await persistSingleAttachment({
         attachment,
         officePaths,
+        config,
         cdnBaseUrl,
         messageId,
         receivedAt,
@@ -51,8 +53,8 @@ async function persistIncomingWeixinAttachments({
   return { saved, failed };
 }
 
-async function persistSingleAttachment({ attachment, officePaths, cdnBaseUrl, messageId, receivedAt, messageText }) {
-  const download = await downloadAttachmentPayload(attachment, cdnBaseUrl);
+async function persistSingleAttachment({ attachment, officePaths, config = {}, cdnBaseUrl, messageId, receivedAt, messageText }) {
+  const download = await downloadAttachmentPayload(attachment, cdnBaseUrl, config);
   const plaintext = decodeAttachmentPayload(download.bytes, attachment, download.contentType);
   const fileName = buildTargetFileName({
     attachment,
@@ -121,16 +123,18 @@ function normalizeDateFolder(receivedAt) {
   return date.toISOString().slice(0, 10);
 }
 
-async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
+async function downloadAttachmentPayload(attachment, cdnBaseUrl, config = {}) {
   const candidates = buildDownloadCandidates(attachment, cdnBaseUrl);
   if (!candidates.length) {
     throw new Error("attachment did not include a supported download reference");
   }
 
   let lastError = null;
+  const timeoutMs = resolveAttachmentDownloadTimeoutMs(config);
+  const retryDelaysMs = resolveAttachmentDownloadRetryDelaysMs(config);
   for (const candidate of candidates) {
     try {
-      return await downloadCandidateWithRetries(candidate);
+      return await downloadCandidateWithRetries(candidate, { timeoutMs, retryDelaysMs });
     } catch (error) {
       lastError = error;
     }
@@ -139,15 +143,18 @@ async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
   throw lastError || new Error("attachment download failed");
 }
 
-async function downloadCandidateWithRetries(candidate) {
+async function downloadCandidateWithRetries(candidate, { timeoutMs, retryDelaysMs } = {}) {
   let lastError = null;
-  for (let index = 0; index < ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS.length; index += 1) {
-    const delayMs = ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS[index];
+  const delays = Array.isArray(retryDelaysMs) && retryDelaysMs.length
+    ? retryDelaysMs
+    : ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS;
+  for (let index = 0; index < delays.length; index += 1) {
+    const delayMs = delays[index];
     if (delayMs > 0) {
       await sleep(delayMs);
     }
     try {
-      return await downloadCandidateOnce(candidate);
+      return await downloadCandidateOnce(candidate, timeoutMs);
     } catch (error) {
       lastError = error;
       if (!isRetriableAttachmentDownloadError(error)) {
@@ -158,13 +165,36 @@ async function downloadCandidateWithRetries(candidate) {
   throw lastError || new Error("attachment download failed");
 }
 
-async function downloadCandidateOnce(candidate) {
-  const response = await fetch(candidate, {
-    method: "GET",
-    headers: {
-      Accept: "*/*",
-    },
-  });
+async function downloadCandidateOnce(candidate, timeoutMs = DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = Math.max(1, Number(timeoutMs) || DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeout);
+  let response;
+  try {
+    response = await fetch(candidate, {
+      method: "GET",
+      headers: {
+        Accept: "*/*",
+      },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timedOut || error?.name === "AbortError") {
+      const timeoutError = new Error(`attachment download timed out after ${timeout}ms`);
+      timeoutError.status = 408;
+      timeoutError.code = "ATTACHMENT_DOWNLOAD_TIMEOUT";
+      timeoutError.cause = error;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!response.ok) {
     const error = new Error(`download failed with HTTP ${response.status}`);
     error.status = response.status;
@@ -176,6 +206,22 @@ async function downloadCandidateOnce(candidate) {
     bytes: Buffer.from(arrayBuffer),
     contentType: normalizeContentType(response.headers.get("content-type")),
   };
+}
+
+function resolveAttachmentDownloadTimeoutMs(config = {}) {
+  const parsed = Number.parseInt(String(config?.attachmentDownloadTimeoutMs ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS;
+}
+
+function resolveAttachmentDownloadRetryDelaysMs(config = {}) {
+  const configured = config?.attachmentDownloadRetryDelaysMs;
+  if (!Array.isArray(configured)) {
+    return ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS;
+  }
+  const delays = configured
+    .map((value) => Number.parseInt(String(value), 10))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return delays.length ? delays : ATTACHMENT_DOWNLOAD_RETRY_DELAYS_MS;
 }
 
 function isRetriableAttachmentDownloadError(error) {

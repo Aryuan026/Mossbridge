@@ -136,3 +136,51 @@ test("persistIncomingWeixinAttachments retries transient fetch failures", async 
     global.fetch = originalFetch;
   }
 });
+
+test("persistIncomingWeixinAttachments times out stuck attachment downloads", async () => {
+  const originalFetch = global.fetch;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-attachment-timeout-"));
+  const workspaceRoot = path.join(tmpDir, "workspace");
+  const stateDir = path.join(tmpDir, "state");
+  let calls = 0;
+  global.fetch = async (_url, options = {}) => {
+    calls += 1;
+    return await new Promise((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    });
+  };
+
+  try {
+    const result = await persistIncomingWeixinAttachments({
+      attachments: [{
+        kind: "file",
+        fileName: "stuck.pdf",
+        directUrls: ["https://example.invalid/stuck.pdf"],
+      }],
+      config: {
+        stateDir,
+        workspaceRoot,
+        workspaceInboxDir: path.join("wechat", "inbox"),
+        workspaceAttachmentNotesDir: path.join("context", "attachment-notes"),
+        workspaceAttachmentJournalFile: path.join("context", "attachment-journal.jsonl"),
+        attachmentDownloadTimeoutMs: 1,
+        attachmentDownloadRetryDelaysMs: [0],
+      },
+      workspaceRoot,
+      stateDir,
+      receivedAt: "2026-05-08T08:00:00.000Z",
+      messageId: "msg-timeout",
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.saved.length, 0);
+    assert.equal(result.failed.length, 1);
+    assert.match(result.failed[0].reason, /timed out/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

@@ -7,6 +7,8 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
+const DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT = 0.1;
+
 try {
   require("dotenv").config({ path: path.join(process.cwd(), ".env") });
 } catch {
@@ -29,6 +31,9 @@ const dataRoot = readValueFlag("--data-root")
   || process.env.MOSSBRIDGE_DATA_ROOT
   || path.join(stateDir, "mossbridge_data");
 const externalHealthUrl = readValueFlag("--external-health-url");
+const checkinCacheReadWeight = resolveCacheReadWeight(
+  readValueFlag("--checkin-cache-read-weight") || process.env.MOSSBRIDGE_CHECKIN_DAILY_CACHE_READ_WEIGHT
+);
 
 main().catch((error) => {
   console.error(error?.stack || error?.message || String(error));
@@ -45,6 +50,7 @@ async function main() {
       state_dir: stateDir,
       data_root: dataRoot,
       external_health_url: externalHealthUrl,
+      checkin_cache_read_weight: checkinCacheReadWeight,
     },
     process: buildProcessSection(),
     bridge_state: buildBridgeStateSection(),
@@ -204,9 +210,11 @@ function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
       nonzero_thread_count: 0,
       zero_usage_thread_count: 0,
       total_current_tokens: 0,
+      weighted_budget_tokens: 0,
       input_tokens: 0,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
+      cached_input_tokens: 0,
       output_tokens: 0,
       current_token_samples: [],
       max_context: null,
@@ -217,16 +225,20 @@ function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
       thread_count: 0,
       nonzero_thread_count: 0,
       total_current_tokens: 0,
+      weighted_budget_tokens: 0,
       max_current_tokens: 0,
     };
 
+    const weightedBudgetTokens = estimateWeightedBudgetTokens(row, checkinCacheReadWeight);
     bucket.thread_count += 1;
     bucket.nonzero_thread_count += currentTokens > 0 ? 1 : 0;
     bucket.zero_usage_thread_count += currentTokens > 0 ? 0 : 1;
     bucket.total_current_tokens += currentTokens;
+    bucket.weighted_budget_tokens += weightedBudgetTokens;
     bucket.input_tokens += Number(row.inputTokens) || 0;
     bucket.cache_creation_input_tokens += Number(row.cacheCreationInputTokens) || 0;
     bucket.cache_read_input_tokens += Number(row.cacheReadInputTokens) || 0;
+    bucket.cached_input_tokens += Number(row.cachedInputTokens) || 0;
     bucket.output_tokens += Number(row.outputTokens) || 0;
     bucket.current_token_samples.push(currentTokens);
     if (!bucket.max_context || currentTokens > bucket.max_context.current_tokens) {
@@ -234,8 +246,10 @@ function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
         thread_id: normalizeString(row.threadId),
         kind,
         current_tokens: currentTokens,
+        weighted_budget_tokens: weightedBudgetTokens,
         cache_creation_input_tokens: Number(row.cacheCreationInputTokens) || 0,
         cache_read_input_tokens: Number(row.cacheReadInputTokens) || 0,
+        cached_input_tokens: Number(row.cachedInputTokens) || 0,
         output_tokens: Number(row.outputTokens) || 0,
         updated_at: normalizeString(row.updatedAt),
       };
@@ -244,6 +258,7 @@ function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
     kindBucket.thread_count += 1;
     kindBucket.nonzero_thread_count += currentTokens > 0 ? 1 : 0;
     kindBucket.total_current_tokens += currentTokens;
+    kindBucket.weighted_budget_tokens += weightedBudgetTokens;
     kindBucket.max_current_tokens = Math.max(kindBucket.max_current_tokens, currentTokens);
     bucket.by_kind[kind] = kindBucket;
     byDay[day] = bucket;
@@ -264,14 +279,50 @@ function summarizeRuntimeTokenPressureByDay(runtimeUsage) {
             (bucket.by_kind.system?.total_current_tokens || 0) / Math.max(1, bucket.total_current_tokens),
             4
           ),
+          system_weighted_share: round(
+            (bucket.by_kind.system?.weighted_budget_tokens || 0) / Math.max(1, bucket.weighted_budget_tokens),
+            4
+          ),
         }];
       })
   );
 }
 
 function classifyRuntimeUsageKind(row = {}) {
-  const bindingKey = normalizeString(row.bindingKey);
-  return bindingKey.includes("#asherie-system") ? "system" : "user_or_unbound";
+  const bindingKey = normalizeString(row.bindingKey).toLowerCase();
+  const source = normalizeString(row.source).toLowerCase();
+  if (
+    source === "system"
+    || bindingKey.includes("#mossbridge-system")
+  ) {
+    return "system";
+  }
+  return "user_or_unbound";
+}
+
+function estimateWeightedBudgetTokens(row = {}, cacheReadWeight = DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT) {
+  const inputTokens = positiveNumber(row.inputTokens);
+  const cacheCreationInputTokens = positiveNumber(row.cacheCreationInputTokens);
+  const cacheReadInputTokens = positiveNumber(row.cacheReadInputTokens) + positiveNumber(row.cachedInputTokens);
+  const outputTokens = positiveNumber(row.outputTokens);
+  const freshTokens = inputTokens + cacheCreationInputTokens + outputTokens;
+  if (freshTokens > 0 || cacheReadInputTokens > 0) {
+    return Math.round(freshTokens + cacheReadInputTokens * resolveCacheReadWeight(cacheReadWeight));
+  }
+  return positiveNumber(row.currentTokens);
+}
+
+function resolveCacheReadWeight(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT;
+  }
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function positiveNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function toShanghaiDay(value) {

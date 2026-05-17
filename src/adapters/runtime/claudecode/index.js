@@ -2,7 +2,7 @@ const path = require("path");
 const os = require("os");
 const { ClaudeCodeProcessClient } = require("./process-client");
 const { mapClaudeCodeMessageToRuntimeEvent } = require("./events");
-const { ensureClaudeProjectMcpConfig } = require("./project-settings");
+const { ensureClaudeProjectMcpConfig, normalizeToolProfile } = require("./project-settings");
 const { SessionStore } = require("../codex/session-store");
 const { buildOpeningTurnText, buildSystemWakeTurnText, buildInstructionRefreshText } = require("../shared-instructions");
 const { ClaudeCodeIpcServer } = require("./ipc-server");
@@ -51,15 +51,22 @@ function createClaudeCodeRuntimeAdapter(config) {
   function resolveRuntimeCallScope({ bindingKey = "", threadId = "", metadata = {}, systemRuntimeBinding = false } = {}) {
     let effectiveBindingKey = normalizeText(bindingKey);
     let effectiveSystemRuntimeBinding = Boolean(systemRuntimeBinding || metadata?.systemRuntimeBinding);
+    let effectiveToolProfile = normalizeText(metadata?.systemToolProfile || metadata?.toolProfile);
     const normalizedThreadId = normalizeThreadId(threadId);
     if (!effectiveBindingKey && normalizedThreadId) {
       const linked = sessionStore.findBindingForThreadId(normalizedThreadId);
       effectiveBindingKey = normalizeText(linked?.bindingKey);
       effectiveSystemRuntimeBinding = effectiveSystemRuntimeBinding || Boolean(linked?.systemRuntimeBinding);
+      if (!effectiveToolProfile) {
+        effectiveToolProfile = normalizeText(linked?.systemToolProfile || linked?.toolProfile);
+      }
     }
     if (effectiveBindingKey) {
       const binding = sessionStore.getBinding(effectiveBindingKey);
       effectiveSystemRuntimeBinding = effectiveSystemRuntimeBinding || Boolean(binding?.systemRuntimeBinding);
+      if (!effectiveToolProfile) {
+        effectiveToolProfile = normalizeText(binding?.systemToolProfile || binding?.toolProfile);
+      }
     }
     if (isSystemRuntimeBindingKey(effectiveBindingKey)) {
       effectiveSystemRuntimeBinding = true;
@@ -67,6 +74,7 @@ function createClaudeCodeRuntimeAdapter(config) {
     return {
       bindingKey: effectiveBindingKey,
       systemRuntimeBinding: effectiveSystemRuntimeBinding,
+      toolProfile: normalizeToolProfile(effectiveToolProfile),
     };
   }
 
@@ -76,17 +84,20 @@ function createClaudeCodeRuntimeAdapter(config) {
     return `${normalizedWorkspaceRoot}::${scope}`;
   }
 
-  function resolveClientScope({ bindingKey = "", systemRuntimeBinding = false } = {}) {
+  function resolveClientScope({ bindingKey = "", systemRuntimeBinding = false, toolProfile = "" } = {}) {
     const normalizedBindingKey = normalizeText(bindingKey);
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    const profileSuffix = normalizedToolProfile === "full" ? "" : `:${normalizedToolProfile}`;
     if (systemRuntimeBinding || isSystemRuntimeBindingKey(normalizedBindingKey)) {
-      return `system:${normalizedBindingKey || "default"}`;
+      return `system:${normalizedBindingKey || "default"}${profileSuffix}`;
     }
-    return `user:${normalizedBindingKey || "default"}`;
+    return `user:${normalizedBindingKey || "default"}${profileSuffix}`;
   }
 
-  function ensureClient(workspaceRoot, { modelOverride = "", bindingKey = "", systemRuntimeBinding = false, clientKey = "" } = {}) {
+  function ensureClient(workspaceRoot, { modelOverride = "", bindingKey = "", systemRuntimeBinding = false, toolProfile = "", clientKey = "" } = {}) {
     const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
-    const resolvedClientKey = clientKey || buildClientKey(normalizedWorkspaceRoot, { bindingKey, systemRuntimeBinding });
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    const resolvedClientKey = clientKey || buildClientKey(normalizedWorkspaceRoot, { bindingKey, systemRuntimeBinding, toolProfile: normalizedToolProfile });
     const existingClient = clientsByKey.get(resolvedClientKey);
     if (existingClient) {
       return existingClient;
@@ -95,9 +106,10 @@ function createClaudeCodeRuntimeAdapter(config) {
     const projectSettings = ensureClaudeProjectMcpConfig({
       workspaceRoot: normalizedWorkspaceRoot,
       mossbridgeHome: process.env.MOSSBRIDGE_HOME || path.resolve(__dirname, "..", "..", "..", ".."),
+      toolProfile: normalizedToolProfile,
     });
     console.log(
-      `[claudecode-runtime] workspace=${normalizedWorkspaceRoot} scope=${resolveClientScope({ bindingKey, systemRuntimeBinding })} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
+      `[claudecode-runtime] workspace=${normalizedWorkspaceRoot} scope=${resolveClientScope({ bindingKey, systemRuntimeBinding, toolProfile: normalizedToolProfile })} model=${resolvedModel || "(default)"} mcp_config=${projectSettings.configPath} server=${projectSettings.serverName}`
     );
     const client = new ClaudeCodeProcessClient({
       command: config.claudeCommand || "claude",
@@ -176,6 +188,7 @@ function createClaudeCodeRuntimeAdapter(config) {
       modelOverride: normalizedModel,
       bindingKey: scope.bindingKey,
       systemRuntimeBinding: scope.systemRuntimeBinding,
+      toolProfile: scope.toolProfile,
       clientKey,
     });
     if (
@@ -196,6 +209,7 @@ function createClaudeCodeRuntimeAdapter(config) {
         modelOverride: normalizedModel,
         bindingKey: scope.bindingKey,
         systemRuntimeBinding: scope.systemRuntimeBinding,
+        toolProfile: scope.toolProfile,
         clientKey,
       });
       await freshClient.connect(normalizedThreadId);
@@ -311,6 +325,19 @@ function createClaudeCodeRuntimeAdapter(config) {
     },
     getSessionStore() {
       return sessionStore;
+    },
+    hasActiveTurn({ bindingKey = "", workspaceRoot = "", threadId = "", systemRuntimeBinding = false } = {}) {
+      const scope = resolveRuntimeCallScope({ bindingKey, threadId, metadata: { systemRuntimeBinding } });
+      const clientKey = buildClientKey(workspaceRoot, scope);
+      const client = clientsByKey.get(clientKey);
+      if (client?.alive && normalizeText(client.pendingTurnId)) {
+        return true;
+      }
+      if (threadId) {
+        const [, threadClient] = findClientEntryByThreadId(threadId) || [];
+        return Boolean(threadClient?.alive && normalizeText(threadClient.pendingTurnId));
+      }
+      return false;
     },
     async initialize() {
       ipcServer.start();
@@ -507,8 +534,7 @@ function normalizeModelId(value) {
 }
 
 function isSystemRuntimeBindingKey(value) {
-  return normalizeText(value).includes("#mossbridge-system")
-    || normalizeText(value).includes("#asherie-system");
+  return normalizeText(value).includes("#mossbridge-system");
 }
 
 function clientMatchesThread(client, threadId) {

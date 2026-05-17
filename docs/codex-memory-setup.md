@@ -250,18 +250,18 @@ Codex 调试时要确认：
 
 ## 心跳系统为什么这样设
 
-Mossbridge 的 heartbeat 不是“固定时间给用户发一句问候”。它更像一次很小的后台醒来：先看有没有 due reminder、近期上下文、ongoing、observation、episode、solitude note 和 bridge 状态，再决定是发微信、写一条私有连续性记录、更新提醒，还是安静跳过。
+Mossbridge 的 heartbeat 不是“固定时间给用户发一句问候”。它现在分成两种醒来：随机 check-in 是轻轻探头，只带近期上下文和回话能力；日历、提醒、dreaming 或明确维护任务才是带工具的工作型唤醒。
 
 几个参数要这样理解：
 
 - `MOSSBRIDGE_CHECKIN_MIN_INTERVAL_MS` / `MAX_INTERVAL_MS` 只给随机醒来的时间范围，不保证每次都会打扰用户。
 - `MOSSBRIDGE_CHECKIN_HOT_*` 防止用户正在聊的时候又被主动 check-in 插话。
 - `MOSSBRIDGE_CHECKIN_TOKEN_*` 在 runtime 上下文接近压力线时拉长唤醒间隔，避免主动消息把窗口推向 overflow。
-- `MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR=false` 是公开版默认边界：心跳可以读状态和报告，不会自己重启服务、重绑账号、改凭据、删文件或删记忆。
+- `MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR=false` 是公开版默认边界：工作型唤醒可以读状态和报告，不会自己重启服务、重绑账号、改凭据、删文件或删记忆。
 
 给 Codex 的判断句：heartbeat 的目标是保持“连续性把手”，不是制造存在感；如果没有真实上下文价值，安静记录或推迟比硬发一句更好。
 
-心跳被投递给 runtime 时走独立的系统线程。这个线程不重复注入完整 WeChat session instructions，但也不是空手唤醒：它会收到一个很短的 `MOSSBRIDGE WAKE ANCHOR`，里面是同一个前台人格/关系的 soul/identity 锚点；再接本次 trigger、最短 memory prelude 和安全行动边界。这样可以减少 token 重复，也更利于 Codex/Claude Code 命中上游上下文缓存。系统线程仍然有足够的行动能力：它可以读状态、写小型连续性记录、安排后续提醒或发一条自然微信；它不能在无人明确要求时重启服务、重绑账号、改凭据、删记忆或做第三方账号/OAuth 操作。
+心跳被投递给 runtime 时走独立的系统线程。这个线程不重复注入完整 WeChat session instructions，但也不是空手唤醒：它会收到一个很短的 `MOSSBRIDGE WAKE ANCHOR`，里面是同一个前台人格/关系的 soul/identity 锚点；再接本次 trigger 和最短 memory prelude。随机 check-in 使用轻工具 profile，不暴露 MCP 工具，只让模型基于已注入上下文判断 `silent` 或 `send_message`。日历、提醒、dreaming、case 或明确维护任务仍使用完整工具 profile，可以读状态、写小型连续性记录、安排后续提醒或发一条自然微信。这样不牺牲主动陪伴频率，也避免每次随机醒来都背着整套工具 schema 烧 token。
 
 这里的“短”只指后台上下文包短，不指可见消息变冷、变干、变像系统播报。只要决定发微信，消息就应该从已有关系和近期情绪里自然接上；Mossbridge 不应该把一次心跳伪装成工单执行结果。
 

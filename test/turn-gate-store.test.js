@@ -147,6 +147,47 @@ test("dispatchSystemMessage yields when a local pending turn already owns the wo
   assert.equal(handled, false);
 });
 
+test("isTurnDispatchBlocked releases a stale claudecode turn gate when no runtime turn is active", () => {
+  let released = false;
+  const appLike = {
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "thread-stale";
+          },
+        };
+      },
+      hasActiveTurn() {
+        return false;
+      },
+    },
+    threadStateStore: {
+      getThreadState() {
+        return null;
+      },
+    },
+    turnGateStore: {
+      isPending() {
+        return true;
+      },
+      releaseScope(bindingKey, workspaceRoot) {
+        released = bindingKey === "binding-1" && workspaceRoot === "/workspace";
+      },
+    },
+    turnBoundaryScopeKeys: new Set(),
+    isRuntimeTurnActuallyActive: MossbridgeApp.prototype.isRuntimeTurnActuallyActive,
+  };
+
+  const blocked = MossbridgeApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+  assert.equal(blocked, false);
+  assert.equal(released, true);
+});
+
 test("handlePreparedMessage queues while the scope is in a turn-boundary handoff", async () => {
   const queued = [];
   let dispatched = false;

@@ -16,11 +16,15 @@ const { RuntimeCooldownStore } = require("../src/core/runtime-cooldown-store");
 const { SystemMessageQueueStore } = require("../src/core/system-message-queue-store");
 const {
   applyCheckinTokenPressureBackoff,
+  findLatestSystemCheckinContext,
   resolveCheckinDailyBudget,
   resolveCheckinConversationHeat,
   resolveCheckinContextTokenMaxAgeMs,
+  resolveCheckinModelWakePreflight,
   resolveCheckinReadiness,
   resolveCheckinTokenPressureBackoff,
+  resolveDailyBudgetPauseMs,
+  resolveSystemTurnBudgetPolicy,
   summarizeSystemCheckinUsageForLocalDay,
 } = require("../src/app/system-checkin-poller");
 const {
@@ -256,6 +260,7 @@ test("checkin daily budget stops background wakeups without blocking user turns"
     day: "2026-05-09",
     runtimeId: "claudecode",
     currentTokens: 320_000,
+    budgetTokens: 320_000,
     threadCount: 2,
   });
 
@@ -277,6 +282,137 @@ test("checkin daily budget stops background wakeups without blocking user turns"
   assert.equal(budget.exceeded, true);
   assert.equal(budget.tokenExceeded, true);
   assert.equal(budget.threadExceeded, false);
+});
+
+test("checkin daily budget discounts cache-read tokens instead of treating them as fresh work", () => {
+  const nowMs = Date.parse("2026-05-15T18:40:00.000Z"); // 02:40 Asia/Shanghai on 2026-05-16.
+  const summary = summarizeSystemCheckinUsageForLocalDay({
+    runtimeId: "claudecode",
+    cacheReadWeight: 0.1,
+    nowMs,
+    snapshot: {
+      contextsByThreadId: {
+        "system-1": {
+          runtimeId: "claudecode",
+          bindingKey: "default:user#mossbridge-system",
+          currentTokens: 37_000,
+          inputTokens: 1,
+          cacheCreationInputTokens: 1_200,
+          cacheReadInputTokens: 35_700,
+          outputTokens: 1,
+          updatedAt: "2026-05-15T16:48:44.780Z",
+        },
+        "system-2": {
+          runtimeId: "claudecode",
+          bindingKey: "default:user#mossbridge-system",
+          currentTokens: 38_000,
+          inputTokens: 1,
+          cacheCreationInputTokens: 1_500,
+          cacheReadInputTokens: 36_400,
+          outputTokens: 1,
+          updatedAt: "2026-05-15T17:03:56.599Z",
+        },
+      },
+    },
+  });
+
+  assert.equal(summary.currentTokens, 75_000);
+  assert.equal(summary.budgetTokens, 9_914);
+  assert.equal(summary.threadCount, 2);
+});
+
+test("checkin model preflight keeps random patrols zero-token until the next model slot", () => {
+  const nowMs = Date.parse("2026-05-17T03:00:00.000Z");
+  const snapshot = {
+    contextsByThreadId: {
+      "system-recent": {
+        runtimeId: "claudecode",
+        threadId: "thread-1",
+        bindingKey: "default:user#mossbridge-system",
+        currentTokens: 30_000,
+        updatedAt: "2026-05-17T02:00:00.000Z",
+      },
+      "user-recent": {
+        runtimeId: "claudecode",
+        threadId: "thread-user",
+        bindingKey: "default:user",
+        currentTokens: 80_000,
+        updatedAt: "2026-05-17T02:55:00.000Z",
+      },
+    },
+  };
+
+  assert.deepEqual(findLatestSystemCheckinContext({
+    snapshot,
+    runtimeId: "claudecode",
+  }), {
+    updatedAt: "2026-05-17T02:00:00.000Z",
+    updatedAtMs: Date.parse("2026-05-17T02:00:00.000Z"),
+    threadId: "thread-1",
+  });
+
+  const preflight = resolveCheckinModelWakePreflight({
+    config: {
+      runtime: "claudecode",
+      checkinModelMinGapMinutes: 90,
+    },
+    runtimeContextUsageStore: {
+      load() {},
+      snapshot() {
+        return snapshot;
+      },
+    },
+    nowMs,
+  });
+
+  assert.equal(preflight.ready, false);
+  assert.equal(preflight.reason, "model_wake_min_gap");
+  assert.equal(preflight.remainingMs, 30 * 60_000);
+});
+
+test("checkin model preflight allows the first lightweight model wake and overdue slots", () => {
+  const nowMs = Date.parse("2026-05-17T04:00:00.000Z");
+  const empty = resolveCheckinModelWakePreflight({
+    config: {
+      runtime: "claudecode",
+      checkinModelMinGapMinutes: 90,
+    },
+    runtimeContextUsageStore: {
+      load() {},
+      snapshot() {
+        return { contextsByThreadId: {} };
+      },
+    },
+    nowMs,
+  });
+  assert.equal(empty.ready, true);
+  assert.equal(empty.reason, "first_model_wake_for_runtime");
+
+  const due = resolveCheckinModelWakePreflight({
+    config: {
+      runtime: "claudecode",
+      checkinModelMinGapMinutes: 90,
+    },
+    runtimeContextUsageStore: {
+      load() {},
+      snapshot() {
+        return {
+          contextsByThreadId: {
+            "system-old": {
+              runtimeId: "claudecode",
+              bindingKey: "default:user#mossbridge-system",
+              updatedAt: "2026-05-17T02:00:00.000Z",
+            },
+          },
+        };
+      },
+    },
+    nowMs,
+  });
+
+  assert.equal(due.ready, true);
+  assert.equal(due.reason, "model_wake_due");
+  assert.equal(due.elapsedMs, 2 * 60 * 60_000);
 });
 
 test("checkin readiness skips when the daily background budget is exhausted", () => {
@@ -313,6 +449,64 @@ test("checkin readiness skips when the daily background budget is exhausted", ()
 
   assert.equal(readiness.ready, false);
   assert.equal(readiness.reason, "daily_checkin_budget");
+});
+
+test("system daily budget tiers random wakeups, dreaming, and due reminders", () => {
+  const nowMs = Date.parse("2026-05-09T13:00:00.000Z");
+  const runtimeContextUsageStore = {
+    load() {},
+    snapshot() {
+      return {
+        contextsByThreadId: {
+          "system-1": {
+            runtimeId: "claudecode",
+            bindingKey: "default:user#mossbridge-system",
+            currentTokens: 310_000,
+            updatedAt: "2026-05-09T08:00:00.000Z",
+          },
+        },
+      };
+    },
+  };
+  const config = {
+    runtime: "claudecode",
+    checkinDailyTokenBudget: 300_000,
+    systemBudgetDreamingDeferMinutes: 20,
+    systemBudgetCompactRuntimeTextMaxChars: 4_000,
+  };
+
+  const randomWakeup = resolveSystemTurnBudgetPolicy({
+    kind: "checkin_opportunity",
+    config,
+    runtimeContextUsageStore,
+    nowMs,
+  });
+  assert.equal(randomWakeup.action, "drop");
+  assert.equal(randomWakeup.reason, "daily_checkin_budget");
+
+  const dreaming = resolveSystemTurnBudgetPolicy({
+    kind: "dreaming_opportunity",
+    config,
+    runtimeContextUsageStore,
+    nowMs,
+  });
+  assert.equal(dreaming.action, "defer");
+  assert.equal(dreaming.deferMs, 20 * 60_000);
+
+  const reminder = resolveSystemTurnBudgetPolicy({
+    kind: "reminder_due",
+    config,
+    runtimeContextUsageStore,
+    nowMs,
+  });
+  assert.equal(reminder.action, "allow_compact");
+  assert.equal(reminder.compactRuntimeTextMaxChars, 4_000);
+});
+
+test("daily budget pause waits until the next Shanghai day instead of retrying every few minutes", () => {
+  const pauseMs = resolveDailyBudgetPauseMs(Date.parse("2026-05-15T18:40:00.000Z")); // 02:40 Asia/Shanghai.
+  assert.ok(pauseMs >= 21 * 60 * 60_000);
+  assert.ok(pauseMs <= 22 * 60 * 60_000);
 });
 
 test("checkin conversation heat uses configurable hot-chat thresholds", () => {

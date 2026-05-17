@@ -56,7 +56,7 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
   assert.match(result.text, /warm-card: Meteor necklace/);
 });
 
-test("checkin system turn stays lean while preserving safe action affordances", () => {
+test("random checkin system prompt stays in lightweight no-tool mode", () => {
   const dispatcher = new SystemMessageDispatcher({
     queueStore: { hasPendingForAccount() { return false; }, drainForAccount() { return []; }, enqueue() {} },
     config: {
@@ -74,15 +74,19 @@ test("checkin system turn stays lean while preserving safe action affordances", 
     priority: "normal",
     title: "random_checkin",
     createdAt: "2026-05-15T12:00:00.000Z",
+    metadata: {
+      systemToolProfile: "checkin_lite",
+    },
   }, "ctx-1");
 
   assert.match(prepared.text, /SYSTEM ACTION MODE/);
-  assert.match(prepared.text, /low-risk maintenance pass/);
-  assert.match(prepared.text, /Safe scope:/);
-  assert.match(prepared.text, /wakeup decision record/);
+  assert.match(prepared.text, /lightweight tool profile/);
+  assert.match(prepared.text, /do not attempt backstage maintenance/);
   assert.match(prepared.text, /natural WeChat/);
   assert.match(prepared.text, /emotional continuity/);
   assert.match(prepared.text, /Bridge status reports come from \[Mossbridge\]/);
+  assert.doesNotMatch(prepared.text, /Use tools as affordances/);
+  assert.doesNotMatch(prepared.text, /Safe scope:/);
   assert.doesNotMatch(prepared.text, /WECHAT SESSION INSTRUCTIONS/);
   assert.doesNotMatch(prepared.text, /front-stage style/);
   assert.ok(prepared.text.length < 2400);
@@ -172,6 +176,128 @@ test("stable WeChat guidance is delivered once per runtime thread and pressure t
   assert.ok(first.packet.delivery.estimated_tokens > 0);
   assert.equal(second.packet.delivery.include_stable_guidance, false);
   assert.equal(second.packet.delivery.policy.includes("not injected"), true);
+});
+
+test("user first-event failures still send a visible diagnostic after local turn.started", async () => {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const timers = [];
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const calls = [];
+    const appLike = {
+      pendingRuntimeEventWatchdogs: new Map(),
+      clearRuntimeEventWatchdog: MossbridgeApp.prototype.clearRuntimeEventWatchdog,
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        getSessionStore() {
+          return {
+            getThreadIdForWorkspace() {
+              return "thread-user";
+            },
+          };
+        },
+      },
+      threadStateStore: {
+        getThreadState() {
+          return {
+            status: "running",
+            turnId: "turn-local",
+          };
+        },
+      },
+      channelAdapter: {
+        async sendTyping(payload) {
+          calls.push(["typing", payload.status]);
+        },
+        async sendText(payload) {
+          calls.push(["text", payload.text]);
+        },
+      },
+    };
+
+    MossbridgeApp.prototype.scheduleRuntimeEventWatchdog.call(appLike, {
+      bindingKey: "binding-user",
+      workspaceRoot: "/workspace",
+      normalized: {
+        provider: "weixin",
+        senderId: "user-1",
+        contextToken: "ctx-1",
+      },
+      threadId: "thread-user",
+      openingTurn: true,
+    });
+
+    assert.deepEqual(timers.map((timer) => timer.delayMs), [180_000]);
+    await timers[0].callback();
+
+    const visible = calls.find((call) => call[0] === "text");
+    assert.ok(visible);
+    assert.match(visible[1], /超时未返回首个事件/);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("claudecode warm turns get a slower first-event watchdog", () => {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const timers = [];
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const appLike = {
+      pendingRuntimeEventWatchdogs: new Map(),
+      clearRuntimeEventWatchdog: MossbridgeApp.prototype.clearRuntimeEventWatchdog,
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        getSessionStore() {
+          return {
+            getThreadIdForWorkspace() {
+              return "thread-user";
+            },
+          };
+        },
+      },
+      channelAdapter: {
+        async sendTyping() {},
+        async sendText() {},
+      },
+    };
+
+    MossbridgeApp.prototype.scheduleRuntimeEventWatchdog.call(appLike, {
+      bindingKey: "binding-user",
+      workspaceRoot: "/workspace",
+      normalized: {
+        provider: "weixin",
+        senderId: "user-1",
+        contextToken: "ctx-1",
+      },
+      threadId: "thread-user",
+      openingTurn: false,
+    });
+
+    assert.deepEqual(timers.map((timer) => timer.delayMs), [75_000, 120_000]);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
 });
 
 test("queued system messages attach fresh memory before runtime dispatch", async () => {
@@ -334,6 +460,58 @@ test("ordinary wechat turns keep dynamic memory context lean when no runtime thr
   assert.doesNotMatch(result.text, /\[当前可用动作提醒\]/);
   assert.match(result.text, /resident-anchor: relation line/);
   assert.match(result.text, /宝宝😏？/);
+});
+
+test("tool hover mentions AI-calendar wakeups on the first keyed guidance turn", async () => {
+  const appLike = {
+    config: {
+      workspaceId: "default",
+      workspaceRoot: "/workspace",
+    },
+    activeAccountId: "account-1",
+    stableTurnGuidanceKeys: new Set(),
+    residentAnchorPreludeKeys: new Set(),
+    projectDomains: {
+      memory: {
+        async captureContextPacket() {
+          return {
+            runtime_prelude: "[Mossbridge memory context]",
+          };
+        },
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    resolveResidentAnchorPreludeKey: MossbridgeApp.prototype.resolveResidentAnchorPreludeKey,
+    resolveStableTurnGuidanceKey: MossbridgeApp.prototype.resolveStableTurnGuidanceKey,
+    markStableTurnGuidanceDelivered: MossbridgeApp.prototype.markStableTurnGuidanceDelivered,
+    resolveMemoryContextPressureProfile: MossbridgeApp.prototype.resolveMemoryContextPressureProfile,
+    resolvePreparedRuntimeThreadId: MossbridgeApp.prototype.resolvePreparedRuntimeThreadId,
+  };
+  const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call(appLike, {
+    provider: "weixin",
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    text: "明天提醒我继续看这个",
+  }, "明天提醒我继续看这个", "/workspace");
+
+  assert.match(result.text, /AI 日历\/提醒/);
+  assert.match(result.text, /到期唤醒会携带完整工具能力/);
+  assert.match(result.text, /随机心跳只负责轻量续联/);
 });
 
 test("image attachments inject view_image instructions for runtimes that support it", async () => {
@@ -775,6 +953,144 @@ test("caption after a pending image waits so the next short text can join", asyn
   assert.match(routed[0].prepared.originalText, /先看这个图/);
   assert.match(routed[0].prepared.originalText, /第二句补充说明/);
   assert.equal(routed[0].prepared.attachments.length, 1);
+});
+
+test("caption before an image in the same WeChat poll batch waits and merges", async () => {
+  const routed = [];
+  const scheduledDelays = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingInboundByScope: new Map(),
+    pendingImageInboundByScope: new Map(),
+    deferredImageInboundFlushScopeKeys: new Set(),
+    inboundUpdateBatchDepth: 0,
+    inboundUpdateBatchImageSenders: new Set(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text || "image payload",
+        text: normalized.text || "image payload",
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+        attachmentFailures: [],
+      };
+    },
+    async routePreparedInbound(payload) {
+      routed.push(payload);
+      return true;
+    },
+    async attachMemoryContextToPreparedText(_normalized, runtimeText) {
+      return { text: runtimeText, packet: null };
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      scheduledDelays.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingImageInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    flushPendingInboundMessages: MossbridgeApp.prototype.flushPendingInboundMessages,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    beginInboundUpdateBatch: MossbridgeApp.prototype.beginInboundUpdateBatch,
+    endInboundUpdateBatch: MossbridgeApp.prototype.endInboundUpdateBatch,
+    shouldDeferImageInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferImageInboundFlushUntilPollBatchEnds,
+    currentInboundBatchMayContainImageForSender: MossbridgeApp.prototype.currentInboundBatchMayContainImageForSender,
+    rememberDeferredImageInboundFlush: MossbridgeApp.prototype.rememberDeferredImageInboundFlush,
+    scheduleDeferredImageInboundFlushes: MossbridgeApp.prototype.scheduleDeferredImageInboundFlushes,
+    isTurnDispatchBlocked() {
+      return false;
+    },
+    async dispatchPreparedTurn(payload) {
+      routed.push(payload);
+      return true;
+    },
+  };
+
+  MossbridgeApp.prototype.beginInboundUpdateBatch.call(appLike, 2, [
+    {
+      from_user_id: "user-1",
+      item_list: [{ type: 1, text_item: { text: "这个灯要不要装" } }],
+    },
+    {
+      from_user_id: "user-1",
+      item_list: [{ type: 2, image_item: { media: {} } }],
+    },
+  ]);
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "这个灯要不要装",
+    attachments: [],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [{
+      kind: "image",
+      absolutePath: "/workspace/inbox/lamp.jpg",
+      sourceFileName: "lamp.jpg",
+      contentType: "image/jpeg",
+      isImage: true,
+    }],
+    receivedAt: "2026-05-05T10:00:02.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 2);
+
+  MossbridgeApp.prototype.endInboundUpdateBatch.call(appLike);
+  assert.equal(scheduledDelays.length, 1);
+
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, true);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].prepared.originalText, "这个灯要不要装");
+  assert.equal(routed[0].prepared.attachments.length, 1);
+  assert.match(routed[0].prepared.text, /这个灯要不要装/);
+  assert.match(routed[0].prepared.text, /lamp\.jpg/);
 });
 
 test("failed image intake can wait and merge with later saved images", async () => {

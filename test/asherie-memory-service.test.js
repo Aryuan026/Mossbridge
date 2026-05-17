@@ -854,12 +854,22 @@ test("asherie memory service keeps broad-basis taste questions focused on their 
     body_markdown: "这张卡只写关系印象，不涉及审美落点。",
     tags: ["relationship", "印象"],
   });
+  await service.upsertColdVersion({
+    userId: "demo-user",
+    payload: {
+      persona_memos: [{
+        id: "identity-impression",
+        content: "她在长期关系里更在意连续判断和被看见。",
+      }],
+    },
+  });
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
     query: "根据对我的印象，你觉得我适合什么美甲呢",
   });
 
+  assert.equal(packet.cold_root_packet.hit_count, 0);
   assert.equal(packet.warm_memory_packet.hit_count, 1);
   assert.equal(packet.warm_memory_packet.hits[0].title, "Nail taste");
   assert.ok(packet.warm_memory_packet.query_signal_tokens.includes("美甲"));
@@ -1141,6 +1151,83 @@ test("asherie memory service keeps recent-thread only for discourse-continuation
   });
   assert.doesNotMatch(topicShiftPacket.runtime_prelude, /recent-thread/);
   assert.doesNotMatch(topicShiftPacket.runtime_prelude, /bridge 刚才又在调试/);
+});
+
+test("asherie memory service carries recent tail on forced fresh-session turns", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-session-tail-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeRecentThreadLimit: 3,
+    },
+  });
+
+  await service.writebackTurn({
+    userId: "demo-user",
+    query: "明天8点起床，带妈妈去手术，然后问设计师装修申请怎么走",
+    assistantTextFinal: "明天顺序是起床、陪手术、再问设计师和物业申请。",
+    sourceClient: "mossbridge_wechat",
+    threadId: "old-thread",
+  });
+
+  const ordinaryPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "🙁宝宝嘤嘤嘤",
+    sourceClient: "mossbridge_wechat",
+  });
+  assert.doesNotMatch(ordinaryPacket.runtime_prelude, /recent-thread/);
+
+  const freshPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "🙁宝宝嘤嘤嘤",
+    sourceClient: "mossbridge_wechat",
+    forceRecentContext: true,
+  });
+  assert.match(freshPacket.recall_focus.current_query, /明天8点起床/);
+  assert.match(freshPacket.runtime_prelude, /recent-thread: .*用户: 明天8点起床/);
+});
+
+test("asherie memory service builds a session handoff snapshot for long continuity after refresh", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-session-handoff-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeRecentThreadLimit: 3,
+    },
+  });
+
+  for (let index = 1; index <= 8; index += 1) {
+    await service.writebackTurn({
+      userId: "demo-user",
+      query: `论文架构第${index}步：讨论章节衔接和明天继续修改的安排`,
+      assistantTextFinal: `第${index}步已经接住，下一步继续围绕章节逻辑收束。`,
+      sourceClient: "mossbridge_wechat",
+      threadId: "old-thread",
+      tsUtc: `2026-05-16T0${index}:00:00.000Z`,
+    });
+  }
+
+  const ordinaryPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "🙁宝宝嘤嘤嘤",
+    sourceClient: "mossbridge_wechat",
+  });
+  assert.doesNotMatch(ordinaryPacket.runtime_prelude, /session-handoff/);
+
+  const freshPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "🙁宝宝嘤嘤嘤",
+    sourceClient: "mossbridge_wechat",
+    forceRecentContext: true,
+  });
+  const recentThreadCount = (freshPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
+  assert.equal(recentThreadCount, 6);
+  assert.match(freshPacket.runtime_prelude, /session-handoff/);
+  assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
+  assert.match(freshPacket.runtime_prelude, /论文架构第8步/);
+  assert.match(freshPacket.recall_focus.current_query, /论文架构第8步/);
 });
 
 test("resident anchor cards survive later warm-memory writes when they are pinned", async () => {

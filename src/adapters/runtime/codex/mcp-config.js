@@ -1,8 +1,12 @@
 const fs = require("fs");
 const path = require("path");
-const { listProjectToolNames } = require("../../../tools/tool-host");
+const {
+  listProjectToolNames,
+  normalizeToolProfile,
+  TOOL_PROFILE_CHECKIN_LITE,
+} = require("../../../tools/tool-host");
 
-function resolveCodexProjectToolMcpServerConfig({ mossbridgeHome = "" } = {}) {
+function resolveCodexProjectToolMcpServerConfig({ mossbridgeHome = "", toolProfile = "" } = {}) {
   const home = normalizeNonEmptyString(mossbridgeHome)
     || process.env.MOSSBRIDGE_HOME
     || path.resolve(__dirname, "..", "..", "..", "..");
@@ -10,10 +14,22 @@ function resolveCodexProjectToolMcpServerConfig({ mossbridgeHome = "" } = {}) {
   if (!fs.existsSync(scriptPath)) {
     return null;
   }
+  const normalizedToolProfile = normalizeToolProfile(toolProfile || process.env.MOSSBRIDGE_TOOL_PROFILE || "foreground");
+  if (normalizedToolProfile === TOOL_PROFILE_CHECKIN_LITE) {
+    return null;
+  }
   return {
     name: "mossbridge_tools",
     command: process.execPath,
-    args: [scriptPath, "tool-mcp-server", "--runtime-id", "codex"],
+    toolProfile: normalizedToolProfile,
+    args: [
+      scriptPath,
+      "tool-mcp-server",
+      "--runtime-id",
+      "codex",
+      "--tool-profile",
+      normalizedToolProfile,
+    ],
   };
 }
 
@@ -29,13 +45,14 @@ function buildCodexMcpConfigArgs(mcpServerConfig) {
   if (!command) {
     return [];
   }
+  const toolProfile = normalizeToolProfile(mcpServerConfig.toolProfile || "foreground");
   const configArgs = [
     "-c",
     `mcp_servers.${name}.command=${quoteTomlString(command)}`,
     "-c",
     `mcp_servers.${name}.args=${formatTomlArray(args)}`,
   ];
-  for (const toolName of listProjectToolNames()) {
+  for (const toolName of listProjectToolNames({ toolProfile })) {
     configArgs.push(
       "-c",
       `mcp_servers.${name}.tools.${toolName}.approval_mode=${quoteTomlString("auto")}`,
@@ -58,5 +75,6 @@ function normalizeNonEmptyString(value) {
 
 module.exports = {
   buildCodexMcpConfigArgs,
+  normalizeToolProfile,
   resolveCodexProjectToolMcpServerConfig,
 };

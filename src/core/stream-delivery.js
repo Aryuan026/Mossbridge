@@ -5,11 +5,12 @@ const { RUNTIME_NOTICE_KIND, shieldRuntimeNoticeForDelivery } = require("./runti
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, onRuntimeNotice, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, onRuntimeNotice, onOutboundDelivery, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
     this.onRuntimeNotice = typeof onRuntimeNotice === "function" ? onRuntimeNotice : null;
+    this.onOutboundDelivery = typeof onOutboundDelivery === "function" ? onOutboundDelivery : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
       ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
@@ -426,6 +427,7 @@ class StreamDelivery {
     const initialTarget = state.replyTarget;
     try {
       await this.channelAdapter.sendText(payload);
+      this.recordOutboundDelivery(state, payload, { kind, status: "sent", attempt: "initial" });
       recordAiReply();
       return;
     } catch (error) {
@@ -433,8 +435,10 @@ class StreamDelivery {
       if (!retryTarget) {
         const deferred = await this.deferSystemReply(state, payload.text, error, kind);
         if (deferred) {
+          this.recordOutboundDelivery(state, payload, { kind, status: "deferred", attempt: "initial", error });
           return;
         }
+        this.recordOutboundDelivery(state, payload, { kind, status: "failed", attempt: "initial", error });
         throw error;
       }
       console.warn(
@@ -450,6 +454,7 @@ class StreamDelivery {
           retryPayload.preserveBlock = true;
         }
         await this.channelAdapter.sendText(retryPayload);
+        this.recordOutboundDelivery(state, retryPayload, { kind, status: "sent", attempt: "retry" });
         recordAiReply();
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
@@ -462,10 +467,36 @@ class StreamDelivery {
       } catch (retryError) {
         const deferred = await this.deferSystemReply(state, payload.text, retryError, kind);
         if (deferred) {
+          this.recordOutboundDelivery(state, payload, { kind, status: "deferred", attempt: "retry", error: retryError });
           return;
         }
+        this.recordOutboundDelivery(state, payload, { kind, status: "failed", attempt: "retry", error: retryError });
         throw retryError;
       }
+    }
+  }
+
+  recordOutboundDelivery(state, payload, { kind = "", status = "", attempt = "", error = null } = {}) {
+    if (typeof this.onOutboundDelivery !== "function") {
+      return;
+    }
+    try {
+      this.onOutboundDelivery({
+        threadId: state?.threadId || "",
+        turnId: state?.turnId || "",
+        runKey: state?.runKey || "",
+        bindingKey: state?.bindingKey || "",
+        userId: payload?.userId || state?.replyTarget?.userId || "",
+        provider: state?.replyTarget?.provider || "",
+        kind,
+        status,
+        attempt,
+        contextTokenPresent: Boolean(payload?.contextToken),
+        textPreview: payload?.text || "",
+        error: error instanceof Error ? error.message : String(error || ""),
+      });
+    } catch (hookError) {
+      console.error(`[mossbridge] outbound delivery audit failed thread=${state?.threadId || ""}: ${hookError.message}`);
     }
   }
 

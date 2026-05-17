@@ -86,6 +86,13 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
   });
   assert.equal(dispatched.ok, true);
 
+  const deferred = service.deferAttempt(queued.attempt_id, {
+    reason: "daily_system_budget",
+    retryAfterMs: Date.now() + 20 * 60_000,
+  });
+  assert.equal(deferred.ok, true);
+  assert.equal(deferred.reason, "daily_system_budget");
+
   const incomplete = service.completeRuntimeAttempt({
     systemTurn: {
       trigger_kind: "dreaming_opportunity",

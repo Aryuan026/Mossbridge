@@ -210,7 +210,11 @@ function resolveBoundThread(workspaceRoot) {
   const runtimeId = normalizeText(process.env.MOSSBRIDGE_RUNTIME || "codex");
   const data = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
   const currentAccountId = resolveCurrentAccountId();
-  const bindings = Object.values(data.bindings || {})
+  const bindings = Object.entries(data.bindings || {})
+    .map(([bindingKey, binding]) => ({
+      ...(binding || {}),
+      bindingKey: normalizeText(binding?.bindingKey) || normalizeText(bindingKey),
+    }))
     .filter((binding) => !currentAccountId || normalizeText(binding?.accountId) === currentAccountId)
     .sort((left, right) => parseTimestamp(right?.updatedAt) - parseTimestamp(left?.updatedAt));
 
@@ -218,6 +222,9 @@ function resolveBoundThread(workspaceRoot) {
   const exact = bindings.find((binding) => getThreadId(binding, normalizedWorkspaceRoot, runtimeId));
   if (exact) {
     return {
+      bindingKey: normalizeText(exact.bindingKey),
+      accountId: normalizeText(exact.accountId),
+      senderId: normalizeText(exact.senderId),
       threadId: getThreadId(exact, normalizedWorkspaceRoot, runtimeId),
       workspaceRoot: normalizedWorkspaceRoot,
     };
@@ -230,6 +237,9 @@ function resolveBoundThread(workspaceRoot) {
   if (active) {
     const activeWorkspaceRoot = normalizeText(active.activeWorkspaceRoot);
     return {
+      bindingKey: normalizeText(active.bindingKey),
+      accountId: normalizeText(active.accountId),
+      senderId: normalizeText(active.senderId),
       threadId: getThreadId(active, activeWorkspaceRoot, runtimeId),
       workspaceRoot: activeWorkspaceRoot,
     };

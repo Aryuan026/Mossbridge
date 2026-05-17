@@ -1,16 +1,24 @@
 const http = require("http");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   listenUrl,
+  stateDir,
   appServerPidFile,
   bridgePidFile,
   readPidFile,
   isPidAlive,
 } = require("./shared-common");
 
+const DEFAULT_LAUNCHD_LABEL = "com.mossbridge.bridge";
+
 async function main() {
-  const runtime = process.env.MOSSBRIDGE_RUNTIME || "codex";
+  const runtimeSelection = resolveStatusRuntime();
+  const runtime = runtimeSelection.runtime;
   const isCodex = runtime === "codex";
   console.log(`runtime=${runtime}`);
+  console.log(`runtime_source=${runtimeSelection.source}`);
   console.log(`listen=${listenUrl}`);
   printPidState("shared_app_server_pid", appServerPidFile);
   printPidState("shared_mossbridge_pid", bridgePidFile);
@@ -18,6 +26,31 @@ async function main() {
     console.log(`readyz=skipped`);
   } else {
     console.log(`readyz=${await checkReadyz() ? "ok" : "down"}`);
+  }
+  printWeixinUpstreamState();
+}
+
+function resolveStatusRuntime() {
+  const explicit = normalizeText(process.env.MOSSBRIDGE_RUNTIME);
+  if (explicit) {
+    return { runtime: explicit, source: "env" };
+  }
+  const installed = readInstalledLaunchdRuntime();
+  if (installed) {
+    return { runtime: installed, source: "launchd_plist" };
+  }
+  return { runtime: "codex", source: "default" };
+}
+
+function readInstalledLaunchdRuntime() {
+  const label = normalizeText(process.env.MOSSBRIDGE_LAUNCHD_LABEL) || DEFAULT_LAUNCHD_LABEL;
+  const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+  try {
+    const text = fs.readFileSync(plistPath, "utf8");
+    const match = text.match(/<key>MOSSBRIDGE_RUNTIME<\/key>\s*<string>([^<]*)<\/string>/u);
+    return normalizeText(match?.[1]);
+  } catch {
+    return "";
   }
 }
 
@@ -32,6 +65,52 @@ function printPidState(label, filePath) {
     return;
   }
   console.log(`${label}=${pid}`);
+}
+
+function printWeixinUpstreamState() {
+  const auditPath = path.join(stateDir, "weixin-ingress-audit.json");
+  const audit = readJson(auditPath);
+  if (!audit || (!audit.lastPoll && !audit.lastPollFailure)) {
+    console.log("weixin_upstream=unknown");
+    console.log("weixin_last_poll=missing");
+    return;
+  }
+  const nowMs = Date.now();
+  const lastPollMs = parseTimestamp(audit.lastPoll?.ts);
+  const lastFailureMs = parseTimestamp(audit.lastPollFailure?.ts);
+  const lastPollAgeSeconds = lastPollMs ? Math.round((nowMs - lastPollMs) / 1000) : -1;
+  const lastFailureAgeSeconds = lastFailureMs ? Math.round((nowMs - lastFailureMs) / 1000) : -1;
+  const failureIsNewer = lastFailureMs && (!lastPollMs || lastFailureMs > lastPollMs);
+  const pollIsFresh = lastPollMs && nowMs - lastPollMs <= 90_000;
+  const upstream = failureIsNewer ? "failing" : (pollIsFresh ? "ok" : "stale");
+  console.log(`weixin_upstream=${upstream}`);
+  console.log(`weixin_last_poll=${audit.lastPoll?.ts || "missing"}`);
+  console.log(`weixin_last_poll_age_seconds=${lastPollAgeSeconds}`);
+  console.log(`weixin_last_failure=${audit.lastPollFailure?.ts || "missing"}`);
+  console.log(`weixin_last_failure_age_seconds=${lastFailureAgeSeconds}`);
+  console.log(`weixin_consecutive_failures=${Math.max(0, Number(audit.lastPollFailure?.consecutiveFailures) || 0)}`);
+  console.log(`weixin_last_failure_error=${normalizeText(audit.lastPollFailure?.error) || "missing"}`);
+  console.log(`weixin_last_failure_cause=${normalizeText(audit.lastPollFailure?.causeCode) || normalizeText(audit.lastPollFailure?.causeName) || "missing"}`);
+  console.log(`weixin_last_failure_api=${normalizeText(audit.lastPollFailure?.apiLabel) || "missing"}`);
+  console.log(`weixin_last_recovery=${audit.lastPollRecovery?.ts || "missing"}`);
+  console.log(`weixin_last_recovery_failures=${Math.max(0, Number(audit.lastPollRecovery?.consecutiveFailures) || 0)}`);
+}
+
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function parseTimestamp(value) {
+  const ms = Date.parse(value || "");
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function checkReadyz() {

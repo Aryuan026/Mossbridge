@@ -115,6 +115,7 @@ class AsherieMemoryService {
     const recallMode = normalizeText(args.recall_mode || args.recallMode) || "user_triggered";
     const runtimeProfile = normalizeText(args.runtime_profile || args.runtimeProfile);
     const proactiveLite = runtimeProfile === "proactive_lite";
+    const forceRecentContext = Boolean(args.force_recent_context || args.forceRecentContext);
     const cacheLimit = resolveContextCacheLimit({
       requested: args.cache_limit || args.cacheLimit,
       recallMode,
@@ -134,6 +135,7 @@ class AsherieMemoryService {
       query,
       recentRecords: recent.records,
       recallMode,
+      forceRecentContext,
       limit: resolvePositiveInt(
         args.recall_recent_record_limit || args.recallRecentRecordLimit,
         Number(this.config.asherieRecallRecentRecordLimit) || 8,
@@ -188,7 +190,7 @@ class AsherieMemoryService {
     const wakeupPacket = buildWakeupRuntimePacket(this.wakeupStore, scopes.scopedUserId);
     const ongoingQuery = normalizeText(recallMode) === "proactive"
       ? recallQuery
-      : normalizeText(query);
+      : (forceRecentContext ? recallQuery : normalizeText(query));
     const warmMemoryPacket = buildWarmMemoryRuntimePacket(this.warmMemoryStore, scopes.warmScope, {
       query: recallQuery,
       limit: Number(args.limit) || 6,
@@ -366,6 +368,7 @@ class AsherieMemoryService {
       observationJournalPacket,
       solitudeJournalPacket,
       recallMode,
+      forceRecentContext,
       currentTurnSignals,
       recentRecords: recent.records,
       calendarPacket,
@@ -1242,11 +1245,20 @@ function shouldCarryOngoingTrackForQuery(item = {}, { overviewQuery = false } = 
   return Boolean(overviewQuery && normalizeText(item?.status) !== "done" && normalizeText(item?.status) !== "archived");
 }
 
-function buildEffectiveRecallQuery({ query = "", recentRecords = [], recallMode = "", limit = 4 } = {}) {
+function buildEffectiveRecallQuery({
+  query = "",
+  recentRecords = [],
+  recallMode = "",
+  forceRecentContext = false,
+  limit = 4,
+} = {}) {
   const base = normalizeText(query);
-  if (normalizeText(recallMode) !== "proactive") {
+  if (!forceRecentContext && normalizeText(recallMode) !== "proactive") {
     return base;
   }
+  const rowLimit = forceRecentContext
+    ? Math.max(12, Number(limit) || 4)
+    : Math.max(2, Number(limit) || 4);
   const rows = [];
   for (const record of Array.isArray(recentRecords) ? recentRecords : []) {
     if (String(record?.source_client || "").includes("system_turn")) {
@@ -1260,7 +1272,7 @@ function buildEffectiveRecallQuery({ query = "", recentRecords = [], recallMode 
     if (assistantLine && isUsefulReplyContext(assistantLine)) {
       rows.push(assistantLine);
     }
-    if (rows.length >= Math.max(2, Number(limit) || 4)) {
+    if (rows.length >= rowLimit) {
       break;
     }
   }
@@ -1272,7 +1284,7 @@ function buildEffectiveRecallQuery({ query = "", recentRecords = [], recallMode 
   if (!seed) {
     return base;
   }
-  return truncateText(seed, 420);
+  return truncateText([base, seed].filter(Boolean).join(" "), 420);
 }
 
 function buildRuntimePrelude({
@@ -1292,6 +1304,7 @@ function buildRuntimePrelude({
   coldVinePacket,
   temporalRecallPacket,
   hotContextPacket,
+  forceRecentContext = false,
   recentRecords,
   calendarPacket,
   wakeupPacket,
@@ -1311,8 +1324,11 @@ function buildRuntimePrelude({
   const residentWarmHits = Array.isArray(residentWarmPacket?.hits) ? residentWarmPacket.hits : [];
   const coldRootHits = Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits : [];
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
-  const includeRecentContext = shouldIncludeRecentContextPrelude(recallFocus, recallMode);
+  const includeRecentContext = forceRecentContext || shouldIncludeRecentContextPrelude(recallFocus, recallMode);
   const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
+  const sessionHandoffLines = forceRecentContext && normalizeText(recallMode) !== "proactive"
+    ? buildSessionHandoffPrelude(recentRecords)
+    : [];
   if (includeGuidance !== false) {
     ensurePreludeHeader(lines);
     lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
@@ -1320,6 +1336,10 @@ function buildRuntimePrelude({
   if (proactiveRecentStateLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...proactiveRecentStateLines);
+  }
+  if (sessionHandoffLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...sessionHandoffLines);
   }
   const hotContextLines = buildHotContextPreludeLines(hotContextPacket, 4);
   if (hotContextLines.length) {
@@ -1458,9 +1478,10 @@ function buildRuntimePrelude({
     requested: preludeRecentThreadLimit,
     recallFocus,
     recallMode,
+    forceRecentContext,
   });
   const recentThreadLines = includeRecentContext && !proactiveRecentStateLines.length && recentThreadLimit > 0
-    ? buildRecentThreadPrelude(recentRecords, recentThreadLimit)
+    ? buildRecentThreadPrelude(recentRecords, recentThreadLimit, { includeTimestamp: forceRecentContext })
     : [];
   if (recentThreadLines.length) {
     ensurePreludeHeader(lines);
@@ -1479,12 +1500,12 @@ function buildRuntimePrelude({
     lines.push(...wakeupLines);
   }
 
-  const recentSnippetLimit = recentThreadLimit > 0
+  const recentSnippetLimit = forceRecentContext ? 0 : (recentThreadLimit > 0
     ? Math.min(
         Math.max(0, Number(preludeRecentSnippetLimit) || 0),
         recentThreadLimit,
       )
-    : 0;
+    : 0);
   const snippets = includeRecentContext && !proactiveRecentStateLines.length && recentSnippetLimit > 0 ? (Array.isArray(recentRecords) ? recentRecords : [])
     .filter((record) => !String(record?.source_client || "").includes("system_turn"))
     .slice(0, recentSnippetLimit)
@@ -1535,6 +1556,75 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
     "- 相对时间校准：latest-thread 里的“今天/明天/昨天”只按该条时间戳理解；除非日历或提醒明确确认，不要把“明天要做的事”说成当前已经发生。",
     ...threadLines.map((line) => line.replace(/^- recent-thread:/u, "- latest-thread:")),
   ];
+}
+
+function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 8 } = {}) {
+  const records = (Array.isArray(recentRecords) ? recentRecords : [])
+    .filter(isSessionHandoffRecord)
+    .slice(0, Math.max(1, Number(coreLimit) || 8));
+  if (!records.length) {
+    return [];
+  }
+
+  const chronological = records.slice().reverse();
+  const range = buildSessionHandoffRange(chronological);
+  const recentUserBeads = chronological
+    .slice(-4)
+    .map((record) => truncateText(record.query, 72))
+    .filter(Boolean);
+  const latest = records[0];
+  const latestOutcome = truncateText(latest.assistant_text_final, 120);
+  const digest = buildSessionCompressedDigest(records);
+
+  const lines = [
+    "- session-handoff: 这是刷新/新 session 的交接包；优先接住旧 session 的连续事件、情绪和未完成事项，不要把它当作长期事实或回复模板。",
+  ];
+  lines.push(
+    `- session-core: 旧 session 最近 ${chronological.length} 轮${range ? ` (${range})` : ""} 的尾流：${recentUserBeads.join(" / ")}`,
+  );
+  if (latestOutcome) {
+    lines.push(`- session-last-outcome: ${latestOutcome}`);
+  }
+  if (digest) {
+    lines.push(`- session-digest: ${digest}`);
+  }
+  return lines;
+}
+
+function isSessionHandoffRecord(record = {}) {
+  if (!record || typeof record !== "object") {
+    return false;
+  }
+  if (String(record.source_client || "").includes("system_turn")) {
+    return false;
+  }
+  const query = normalizeText(record.query);
+  const reply = normalizeText(record.assistant_text_final);
+  if (!query) {
+    return false;
+  }
+  return !isThinRecentLine(query) || isUsefulReplyContext(reply);
+}
+
+function buildSessionHandoffRange(records = []) {
+  const timestamps = records
+    .map((record) => formatCompactLocalTimestamp(record.ts_utc || record.timestamp || record.received_at))
+    .filter(Boolean);
+  if (!timestamps.length) {
+    return "";
+  }
+  const first = timestamps[0];
+  const last = timestamps[timestamps.length - 1];
+  return first === last ? first : `${first} -> ${last}`;
+}
+
+function buildSessionCompressedDigest(records = []) {
+  const digest = records
+    .map((record) => normalizePreludeText(record.compressed_digest))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" / ");
+  return digest ? truncateText(digest, 220) : "";
 }
 
 function buildStickyCalendarPrelude(calendarPacket = {}) {
@@ -1638,9 +1728,9 @@ function shouldSearchColdRootsForTurn({ query = "", recallFocus = {}, recallMode
     return true;
   }
   if (normalizeText(recallMode) === "proactive") {
-    return Boolean(recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context);
+    return false;
   }
-  return Boolean(recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context);
+  return Boolean(recallFocus?.used_recent_context && looksLikeColdContinuationQuery(normalizedQuery));
 }
 
 function shouldIncludeColdPrelude(recallFocus = {}, coldRootHits = []) {
@@ -1660,7 +1750,15 @@ function looksLikeColdRecallQuery(query = "") {
   if (!normalized) {
     return false;
   }
-  return /(还记得|记不记得|记得|以前|之前|过去|长期|一直|历史|关系|身份|背景|家族|家庭|亲属|亲戚|父亲|母亲|爸爸|妈妈|姥姥|姥爷|妹妹|弟弟|项目|科研|论文|工作|case|案例|记忆树|冷记忆|cold|vine|根据.*印象|对我的?印象|了解我|我是谁|象征|信物|重要的事)/i.test(normalized);
+  return /(还记得|记不记得|记得|上次说过|以前说过|之前说过|过去聊过|长期记忆|历史背景|关系|身份|家族|家庭|亲属|亲戚|父亲|母亲|爸爸|妈妈|姥姥|姥爷|妹妹|弟弟|case|案例|记忆树|冷记忆|cold|vine|了解我|我是谁|象征|信物|重要的事)/i.test(normalized);
+}
+
+function looksLikeColdContinuationQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return /(家族|家庭|亲属|亲戚|姥姥|姥爷|妹妹|弟弟|爸爸|妈妈|关系|身份|象征|信物|重要的事|睡|熬夜|失眠|缓过来|身体|腰痛|水肿|症状|长期记忆|历史背景|记忆树|冷记忆|cold|vine)/i.test(normalized);
 }
 
 function looksLikeOngoingOverviewQuery(query = "") {
@@ -2008,10 +2106,18 @@ function buildRecentThreadPrelude(recentRecords = [], limit = 3, { includeTimest
   return rows;
 }
 
-function resolveRecentThreadPreludeLimit({ requested, recallFocus = {}, recallMode = "" } = {}) {
+function resolveRecentThreadPreludeLimit({
+  requested,
+  recallFocus = {},
+  recallMode = "",
+  forceRecentContext = false,
+} = {}) {
   const base = Math.max(0, Number(requested) || 0);
   if (base <= 0) {
     return 0;
+  }
+  if (forceRecentContext) {
+    return Math.min(Math.max(base, 6), 8);
   }
   if (normalizeText(recallMode) === "proactive") {
     return Math.min(base, 2);

@@ -12,12 +12,13 @@ const {
 } = require("./message-utils");
 const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
-const { resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
+const { normalizeToolProfile, resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
-  let client = null;
-  let readyState = null;
+  const clientsByProfile = new Map();
+  const readyStateByProfile = new Map();
+  const eventListeners = new Set();
   const configuredModel = normalizeText(config.codexModel);
   const configuredModelProvider = normalizeText(config.codexModelProvider);
 
@@ -31,17 +32,57 @@ function createCodexRuntimeAdapter(config) {
     return normalizeText(model);
   }
 
-  function ensureClient() {
-    if (!client) {
-      client = new CodexRpcClient({
+  function ensureClient({ toolProfile = "" } = {}) {
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    let runtimeClient = clientsByProfile.get(normalizedToolProfile);
+    if (!runtimeClient) {
+      runtimeClient = new CodexRpcClient({
         endpoint: config.codexEndpoint,
         codexCommand: config.codexCommand,
         env: process.env,
         extraWritableRoots: [config.stateDir],
-        mcpServerConfig: resolveCodexProjectToolMcpServerConfig(),
+        mcpServerConfig: resolveCodexProjectToolMcpServerConfig({ toolProfile: normalizedToolProfile }),
       });
+      runtimeClient.__mossbridgeToolProfile = normalizedToolProfile;
+      runtimeClient.onMessage((message) => {
+        const event = mapCodexMessageToRuntimeEvent(message);
+        if (!event) {
+          return;
+        }
+        for (const listener of eventListeners) {
+          listener(event, message);
+        }
+      });
+      clientsByProfile.set(normalizedToolProfile, runtimeClient);
     }
-    return client;
+    return runtimeClient;
+  }
+
+  function resolveToolProfileForOperation({ bindingKey = "", threadId = "", metadata = {}, toolProfile = "" } = {}) {
+    const rawMetadataToolProfile = normalizeText(toolProfile || metadata?.systemToolProfile || metadata?.toolProfile);
+    if (rawMetadataToolProfile) {
+      return normalizeToolProfile(rawMetadataToolProfile);
+    }
+    const normalizedBindingKey = normalizeText(bindingKey);
+    if (normalizedBindingKey) {
+      const binding = sessionStore.getBinding(normalizedBindingKey) || {};
+      const rawBindingToolProfile = normalizeText(binding.systemToolProfile || binding.toolProfile);
+      if (rawBindingToolProfile) {
+        return normalizeToolProfile(rawBindingToolProfile);
+      }
+    }
+    const normalizedThreadId = normalizeText(threadId);
+    if (normalizedThreadId) {
+      const linked = sessionStore.findBindingForThreadId(normalizedThreadId);
+      if (linked?.bindingKey) {
+        const binding = sessionStore.getBinding(linked.bindingKey) || {};
+        const rawLinkedBindingToolProfile = normalizeText(binding.systemToolProfile || binding.toolProfile);
+        if (rawLinkedBindingToolProfile) {
+          return normalizeToolProfile(rawLinkedBindingToolProfile);
+        }
+      }
+    }
+    return "foreground";
   }
 
   return {
@@ -62,13 +103,8 @@ function createCodexRuntimeAdapter(config) {
       if (typeof listener !== "function") {
         return () => {};
       }
-      const runtimeClient = ensureClient();
-      return runtimeClient.onMessage((message) => {
-        const event = mapCodexMessageToRuntimeEvent(message);
-        if (event) {
-          listener(event, message);
-        }
-      });
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
     },
     getSessionStore() {
       return sessionStore;
@@ -89,8 +125,10 @@ function createCodexRuntimeAdapter(config) {
         toolImageRead: false,
       };
     },
-    async initialize() {
-      const runtimeClient = ensureClient();
+    async initialize(options = {}) {
+      const toolProfile = resolveToolProfileForOperation(options);
+      const runtimeClient = ensureClient({ toolProfile });
+      const readyState = readyStateByProfile.get(toolProfile);
       if (readyState && runtimeClient.isReady && runtimeClient.isTransportReady()) {
         return readyState;
       }
@@ -98,11 +136,13 @@ function createCodexRuntimeAdapter(config) {
       await runtimeClient.initialize();
       const catalog = await refreshModelCatalog(runtimeClient, sessionStore).catch(() => ({ models: [] }));
       const models = catalog.models || [];
-      readyState = {
+      const nextReadyState = {
         endpoint: config.codexEndpoint || "(spawn)",
         models,
+        toolProfile,
       };
-      return readyState;
+      readyStateByProfile.set(toolProfile, nextReadyState);
+      return nextReadyState;
     },
     async refreshModelCatalog() {
       const runtimeClient = ensureClient();
@@ -111,11 +151,11 @@ function createCodexRuntimeAdapter(config) {
       return refreshModelCatalog(runtimeClient, sessionStore);
     },
     async close() {
-      if (client) {
-        await client.close();
+      for (const runtimeClient of clientsByProfile.values()) {
+        await runtimeClient.close();
       }
-      readyState = null;
-      client = null;
+      readyStateByProfile.clear();
+      clientsByProfile.clear();
     },
     async startFreshThreadDraft() {
       return {};
@@ -137,24 +177,27 @@ function createCodexRuntimeAdapter(config) {
           : { decision: responsePayload.decision }),
       };
     },
-    async cancelTurn({ threadId, turnId }) {
-      const runtimeClient = ensureClient();
-      await this.initialize();
+    async cancelTurn({ threadId, turnId, bindingKey = "" } = {}) {
+      const toolProfile = resolveToolProfileForOperation({ bindingKey, threadId });
+      const runtimeClient = ensureClient({ toolProfile });
+      await this.initialize({ toolProfile });
       await runtimeClient.cancelTurn({ threadId, turnId });
       return { threadId, turnId };
     },
-    async resumeThread({ threadId }) {
-      const runtimeClient = ensureClient();
-      await this.initialize();
+    async resumeThread({ threadId, bindingKey = "" } = {}) {
+      const toolProfile = resolveToolProfileForOperation({ bindingKey, threadId });
+      const runtimeClient = ensureClient({ toolProfile });
+      await this.initialize({ toolProfile });
       return runtimeClient.resumeThread({
         threadId,
         model: configuredModel,
         modelProvider: configuredModelProvider,
       });
     },
-    async compactThread({ threadId }) {
-      const runtimeClient = ensureClient();
-      await this.initialize();
+    async compactThread({ threadId, bindingKey = "" } = {}) {
+      const toolProfile = resolveToolProfileForOperation({ bindingKey, threadId });
+      const runtimeClient = ensureClient({ toolProfile });
+      await this.initialize({ toolProfile });
       return runtimeClient.compactThread({ threadId });
     },
     async refreshThreadInstructions({ threadId, workspaceRoot, model = "", modelProvider = "" }) {
@@ -182,8 +225,9 @@ function createCodexRuntimeAdapter(config) {
       return this.sendTurn(args);
     },
     async sendTurn({ bindingKey, workspaceRoot, text, attachments = [], metadata = {}, model = "" }) {
-      const runtimeClient = ensureClient();
-      await this.initialize();
+      const toolProfile = resolveToolProfileForOperation({ bindingKey, metadata });
+      const runtimeClient = ensureClient({ toolProfile });
+      await this.initialize({ toolProfile });
 
       let threadId = sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
       const storedParams = sessionStore.getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
