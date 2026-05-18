@@ -49,17 +49,21 @@ class ChannelFileService {
       status: 1,
       contextToken,
     }).catch(() => {});
-    await this.channelAdapter.sendFile({
-      userId: targetUserId,
-      filePath: resolvedPath,
-      contextToken,
-    });
-    await this.channelAdapter.sendTyping({
-      userId: targetUserId,
-      status: 0,
-      contextToken,
-    }).catch(() => {});
-    return { userId: targetUserId, filePath: resolvedPath };
+    let delivery = null;
+    try {
+      delivery = await this.channelAdapter.sendFile({
+        userId: targetUserId,
+        filePath: resolvedPath,
+        contextToken,
+      });
+    } finally {
+      await this.channelAdapter.sendTyping({
+        userId: targetUserId,
+        status: 0,
+        contextToken,
+      }).catch(() => {});
+    }
+    return { userId: targetUserId, filePath: resolvedPath, delivery };
   }
 }
 

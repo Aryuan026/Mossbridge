@@ -831,6 +831,7 @@ test("tool host filters MCP tools by runtime profile", async () => {
   assert.ok(foregroundNames.includes("mossbridge_memory_warm_update"));
   assert.ok(foregroundNames.includes("mossbridge_memory_episode_append"));
   assert.ok(foregroundNames.includes("mossbridge_memory_observation_update"));
+  assert.ok(!foregroundNames.includes("mossbridge_bridge_status"));
   assert.ok(!foregroundNames.includes("mossbridge_memory_cold_search"));
   assert.ok(!foregroundNames.includes("mossbridge_memory_case_upsert"));
   assert.ok(!foregroundNames.includes("mossbridge_timeline_write"));

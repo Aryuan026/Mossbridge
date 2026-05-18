@@ -34,14 +34,17 @@ const DEFAULT_CHECKIN_DAILY_TOKEN_BUDGET = 300_000;
 const DEFAULT_CHECKIN_DAILY_THREAD_BUDGET = 36;
 const DEFAULT_CHECKIN_DAILY_CACHE_READ_WEIGHT = 0.1;
 const DEFAULT_CHECKIN_MODEL_MIN_GAP_MINUTES = 90;
+const DEFAULT_CHECKIN_QUIET_HOURS = "02:00-07:00";
+const DEFAULT_CHECKIN_MORNING_CONTEXT_TOKEN_GRACE_HOURS = "07:00-10:30";
+const DEFAULT_CHECKIN_MORNING_CONTEXT_TOKEN_MAX_AGE_MS = 12 * 60 * 60_000;
 const DEFAULT_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES = 20;
 const DEFAULT_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_CHARS = 6_000;
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATES = [
-  "%USER% comes to mind again; from the tiny injected wake note only, decide whether a small hello belongs here.",
-  "A small ordinary check-in window opens for %USER%; no tools are available in this random heartbeat, so use only injected context and either stay silent or send one light touch.",
-  "You have not surfaced for a little while. Use the short wake packet only; do not infer old tasks or try to inspect files.",
-  "%USER% may be between tasks or quietly pushing through something. If the injected context is too thin, stay silent instead of inventing a reason to appear.",
+  "%USER% comes to mind again; use the injected latest-thread and active context to decide whether a small hello belongs here.",
+  "A small ordinary check-in window opens for %USER%; no tools are available in this random heartbeat, so use the injected context and either stay silent or send one natural touch.",
+  "You have not surfaced for a little while. Reconnect only if the injected latest-thread, calendar, or ongoing context gives a real foothold.",
+  "%USER% may be between tasks or quietly pushing through something. If the injected context gives no grounded foothold, stay silent instead of inventing a reason to appear.",
   "This is a non-meal, non-reminder random check-in. AI-calendar and task wakeups handle real work; this heartbeat is only for light reconnection.",
 ];
 
@@ -143,6 +146,11 @@ async function runSystemCheckinPoller(config) {
       }
       continue;
     }
+    if (readiness.contextTokenGrace?.active) {
+      console.log(
+        `[mossbridge] checkin context token morning grace active age=${formatDuration(readiness.contextTokenGrace.tokenAgeMs)} max=${formatDuration(readiness.contextTokenGrace.graceMaxAgeMs)}`,
+      );
+    }
 
     if (hasRecentActivity()) {
       const windowMin = Math.round(ACTIVE_WINDOW_MS / 60_000);
@@ -210,6 +218,10 @@ async function runSystemCheckinPoller(config) {
       title: "random_checkin",
       metadata: {
         checkinKind: "random_checkin",
+        ...(readiness.contextTokenGrace?.active ? {
+          contextTokenGrace: readiness.contextTokenGrace.reason,
+          tokenAgeMs: readiness.contextTokenGrace.tokenAgeMs,
+        } : {}),
       },
       createdAt: new Date().toISOString(),
     });
@@ -266,6 +278,15 @@ function resolveCheckinReadiness({
     return { ready: false, reason: "runtime_cooldown", runtimeCooldown };
   }
 
+  const quietState = resolveCheckinQuietState(config, nowMs);
+  if (quietState.active) {
+    return {
+      ready: false,
+      reason: "quiet_hours",
+      quietState,
+    };
+  }
+
   const budgetPolicy = resolveSystemTurnBudgetPolicy({
     kind: "checkin_opportunity",
     config,
@@ -288,6 +309,15 @@ function resolveCheckinReadiness({
       return { ready: false, reason: "missing_context_token" };
     }
     if (tokenAgeMs > maxAgeMs) {
+      const contextTokenGrace = resolveMorningContextTokenGrace({
+        config,
+        nowMs,
+        tokenAgeMs,
+        normalMaxAgeMs: maxAgeMs,
+      });
+      if (contextTokenGrace.active) {
+        return { ready: true, contextTokenGrace };
+      }
       return { ready: false, reason: "stale_context_token", tokenAgeMs, maxAgeMs };
     }
   }
@@ -358,6 +388,73 @@ function resolveCheckinContextTokenMaxAgeMs(config = {}) {
     return parsedMinutes * 60_000;
   }
   return DEFAULT_CHECKIN_CONTEXT_TOKEN_MAX_AGE_MS;
+}
+
+function resolveCheckinQuietState(config = {}, nowMs = Date.now()) {
+  const window = parseLocalTimeWindow(
+    normalizeText(config.checkinQuietHours) || DEFAULT_CHECKIN_QUIET_HOURS,
+  );
+  if (!window.enabled) {
+    return { active: false, reason: "disabled" };
+  }
+  if (!window.valid) {
+    return { active: false, reason: "invalid_window", windowText: window.windowText };
+  }
+  const localMinutes = getShanghaiLocalMinutes(nowMs);
+  const active = isLocalMinuteInWindow(localMinutes, window.startMinutes, window.endMinutes);
+  const remainingMs = active
+    ? minutesUntilWindowEnd(localMinutes, window.startMinutes, window.endMinutes) * 60_000
+    : 0;
+  return {
+    active,
+    reason: active ? "quiet_hours" : "outside_quiet_hours",
+    windowText: window.windowText,
+    start: window.start,
+    end: window.end,
+    localMinutes,
+    remainingMs,
+  };
+}
+
+function resolveMorningContextTokenGrace({
+  config = {},
+  nowMs = Date.now(),
+  tokenAgeMs = 0,
+  normalMaxAgeMs = DEFAULT_CHECKIN_CONTEXT_TOKEN_MAX_AGE_MS,
+} = {}) {
+  const window = parseLocalTimeWindow(
+    normalizeText(config.checkinMorningContextTokenGraceHours)
+      || DEFAULT_CHECKIN_MORNING_CONTEXT_TOKEN_GRACE_HOURS,
+  );
+  if (!window.enabled || !window.valid) {
+    return { active: false, reason: window.enabled ? "invalid_window" : "disabled" };
+  }
+  const graceMaxAgeMs = resolvePositiveNumber(
+    config.checkinMorningContextTokenMaxAgeMinutes,
+    DEFAULT_CHECKIN_MORNING_CONTEXT_TOKEN_MAX_AGE_MS / 60_000,
+  ) * 60_000;
+  if (tokenAgeMs <= normalMaxAgeMs || tokenAgeMs > graceMaxAgeMs) {
+    return {
+      active: false,
+      reason: "outside_token_age_grace",
+      tokenAgeMs,
+      normalMaxAgeMs,
+      graceMaxAgeMs,
+    };
+  }
+  const localMinutes = getShanghaiLocalMinutes(nowMs);
+  const active = isLocalMinuteInWindow(localMinutes, window.startMinutes, window.endMinutes);
+  return {
+    active,
+    reason: active ? "morning_context_token_grace" : "outside_morning_grace_hours",
+    windowText: window.windowText,
+    start: window.start,
+    end: window.end,
+    localMinutes,
+    tokenAgeMs,
+    normalMaxAgeMs,
+    graceMaxAgeMs,
+  };
 }
 
 function resolveCheckinDailyBudget({
@@ -687,6 +784,87 @@ function isSystemCheckinContext(context = {}) {
     || normalizeText(context.source) === "system";
 }
 
+function parseLocalTimeWindow(value = "") {
+  const windowText = normalizeText(value);
+  if (!windowText || /^(0|off|false|disabled|none)$/i.test(windowText)) {
+    return { enabled: false, valid: false, windowText };
+  }
+  const match = windowText.match(/^(\d{1,2})(?::(\d{1,2}))?\s*-\s*(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!match) {
+    return { enabled: true, valid: false, windowText };
+  }
+  const startHour = Number(match[1]);
+  const startMinute = Number(match[2] || 0);
+  const endHour = Number(match[3]);
+  const endMinute = Number(match[4] || 0);
+  const startMinutes = toClockMinutes(startHour, startMinute);
+  const endMinutes = toClockMinutes(endHour, endMinute);
+  if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes) || startMinutes === endMinutes) {
+    return { enabled: true, valid: false, windowText };
+  }
+  return {
+    enabled: true,
+    valid: true,
+    windowText,
+    start: formatClockMinutes(startMinutes),
+    end: formatClockMinutes(endMinutes),
+    startMinutes,
+    endMinutes,
+  };
+}
+
+function toClockMinutes(hour, minute) {
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return NaN;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return NaN;
+  }
+  return hour * 60 + minute;
+}
+
+function formatClockMinutes(minutes) {
+  const normalized = ((Number(minutes) % 1440) + 1440) % 1440;
+  const hour = Math.floor(normalized / 60);
+  const minute = normalized % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function getShanghaiLocalMinutes(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 0;
+  }
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return toClockMinutes(Number(byType.hour), Number(byType.minute));
+}
+
+function isLocalMinuteInWindow(localMinutes, startMinutes, endMinutes) {
+  if (startMinutes < endMinutes) {
+    return localMinutes >= startMinutes && localMinutes < endMinutes;
+  }
+  return localMinutes >= startMinutes || localMinutes < endMinutes;
+}
+
+function minutesUntilWindowEnd(localMinutes, startMinutes, endMinutes) {
+  if (!isLocalMinuteInWindow(localMinutes, startMinutes, endMinutes)) {
+    return 0;
+  }
+  if (startMinutes < endMinutes) {
+    return Math.max(0, endMinutes - localMinutes);
+  }
+  if (localMinutes >= startMinutes) {
+    return (24 * 60 - localMinutes) + endMinutes;
+  }
+  return Math.max(0, endMinutes - localMinutes);
+}
+
 function getShanghaiDayKey(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -717,6 +895,8 @@ function formatCheckinSkipReason(readiness = {}) {
       return `runtime cooldown until ${formatLocalTime(readiness.runtimeCooldown?.resetAtMs || readiness.runtimeCooldown?.resetAt)} (${formatDuration(readiness.runtimeCooldown?.remainingMs)} remaining)`;
     case "daily_checkin_budget":
       return `daily check-in budget reached (${readiness.dailyBudget?.budgetTokens || 0}/${readiness.dailyBudget?.tokenBudget || 0} weighted tokens, ${readiness.dailyBudget?.currentTokens || 0} context tokens, ${readiness.dailyBudget?.threadCount || 0}/${readiness.dailyBudget?.threadBudget || 0} system threads)`;
+    case "quiet_hours":
+      return `quiet sleep hours ${readiness.quietState?.start || ""}-${readiness.quietState?.end || ""}; random proactive wakeups pause for ${formatDuration(readiness.quietState?.remainingMs)}`;
     case "model_wake_min_gap":
       return `model wake not due yet (${formatDuration(readiness.elapsedMs)} since last system wake, next in ${formatDuration(readiness.remainingMs)})`;
     case "missing_context_token":
@@ -828,8 +1008,10 @@ module.exports = {
   resolveCheckinDailyBudget,
   resolveCheckinConversationHeat,
   resolveCheckinContextTokenMaxAgeMs,
+  resolveCheckinQuietState,
   resolveCheckinModelWakePreflight,
   resolveCheckinReadiness,
+  resolveMorningContextTokenGrace,
   resolveCheckinTokenPressureBackoff,
   resolveDailyBudgetPauseMs,
   resolveSystemTurnBudgetPolicy,

@@ -57,7 +57,7 @@ function buildSystemInboundText(text, createdAt = "") {
   const toolProfile = normalizeText(metadata.systemToolProfile || metadata.toolProfile);
   const liteCheckin = kind === "checkin_opportunity" && toolProfile === "checkin_lite";
   const sections = [
-    ...(localTime ? [`[${localTime}]`, ""] : []),
+    ...(localTime ? [`[${localTime}]`, "Use this timestamp as the current local time for this wake; do not infer the weekday or part of day from older memory.", ""] : []),
     "SYSTEM ACTION MODE: internal trigger, not user-authored chat.",
     ...buildSystemTriggerHeader({ kind, priority, title }),
     ...buildSystemTriggerGuidance({ kind, priority, toolProfile }),
@@ -208,15 +208,21 @@ function formatSystemLocalTime(value) {
   if (!normalized) {
     return "";
   }
-  return new Intl.DateTimeFormat("zh-CN", {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    weekday: "long",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
-  }).format(new Date(normalized)).replace(/\//g, "-");
+  }).formatToParts(new Date(normalized)).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} Asia/Shanghai (${parts.weekday})`;
 }
 
 function normalizeIsoTime(value) {

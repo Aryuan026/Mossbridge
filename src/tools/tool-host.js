@@ -1887,7 +1887,6 @@ const FOREGROUND_TOOL_NAMES = new Set([
   "mossbridge_reminder_create",
   "mossbridge_reminder_list",
   "mossbridge_reminder_cancel",
-  "mossbridge_bridge_status",
   "mossbridge_channel_send_file",
   "mossbridge_sticker_tags",
   "mossbridge_sticker_search",

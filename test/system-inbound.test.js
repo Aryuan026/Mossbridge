@@ -400,9 +400,75 @@ test("queued system messages attach fresh memory before runtime dispatch", async
   assert.deepEqual(clearedThreads, [["binding:user-1#mossbridge-system", "/workspace"]]);
   assert.equal(updatedBindings[0][1].replySenderId, "user-1");
   assert.match(dispatched[0].prepared.text, /ongoing: 起床提醒/);
+  assert.match(dispatched[0].prepared.text, /\[2026-04-29\s+10:00:00\s+Asia\/Shanghai\s+\(星期三\)\]/);
+  assert.match(dispatched[0].prepared.text, /Use this timestamp as the current local time/);
   assert.match(dispatched[0].prepared.text, /Trigger kind: reminder_due/);
   assert.deepEqual(dispatched[0].prepared.memoryContextPacket?.retrieval?.route, ["warm_memory", "resident_warm"]);
   assert.equal(dispatched[0].prepared.systemTurn.trigger_kind, "reminder_due");
+});
+
+test("random checkins drop instead of blocking behind a busy foreground turn", async () => {
+  const dispatched = [];
+  const reblocked = [];
+  const dispatcher = new SystemMessageDispatcher({
+    queueStore: { hasPendingForAccount() { return false; }, drainForAccount() { return []; }, enqueue() {} },
+    config: {
+      workspaceId: "default",
+      workspaceRoot: "/workspace",
+    },
+    accountId: "wx-account",
+  });
+  const appLike = {
+    config: {
+      workspaceId: "default",
+      workspaceRoot: "/workspace",
+      runtime: "claudecode",
+    },
+    systemMessageDispatcher: dispatcher,
+    channelAdapter: {
+      getKnownContextTokens() {
+        return { "user-1": "ctx-1" };
+      },
+    },
+    runtimeCooldownStore: {
+      getActiveCooldown() {
+        return null;
+      },
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+        };
+      },
+    },
+    isTurnDispatchBlocked(bindingKey, workspaceRoot) {
+      reblocked.push([bindingKey, workspaceRoot]);
+      return true;
+    },
+    async dispatchPreparedTurn(payload) {
+      dispatched.push(payload);
+      return true;
+    },
+  };
+
+  const ok = await MossbridgeApp.prototype.dispatchSystemMessage.call(appLike, {
+    id: "checkin-1",
+    accountId: "wx-account",
+    senderId: "user-1",
+    workspaceRoot: "/workspace",
+    text: "A small ordinary check-in window opens.",
+    kind: "checkin_opportunity",
+    priority: "normal",
+    title: "random_checkin",
+    createdAt: "2026-05-18T09:00:00.000Z",
+  });
+
+  assert.equal(ok, true);
+  assert.deepEqual(dispatched, []);
+  assert.deepEqual(reblocked, [["binding:user-1", "/workspace"]]);
 });
 
 test("reply system messages are delivered directly instead of re-entering the runtime", async () => {

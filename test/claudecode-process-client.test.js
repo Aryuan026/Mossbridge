@@ -122,6 +122,39 @@ test("claudecode process client emits distinct item ids for multiple assistant t
   ]);
 });
 
+test("claudecode process client remaps an opening pending turn to the real session id", () => {
+  const client = new ClaudeCodeProcessClient({
+    command: "claude",
+    cwd: "/tmp",
+    env: {},
+  });
+  const events = [];
+  client.onMessage((event) => events.push(event));
+  client.pendingTurnId = "turn-opening";
+  client.activeThreadId = "pending-1779012345678";
+
+  client.handleLine(JSON.stringify({
+    type: "system",
+    session_id: "ace66e8d-adc4-404d-825e-686142a93f88",
+  }));
+
+  assert.equal(client.activeThreadId, "ace66e8d-adc4-404d-825e-686142a93f88");
+  assert.equal(client.sessionId, "ace66e8d-adc4-404d-825e-686142a93f88");
+  assert.deepEqual(events, [
+    {
+      type: "turn.started",
+      turnId: "turn-opening",
+      sessionId: "ace66e8d-adc4-404d-825e-686142a93f88",
+      previousSessionId: "pending-1779012345678",
+      remapped: true,
+    },
+    {
+      type: "session.id",
+      sessionId: "ace66e8d-adc4-404d-825e-686142a93f88",
+    },
+  ]);
+});
+
 test("claudecode process client emits turn.failed when result is an API failure", () => {
   const client = new ClaudeCodeProcessClient({
     command: "claude",

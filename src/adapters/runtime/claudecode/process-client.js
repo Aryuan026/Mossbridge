@@ -146,11 +146,25 @@ class ClaudeCodeProcessClient {
     switch (eventType) {
       case "system":
         if (raw.session_id) {
+          const previousActiveThreadId = this.activeThreadId;
           if (isPendingThreadId(this.activeThreadId)) {
             this.activeThreadId = raw.session_id;
           }
           this.sessionId = raw.session_id;
           this.resumeSessionId = "";
+          if (
+            this.pendingTurnId
+            && previousActiveThreadId
+            && previousActiveThreadId !== this.activeThreadId
+          ) {
+            this.emit({
+              type: "turn.started",
+              turnId: this.pendingTurnId,
+              sessionId: this.activeThreadId || this.sessionId,
+              previousSessionId: previousActiveThreadId,
+              remapped: true,
+            }, raw);
+          }
           this.resolveSessionWaiters(raw.session_id);
           this.emit({ type: "session.id", sessionId: raw.session_id }, raw);
         }

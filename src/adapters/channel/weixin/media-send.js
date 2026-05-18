@@ -162,64 +162,67 @@ async function sendMediaItem({ to, item, contextToken, baseUrl, token }) {
   });
 }
 
-async function sendWeixinMediaFile({ filePath, to, contextToken, baseUrl, token, cdnBaseUrl }) {
-  if (!contextToken) {
-    throw new Error("sendWeixinMediaFile requires contextToken");
-  }
-
-  const mime = getMimeFromFilename(filePath);
-  const uploadOpts = { baseUrl, token };
-
-  if (mime.startsWith("image/")) {
-    const uploaded = await uploadMediaToWeixin({
-      filePath,
-      toUserId: to,
-      opts: uploadOpts,
-      cdnBaseUrl,
-      mediaType: WEIXIN_MEDIA_TYPE.IMAGE,
-    });
-    await sendMediaItem({
-      to,
-      contextToken,
-      baseUrl,
-      token,
-      item: {
-        type: 2,
-        image_item: {
-          media: buildMediaRef(uploaded),
-          aeskey: uploaded.aeskey,
-          mid_size: uploaded.fileSizeCiphertext,
-          hd_size: uploaded.fileSizeCiphertext,
-        },
+async function sendImageMediaFile({ filePath, to, contextToken, baseUrl, token, cdnBaseUrl, uploadOpts }) {
+  const uploaded = await uploadMediaToWeixin({
+    filePath,
+    toUserId: to,
+    opts: uploadOpts,
+    cdnBaseUrl,
+    mediaType: WEIXIN_MEDIA_TYPE.IMAGE,
+  });
+  await sendMediaItem({
+    to,
+    contextToken,
+    baseUrl,
+    token,
+    item: {
+      type: 2,
+      image_item: {
+        media: buildMediaRef(uploaded),
+        aeskey: uploaded.aeskey,
+        mid_size: uploaded.fileSizeCiphertext,
+        hd_size: uploaded.fileSizeCiphertext,
       },
-    });
-    return { kind: "image", fileName: path.basename(filePath) };
-  }
+    },
+  });
+  return { kind: "image", fileName: path.basename(filePath) };
+}
 
-  if (mime.startsWith("video/")) {
-    const uploaded = await uploadMediaToWeixin({
-      filePath,
-      toUserId: to,
-      opts: uploadOpts,
-      cdnBaseUrl,
-      mediaType: WEIXIN_MEDIA_TYPE.VIDEO,
-    });
-    await sendMediaItem({
-      to,
-      contextToken,
-      baseUrl,
-      token,
-      item: {
-        type: 5,
-        video_item: {
-          media: buildMediaRef(uploaded),
-          video_size: uploaded.fileSizeCiphertext,
-        },
+async function sendVideoMediaFile({ filePath, to, contextToken, baseUrl, token, cdnBaseUrl, uploadOpts }) {
+  const uploaded = await uploadMediaToWeixin({
+    filePath,
+    toUserId: to,
+    opts: uploadOpts,
+    cdnBaseUrl,
+    mediaType: WEIXIN_MEDIA_TYPE.VIDEO,
+  });
+  await sendMediaItem({
+    to,
+    contextToken,
+    baseUrl,
+    token,
+    item: {
+      type: 5,
+      video_item: {
+        media: buildMediaRef(uploaded),
+        video_size: uploaded.fileSizeCiphertext,
       },
-    });
-    return { kind: "video", fileName: path.basename(filePath) };
-  }
+    },
+  });
+  return { kind: "video", fileName: path.basename(filePath) };
+}
 
+async function sendGenericFileMediaFile({
+  filePath,
+  to,
+  contextToken,
+  baseUrl,
+  token,
+  cdnBaseUrl,
+  uploadOpts,
+  fallbackFrom = "",
+  fallbackReason = "",
+}) {
   const uploaded = await uploadMediaToWeixin({
     filePath,
     toUserId: to,
@@ -241,7 +244,102 @@ async function sendWeixinMediaFile({ filePath, to, contextToken, baseUrl, token,
       },
     },
   });
-  return { kind: "file", fileName: path.basename(filePath) };
+  return {
+    kind: "file",
+    fileName: path.basename(filePath),
+    fallbackFrom,
+    fallbackReason,
+  };
+}
+
+function shouldFallbackImageAsFile(error) {
+  const apiLabel = String(error?.weixinApi?.label || "");
+  const message = formatMediaError(error).toLowerCase();
+  if (apiLabel === "sendMessage" || message.includes("sendmessage ret=-2")) {
+    return false;
+  }
+  return true;
+}
+
+function formatMediaError(error) {
+  if (error instanceof Error) {
+    return error.message || error.name || "unknown error";
+  }
+  return String(error || "unknown error");
+}
+
+function buildMediaFallbackError(primaryError, fallbackError) {
+  const error = new Error([
+    `Image media delivery failed: ${formatMediaError(primaryError)}`,
+    `file fallback failed: ${formatMediaError(fallbackError)}`,
+  ].join("; "));
+  error.primaryError = primaryError;
+  error.fallbackError = fallbackError;
+  return error;
+}
+
+async function sendWeixinMediaFile({ filePath, to, contextToken, baseUrl, token, cdnBaseUrl }) {
+  if (!contextToken) {
+    throw new Error("sendWeixinMediaFile requires contextToken");
+  }
+
+  const mime = getMimeFromFilename(filePath);
+  const uploadOpts = { baseUrl, token };
+
+  if (mime.startsWith("image/")) {
+    try {
+      return await sendImageMediaFile({
+        filePath,
+        to,
+        contextToken,
+        baseUrl,
+        token,
+        cdnBaseUrl,
+        uploadOpts,
+      });
+    } catch (error) {
+      if (!shouldFallbackImageAsFile(error)) {
+        throw error;
+      }
+      try {
+        return await sendGenericFileMediaFile({
+          filePath,
+          to,
+          contextToken,
+          baseUrl,
+          token,
+          cdnBaseUrl,
+          uploadOpts,
+          fallbackFrom: "image",
+          fallbackReason: formatMediaError(error),
+        });
+      } catch (fallbackError) {
+        throw buildMediaFallbackError(error, fallbackError);
+      }
+    }
+  }
+
+  if (mime.startsWith("video/")) {
+    return sendVideoMediaFile({
+      filePath,
+      to,
+      contextToken,
+      baseUrl,
+      token,
+      cdnBaseUrl,
+      uploadOpts,
+    });
+  }
+
+  return sendGenericFileMediaFile({
+    filePath,
+    to,
+    contextToken,
+    baseUrl,
+    token,
+    cdnBaseUrl,
+    uploadOpts,
+  });
 }
 
 module.exports = { sendWeixinMediaFile };

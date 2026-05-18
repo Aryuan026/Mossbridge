@@ -10,7 +10,10 @@ const {
   DEFAULT_MAX_INTERVAL_MS,
   parseCheckinRangeMinutes,
 } = require("../src/core/checkin-config-store");
-const { persistContextToken } = require("../src/adapters/channel/weixin/context-token-store");
+const {
+  persistContextToken,
+  resolveContextTokenMetadataPath,
+} = require("../src/adapters/channel/weixin/context-token-store");
 const { DeferredSystemReplyStore } = require("../src/core/deferred-system-reply-store");
 const { RuntimeCooldownStore } = require("../src/core/runtime-cooldown-store");
 const { SystemMessageQueueStore } = require("../src/core/system-message-queue-store");
@@ -20,8 +23,10 @@ const {
   resolveCheckinDailyBudget,
   resolveCheckinConversationHeat,
   resolveCheckinContextTokenMaxAgeMs,
+  resolveCheckinQuietState,
   resolveCheckinModelWakePreflight,
   resolveCheckinReadiness,
+  resolveMorningContextTokenGrace,
   resolveCheckinTokenPressureBackoff,
   resolveDailyBudgetPauseMs,
   resolveSystemTurnBudgetPolicy,
@@ -110,6 +115,7 @@ test("checkin readiness skips stale or missing WeChat context tokens", () => {
   const nowMs = Date.now();
   const { config, queue, deferredQueue } = createCheckinReadinessHarness({
     checkinContextTokenMaxAgeMinutes: 10,
+    checkinMorningContextTokenGraceHours: "off",
   });
 
   assert.equal(resolveCheckinContextTokenMaxAgeMs(config), 10 * 60_000);
@@ -147,6 +153,79 @@ test("checkin readiness skips stale or missing WeChat context tokens", () => {
   });
   assert.equal(stale.ready, false);
   assert.equal(stale.reason, "stale_context_token");
+});
+
+test("checkin readiness pauses random proactive wakeups during quiet sleep hours", () => {
+  const { config, queue, deferredQueue } = createCheckinReadinessHarness();
+  const deepNight = Date.parse("2026-05-17T18:30:00.000Z"); // 02:30 in Asia/Shanghai.
+
+  const quiet = resolveCheckinQuietState(config, deepNight);
+  assert.equal(quiet.active, true);
+  assert.equal(quiet.start, "02:00");
+  assert.equal(quiet.end, "07:00");
+
+  const readiness = resolveCheckinReadiness({
+    config,
+    accountId: "account-1",
+    senderId: "user-1",
+    queue,
+    deferredQueue,
+    nowMs: deepNight,
+  });
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.reason, "quiet_hours");
+
+  assert.equal(
+    resolveCheckinQuietState(config, Date.parse("2026-05-17T23:30:00.000Z")).active,
+    false
+  );
+  assert.equal(
+    resolveCheckinQuietState({ checkinQuietHours: "02:00-04:00" }, Date.parse("2026-05-17T20:30:00.000Z")).active,
+    false
+  );
+});
+
+test("checkin readiness allows a morning context-token grace after quiet hours", () => {
+  const updatedAt = "2026-05-17T16:00:00.000Z"; // 00:00 in Asia/Shanghai.
+  const morning = Date.parse("2026-05-18T00:00:00.000Z"); // 08:00 in Asia/Shanghai.
+  const lateMorning = Date.parse("2026-05-18T03:00:00.000Z"); // 11:00 in Asia/Shanghai.
+  const { config, queue, deferredQueue } = createCheckinReadinessHarness({
+    checkinContextTokenMaxAgeMinutes: 6 * 60,
+  });
+  persistContextToken(config, "account-1", "user-1", "ctx-1");
+  fs.writeFileSync(resolveContextTokenMetadataPath(config, "account-1"), JSON.stringify({
+    "user-1": { updatedAt },
+  }, null, 2), "utf8");
+
+  const grace = resolveMorningContextTokenGrace({
+    config,
+    nowMs: morning,
+    tokenAgeMs: morning - Date.parse(updatedAt),
+    normalMaxAgeMs: 6 * 60 * 60_000,
+  });
+  assert.equal(grace.active, true);
+
+  const readiness = resolveCheckinReadiness({
+    config,
+    accountId: "account-1",
+    senderId: "user-1",
+    queue,
+    deferredQueue,
+    nowMs: morning,
+  });
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.contextTokenGrace.reason, "morning_context_token_grace");
+
+  const lateReadiness = resolveCheckinReadiness({
+    config,
+    accountId: "account-1",
+    senderId: "user-1",
+    queue,
+    deferredQueue,
+    nowMs: lateMorning,
+  });
+  assert.equal(lateReadiness.ready, false);
+  assert.equal(lateReadiness.reason, "stale_context_token");
 });
 
 test("checkin readiness skips proactive wakeups while the runtime is cooling down", () => {

@@ -2066,6 +2066,10 @@ class MossbridgeApp {
     });
     const workspaceRoot = prepared.workspaceRoot || this.resolveWorkspaceRoot(userBindingKey);
     if (this.isTurnDispatchBlocked(userBindingKey, workspaceRoot)) {
+      if (isCheckinOpportunityMessage(profiledMessage)) {
+        console.log("[mossbridge] checkin dropped: foreground turn is busy");
+        return true;
+      }
       return false;
     }
     const bindingKey = this.prepareSystemRuntimeBinding({
