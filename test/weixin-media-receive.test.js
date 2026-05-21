@@ -159,6 +159,7 @@ test("persistIncomingWeixinAttachments times out stuck attachment downloads", as
       attachments: [{
         kind: "file",
         fileName: "stuck.pdf",
+        sizeBytes: 2048,
         directUrls: ["https://example.invalid/stuck.pdf"],
       }],
       config: {
@@ -180,6 +181,75 @@ test("persistIncomingWeixinAttachments times out stuck attachment downloads", as
     assert.equal(result.saved.length, 0);
     assert.equal(result.failed.length, 1);
     assert.match(result.failed[0].reason, /timed out/i);
+    assert.equal(result.failed[0].diagnostics.errorCode, "ATTACHMENT_DOWNLOAD_TIMEOUT");
+    assert.equal(result.failed[0].diagnostics.downloadStage, "request");
+    assert.equal(result.failed[0].diagnostics.declaredSizeBytes, 2048);
+    assert.equal(result.failed[0].diagnostics.candidateCount, 1);
+    assert.deepEqual(result.failed[0].diagnostics.referenceTypes, ["direct_url"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("persistIncomingWeixinAttachments times out stuck attachment response bodies", async () => {
+  const originalFetch = global.fetch;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-attachment-body-timeout-"));
+  const workspaceRoot = path.join(tmpDir, "workspace");
+  const stateDir = path.join(tmpDir, "state");
+  let calls = 0;
+  global.fetch = async (_url, options = {}) => {
+    calls += 1;
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get(name) {
+          return String(name || "").toLowerCase() === "content-type" ? "image/jpeg" : "";
+        },
+      },
+      async arrayBuffer() {
+        return await new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            const error = new Error("body aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      },
+    };
+  };
+
+  try {
+    const result = await persistIncomingWeixinAttachments({
+      attachments: [{
+        kind: "image",
+        fileName: "body-stuck.jpg",
+        sizeBytes: 4096,
+        directUrls: ["https://example.invalid/body-stuck.jpg"],
+      }],
+      config: {
+        stateDir,
+        workspaceRoot,
+        workspaceInboxDir: path.join("wechat", "inbox"),
+        workspaceAttachmentNotesDir: path.join("context", "attachment-notes"),
+        workspaceAttachmentJournalFile: path.join("context", "attachment-journal.jsonl"),
+        attachmentDownloadTimeoutMs: 1,
+        attachmentDownloadRetryDelaysMs: [0],
+      },
+      workspaceRoot,
+      stateDir,
+      receivedAt: "2026-05-08T08:00:00.000Z",
+      messageId: "msg-body-timeout",
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(result.saved.length, 0);
+    assert.equal(result.failed.length, 1);
+    assert.match(result.failed[0].reason, /timed out/i);
+    assert.equal(result.failed[0].diagnostics.errorCode, "ATTACHMENT_DOWNLOAD_TIMEOUT");
+    assert.equal(result.failed[0].diagnostics.downloadStage, "response_body");
+    assert.equal(result.failed[0].diagnostics.responseContentType, "image/jpeg");
+    assert.equal(result.failed[0].diagnostics.declaredSizeBytes, 4096);
   } finally {
     global.fetch = originalFetch;
   }

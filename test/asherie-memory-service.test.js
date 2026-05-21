@@ -157,6 +157,70 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
   assert.equal(cacheFiles.some((name) => name.startsWith(`${SINGLE_USER_ID}__`)), true);
 });
 
+test("asherie memory service uses warm-triggered local archive when cold roots miss", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-local-archive-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeLocalArchiveLimit: 2,
+    },
+  });
+
+  const warmWrite = await service.writeWarmMaterial({
+    title: "蓝色发带",
+    summary: "蓝色发带是用户反复提过的一个象征物。",
+    body_markdown: "用户说蓝色发带像一个提醒：不要把自己丢在忙乱里。",
+    tags: ["symbol", "重要的事"],
+    source_query: "我把蓝色发带放进旧盒子里了，之后你要是忘了就提醒我。",
+    source_assistant_text: "记下来了，它是一个旧盒子里的提醒物。",
+  });
+  assert.equal(warmWrite.ok, true);
+  assert.equal(warmWrite.local_archive.material_id, warmWrite.record.material_id);
+  assert.equal(warmWrite.local_archive.snippet_count, 1);
+
+  const warmPacket = await service.captureContextPacket({
+    query: "蓝色发带",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(warmPacket.warm_memory_packet.hit_count, 1);
+
+  const writeback = await service.writebackTurn({
+    query: "宝宝你还记得蓝色发带吗？",
+    assistantTextFinal: "记得，它像你放在旧盒子里的一个提醒。",
+    memoryContextPacket: warmPacket,
+    sourceClient: "mossbridge_wechat",
+  });
+  assert.equal(writeback.local_archive_write.detected, true);
+  assert.equal(writeback.local_archive_write.count, 1);
+
+  const fallbackPacket = await service.captureContextPacket({
+    query: "你还记得蓝色发带这个重要的事吗？",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(fallbackPacket.cold_root_packet.hit_count, 0);
+  assert.equal(fallbackPacket.local_archive_packet.hit_count, 1);
+  assert.ok(fallbackPacket.retrieval.route.includes("gateway_local_archive"));
+  assert.equal(fallbackPacket.retrieval.channel_counts.local_archive_hit_count, 1);
+  assert.match(fallbackPacket.runtime_prelude, /archive-fallback/);
+  assert.match(fallbackPacket.runtime_prelude, /蓝色发带/);
+  assert.match(fallbackPacket.runtime_prelude, /warm_ref=/);
+
+  const archiveDir = path.join(
+    tempRoot,
+    "gateway-data",
+    "storage",
+    "raw_transcript_archive",
+    SINGLE_USER_ID,
+    SINGLE_REALM_ID,
+    SINGLE_AGENT_ID,
+    "warm_materials",
+  );
+  assert.equal(fs.existsSync(archiveDir), true);
+  const archiveFiles = fs.readdirSync(archiveDir).filter((name) => name.endsWith(".json"));
+  assert.equal(archiveFiles.length, 1);
+});
+
 test("asherie memory service honors configured recent context cache limit by default", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-cache-limit-"));
   const service = new AsherieMemoryService({
@@ -509,6 +573,65 @@ test("asherie memory service can search, read, update, delete warm cards and ins
     root_key: "persona_memo:p1",
   });
   assert.equal(deletedRootRead.ok, false);
+});
+
+test("asherie memory service detects duplicate cold roots before exact correction", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-cold-duplicates-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.upsertColdVersion({
+    userId: "demo-user",
+    versionLabel: "v-duplicates",
+    payload: {
+      persona_memos: [
+        { id: "p1", content: "User likes quiet mornings." },
+        { id: "p2", content: "User likes quiet mornings at home." },
+      ],
+      hard_facts: [
+        { id: "f1", fact_key: "timezone", fact_value: "Asia/Shanghai" },
+        { id: "f2", fact_key: "timezone", fact_value: "UTC+8" },
+      ],
+      case_updates: [],
+    },
+  });
+
+  const scan = await service.inspectColdRootDuplicates({
+    userId: "demo-user",
+    query: "timezone",
+  });
+  assert.equal(scan.ok, true);
+  assert.equal(scan.duplicate_cluster_count, 1);
+  assert.deepEqual(scan.clusters[0].root_keys, ["hard_fact:f1", "hard_fact:f2"]);
+  assert.equal(scan.clusters[0].suggested_keep_root_key, "hard_fact:f1");
+  assert.ok(scan.clusters[0].suggested_actions.some((action) => action.tool === "mossbridge_memory_cold_root_read"));
+  assert.ok(scan.clusters[0].suggested_actions.some((action) => action.tool === "mossbridge_memory_cold_patch"));
+
+  const duplicateRead = await service.readColdRoot({
+    userId: "demo-user",
+    root_key: "hard_fact:f2",
+  });
+  assert.equal(duplicateRead.ok, true);
+  assert.equal(duplicateRead.root.item.fact_value, "UTC+8");
+
+  const deleted = await service.patchColdRoot({
+    userId: "demo-user",
+    root_key: "hard_fact:f2",
+    mode: "delete",
+    versionLabel: "v-duplicates-clean",
+  });
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.deleted, true);
+
+  const after = await service.inspectColdRootDuplicates({
+    userId: "demo-user",
+    query: "timezone",
+  });
+  assert.equal(after.duplicate_cluster_count, 0);
 });
 
 test("asherie memory service can recall legacy truth-layer roots even when cold manifest has no active version", async () => {

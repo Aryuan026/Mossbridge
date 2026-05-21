@@ -65,6 +65,7 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 - `storage/episode_journal/`: 有起止的小故事、照片分享、旅行、生活事件、小任务。
 - `storage/case_index/`: 工作日志和 case memory。代码、部署、文件、artifact、测试、架构判断都进这里。
 - `storage/warm_memory/`: 已经稳定、可反复用于回复连续性的事实、偏好、关系锚点和象征物。
+- `storage/raw_transcript_archive/`: 温记忆被自然对话触发时留下的轻量旧档证据；冷根检索失手时最多短量打开，帮助接回语境。
 - `storage/memory_tree/`: 卡与卡为什么相连、关系分支、证据边和拓扑候选。
 
 一条“小事记”如果只是今天随手记一下，留在 notebook；如果它变成有起止的故事，转进 episode；如果它还没解决，挂到 ongoing；如果它变成未来常用的稳定连续性，再由 dreaming 或前台工具沉淀成 warm card。
@@ -93,6 +94,14 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
   "certainty_state": "anchor"
 }
 ```
+
+### `storage/raw_transcript_archive/`
+
+温记忆旧档。它不是另一份冷树，也不是全量聊天记录长期复读层。
+
+当一张 warm card 被写入，或自然对话召回了 warm card 并完成 writeback，Mossbridge 会在这里维护一个对应的轻量证据盒：卡片摘要、少量来源片段、相关 episode/case refs。之后如果用户显式问长期背景、冷根检索被触发但没有命中，bridge 才会把最多几条 `archive-fallback` 递给 runtime。
+
+这个层的用法是“冷记忆失手时打开旧档看一眼”，不是“每轮都多查一遍”。它帮助模型接回语境，但不把旧档内容自动升级成稳定事实；稳定化仍然应该走 warm/cold 的正常整理链。
 
 ### `storage/ongoing_tracks.json`
 
@@ -339,6 +348,8 @@ Bridge 自己的轻量关系树预留位。
 - 不负责日常人格连续性。
 - 不应该把所有关系记忆都压进这里再期待它主动浮现。
 
+前台模型遇到“你记错了”“这两张卡重复了”这类纠错时，冷层应该走可审计的小闭环：先用 `mossbridge_memory_cold_duplicates` 或 `mossbridge_memory_cold_search` 检查候选 root，再用 `mossbridge_memory_cold_root_read` 读取精确内容，最后只对明确的 `root_key` 调 `mossbridge_memory_cold_patch` 做 merge/replace/delete。不要因为纠错就新写一张相似卡；如果只是疑似重复，先保留证据，等用户确认或 dreaming 再整理。
+
 如果冷层召回不稳定，bridge 仍应能依靠温层、ongoing 和近期尾巴正常对话。
 
 冷层真正不可替代的价值不是“多存一份文字”，而是结构关系。
@@ -385,6 +396,17 @@ Bridge 自己的轻量关系树预留位。
   "decisions": [],
   "followups": [],
   "source_refs": [],
+  "related_cold_refs": [],
+  "case_folders": {
+    "root": ".",
+    "original_request": "01_original_request",
+    "working_versions": "02_working_versions",
+    "user_approved_final": "03_user_approved_final"
+  },
+  "cleanup_policy": {
+    "working_versions_cleanup": "human_confirmed_only",
+    "ai_may_delete_working_versions": false
+  },
   "agent_id": "moss",
   "owner_id": "owner",
   "created_at": "2026-05-01T00:00:00.000Z",
@@ -393,6 +415,14 @@ Bridge 自己的轻量关系树预留位。
 ```
 
 Case index 不应该在每轮亲密闲聊里强行注入。它更适合在用户问“你之前怎么修的”“那个项目在哪”“我们做过哪些 case”时被召回。
+
+每个 `case_id` 都会落成一个三格工作档案盒：
+
+- `01_original_request/`：人类原始要求、附件说明、初始约束。
+- `02_working_versions/`：AI 协作中的草稿、中间版本、诊断文件。
+- `03_user_approved_final/`：用户明确认可或重新发回的终稿。
+
+`case.json` 里只写相对文件夹契约，不写本机绝对路径；运行时读取时才投影出 `case_workspace` 绝对路径。这样本地、服务器和公开部署之间可以迁移同一份 case 数据。
 
 如果某张温卡是从一个 case 中沉淀出来的长期经验、偏好或系统结论，应在温卡上写 `case_refs`。如果这张温卡后续进入冷层，promotion 必须保留 `case_refs`，让冷根能回看对应 case，而不是把工程细节复制进冷树。
 
@@ -549,6 +579,7 @@ app_daily_captures / conversation_cache / notebook / hot -> dreaming -> warm_mem
 - 网页 AI 每日抓取先进入 `app_daily_captures`，再归一化进 `conversation_cache` 和 `hot`；自动浏览器插件成熟前也可以手动导入 bundle。
 - 后续如果启用跨端固有记忆，再通过 `notion_sync` 与 Notion 的 `memory_entries` / `source_topics` 对齐。
 - 半年仍反复出现并稳定下来的 ongoing，可再整理成温层事实或 case 总结。
+- 重复或高度相似的温卡不应该继续写成第三张温卡；dreaming 应把它们聚合成冷层结构/拓扑候选，并保留 `source_material_ids`、`source_archive_refs`、`episode_refs`、`case_refs`。
 - 不要把短期事件默认推进冷层。
 
 如果 bridge 和另一个本地前台共用 `conversation_cache`，dreaming 应该按事件和时间窗口整理，而不是按“来自微信/来自某个前端”切开。

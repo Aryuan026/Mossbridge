@@ -161,7 +161,7 @@ MossbridgeData/
 - `storage/truth_layer/`
   兼容旧冷树或更深层归档。新部署可以先空着。
 - `storage/case_index/`
-  记录“这个 agent 帮用户做过什么事”的工作索引。第一阶段可以先用 JSON/Markdown。
+  记录“这个 agent 帮用户做过什么事”的工作索引。每个 `case_id` 会有 `01_original_request/`、`02_working_versions/`、`03_user_approved_final/` 三格文件夹；第一阶段可以先用 JSON/Markdown 和本地文件夹，不自动同步云端。
 - `storage/notion_sync/`
   后续 Notion 固有记忆同步的中间层。第一版只保留为未来扩展仓位，不接入部署路径。
 - `cache/app_daily_captures/`

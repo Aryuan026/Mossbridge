@@ -18,6 +18,7 @@ test("case index store writes work provenance without requiring runtime injectio
     kind: "system_architecture",
     summary: "Make random checkins recall recent conversation tail before long-term memory.",
     user_goal: "Avoid wrong proactive topics in WeChat.",
+    related_cold_refs: ["cold:project/proactive-memory"],
     changed_files: ["src/services/asherie-memory-service.js"],
     tests: [{ command: "node --test test/asherie-memory-service.test.js", status: "planned" }],
     decisions: [{ summary: "Keep case index quiet unless explicitly searched." }],
@@ -25,7 +26,18 @@ test("case index store writes work provenance without requiring runtime injectio
 
   assert.equal(created.case_id, "bridge-proactive-memory-2026-05-06");
   assert.equal(created.event_count, 0);
+  assert.equal(created.case_folders.original_request, "01_original_request");
+  assert.equal(created.case_folders.working_versions, "02_working_versions");
+  assert.equal(created.case_folders.user_approved_final, "03_user_approved_final");
+  assert.equal(created.cleanup_policy.ai_may_delete_working_versions, false);
+  assert.deepEqual(created.related_cold_refs, ["cold:project/proactive-memory"]);
+  assert.ok(fs.existsSync(created.case_workspace.original_request_dir));
+  assert.ok(fs.existsSync(created.case_workspace.working_versions_dir));
+  assert.ok(fs.existsSync(created.case_workspace.user_approved_final_dir));
   assert.ok(fs.existsSync(created.markdown_path));
+  const storedCase = JSON.parse(fs.readFileSync(path.join(created.case_dir, "case.json"), "utf8"));
+  assert.equal(storedCase.case_folders.root, ".");
+  assert.equal(JSON.stringify(storedCase.case_folders).includes(root), false);
 
   const event = store.appendEvent("owner", created.case_id, {
     realm_id: "default",
@@ -75,6 +87,7 @@ test("case index store writes work provenance without requiring runtime injectio
   assert.equal(exported.ok, true);
   const markdown = fs.readFileSync(exported.path, "utf8");
   assert.match(markdown, /Bridge proactive memory repair/);
+  assert.match(markdown, /02_working_versions/);
   assert.match(markdown, /user_approved_final/);
   assert.match(markdown, /CASE-20260509-001/);
 });

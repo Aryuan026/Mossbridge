@@ -43,6 +43,35 @@ class ColdRootStore {
     };
   }
 
+  inspectDuplicateRoots(args = {}) {
+    const scope = this.resolveScope(args);
+    const index = this.ensureProjection({
+      ...scope,
+      version: normalizeText(args.version),
+    });
+    const rows = Array.isArray(index.roots) ? index.roots : [];
+    const query = normalizeText(args.query || args.text);
+    const limit = clampLimit(args.limit, 8, 1, 30);
+    const maxRows = clampLimit(args.max_rows ?? args.maxRows, 220, 1, 500);
+    const minScore = clampDuplicateScore(args.min_score ?? args.minScore, 78);
+    const candidateRows = query
+      ? scoreRootRows(rows, query, maxRows, { minScore: 1 })
+      : rows.slice(0, maxRows);
+    const clusters = buildDuplicateRootClusters(candidateRows, { limit, minScore });
+    return {
+      ok: true,
+      user_id: scope.userId,
+      realm_id: scope.realmId,
+      agent_id: scope.agentId,
+      active_version: index.source_version || null,
+      source_kind: normalizeText(index.source_kind) || "memory_version",
+      total_root_count: rows.length,
+      scanned_root_count: candidateRows.length,
+      duplicate_cluster_count: clusters.length,
+      clusters,
+    };
+  }
+
   expandRootVines(args = {}) {
     const scope = this.resolveScope(args);
     const rootKeys = normalizeRootKeys(args.root_keys || args.rootKeys || args.root_key || args.rootKey);
@@ -490,6 +519,289 @@ function findRootRow(index, rootKey) {
   return rows.find((row) => normalizeText(row.root_key) === normalizeText(rootKey)) || null;
 }
 
+function buildDuplicateRootClusters(rows, { limit = 8, minScore = 78 } = {}) {
+  const uniqueRows = uniqueRootRows(rows);
+  if (uniqueRows.length < 2) {
+    return [];
+  }
+  const pairs = [];
+  for (let leftIndex = 0; leftIndex < uniqueRows.length - 1; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < uniqueRows.length; rightIndex += 1) {
+      const scored = scoreDuplicateRootPair(uniqueRows[leftIndex], uniqueRows[rightIndex]);
+      if (scored.score >= minScore) {
+        pairs.push({
+          left: normalizeText(uniqueRows[leftIndex].root_key),
+          right: normalizeText(uniqueRows[rightIndex].root_key),
+          score: scored.score,
+          reason: scored.reason,
+        });
+      }
+    }
+  }
+  if (!pairs.length) {
+    return [];
+  }
+
+  const parent = new Map(uniqueRows.map((row) => [normalizeText(row.root_key), normalizeText(row.root_key)]));
+  const find = (key) => {
+    const current = parent.get(key) || key;
+    if (current === key) {
+      return key;
+    }
+    const root = find(current);
+    parent.set(key, root);
+    return root;
+  };
+  const union = (left, right) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+    }
+  };
+  pairs.forEach((pair) => union(pair.left, pair.right));
+
+  const grouped = new Map();
+  uniqueRows.forEach((row) => {
+    const key = normalizeText(row.root_key);
+    const root = find(key);
+    if (!grouped.has(root)) {
+      grouped.set(root, []);
+    }
+    grouped.get(root).push(row);
+  });
+
+  return [...grouped.values()]
+    .filter((groupRows) => groupRows.length > 1)
+    .map((groupRows, clusterIndex) => {
+      const rootKeys = new Set(groupRows.map((row) => normalizeText(row.root_key)));
+      const groupPairs = pairs.filter((pair) => rootKeys.has(pair.left) && rootKeys.has(pair.right));
+      const keepRoot = chooseDuplicateKeepRoot(groupRows);
+      const duplicateRows = groupRows.filter((row) => normalizeText(row.root_key) !== normalizeText(keepRoot?.root_key));
+      return {
+        cluster_id: `cold_dup_${String(clusterIndex + 1).padStart(2, "0")}`,
+        score: Math.max(...groupPairs.map((pair) => pair.score)),
+        reasons: uniqueTexts(groupPairs.map((pair) => pair.reason)).slice(0, 4),
+        root_keys: sortRootRows(groupRows).map((row) => normalizeText(row.root_key)),
+        suggested_keep_root_key: normalizeText(keepRoot?.root_key),
+        roots: sortRootRows(groupRows).map(summarizeDuplicateRootRow),
+        suggested_actions: [
+          ...sortRootRows(groupRows).map((row) => ({
+            tool: "mossbridge_memory_cold_root_read",
+            root_key: normalizeText(row.root_key),
+            reason: "Read exact root content before changing cold memory.",
+          })),
+          {
+            tool: "mossbridge_memory_cold_patch",
+            root_key: normalizeText(keepRoot?.root_key),
+            mode: "merge",
+            reason: "If the roots contain complementary evidence, merge verified fields into this root first.",
+          },
+          ...sortRootRows(duplicateRows).map((row) => ({
+            tool: "mossbridge_memory_cold_patch",
+            root_key: normalizeText(row.root_key),
+            mode: "delete",
+            reason: "Delete only after merged evidence or explicit user confirmation that this root is stale.",
+          })),
+        ],
+      };
+    })
+    .sort((left, right) => {
+      const scoreDiff = (Number(right.score) || 0) - (Number(left.score) || 0);
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+      const sizeDiff = right.root_keys.length - left.root_keys.length;
+      if (sizeDiff !== 0) {
+        return sizeDiff;
+      }
+      return String(left.root_keys[0] || "").localeCompare(String(right.root_keys[0] || ""));
+    })
+    .slice(0, limit)
+    .map((cluster, index) => ({
+      ...cluster,
+      cluster_id: `cold_dup_${String(index + 1).padStart(2, "0")}`,
+    }));
+}
+
+function uniqueRootRows(rows) {
+  const seen = new Set();
+  const output = [];
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rootKey = normalizeText(row?.root_key);
+    if (!rootKey || seen.has(rootKey)) {
+      return;
+    }
+    seen.add(rootKey);
+    output.push(row);
+  });
+  return output;
+}
+
+function scoreDuplicateRootPair(left, right) {
+  const leftSource = normalizeText(left?.source_type);
+  const rightSource = normalizeText(right?.source_type);
+  const sameSource = leftSource && leftSource === rightSource;
+  const leftIdentity = duplicateIdentityKey(left);
+  const rightIdentity = duplicateIdentityKey(right);
+  if (sameSource && leftIdentity && leftIdentity === rightIdentity) {
+    return { score: 100, reason: "same source type and normalized root identity" };
+  }
+
+  const leftFingerprint = duplicateTextFingerprint(left);
+  const rightFingerprint = duplicateTextFingerprint(right);
+  if (leftFingerprint && leftFingerprint === rightFingerprint) {
+    return { score: sameSource ? 96 : 88, reason: "same normalized root text" };
+  }
+
+  const leftLabel = duplicateLabel(left);
+  const rightLabel = duplicateLabel(right);
+  if (leftLabel && leftLabel === rightLabel) {
+    return { score: sameSource ? 92 : 82, reason: "same normalized root label" };
+  }
+
+  const overlapScore = scoreDuplicateTokenOverlap(left, right);
+  if (!overlapScore) {
+    return { score: 0, reason: "" };
+  }
+  const adjustedScore = sameSource ? overlapScore : Math.min(overlapScore, 74);
+  return {
+    score: adjustedScore,
+    reason: "high title/summary token overlap",
+  };
+}
+
+function duplicateIdentityKey(row) {
+  const sourceType = normalizeText(row?.source_type);
+  const label = duplicateLabel(row);
+  if (!sourceType || !label) {
+    return "";
+  }
+  if (sourceType === "hard_fact") {
+    return `${sourceType}:${label}`;
+  }
+  const fingerprint = duplicateTextFingerprint(row);
+  return fingerprint ? `${sourceType}:${fingerprint}` : `${sourceType}:${label}`;
+}
+
+function duplicateLabel(row) {
+  return normalizeDuplicateText([
+    row?.canonical_name,
+    row?.tree_path,
+    row?.title,
+  ].map(normalizeText).find(Boolean));
+}
+
+function duplicateTextFingerprint(row) {
+  return normalizeDuplicateText([
+    row?.source_type,
+    row?.title,
+    row?.summary,
+    Array.isArray(row?.tags) ? row.tags.join(" ") : "",
+  ].join(" "));
+}
+
+function scoreDuplicateTokenOverlap(left, right) {
+  const leftTokens = duplicateTokenSet(left);
+  const rightTokens = duplicateTokenSet(right);
+  if (leftTokens.size < 3 || rightTokens.size < 3) {
+    return 0;
+  }
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  if (!intersection) {
+    return 0;
+  }
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  const jaccard = intersection / union;
+  const coverage = intersection / Math.min(leftTokens.size, rightTokens.size);
+  return Math.round(Math.max(jaccard * 100, coverage * 86));
+}
+
+function duplicateTokenSet(row) {
+  const text = [
+    row?.title,
+    row?.summary,
+    Array.isArray(row?.tags) ? row.tags.join(" ") : "",
+  ].map(normalizeText).filter(Boolean).join(" ");
+  return new Set(tokenizeQuery(text).filter((token) => !isDuplicateStopToken(token)));
+}
+
+function isDuplicateStopToken(token) {
+  const normalized = normalizeText(token).toLowerCase();
+  return !normalized || [
+    "user",
+    "uses",
+    "like",
+    "likes",
+    "want",
+    "wants",
+    "needs",
+    "prefers",
+    "this",
+    "that",
+    "with",
+    "from",
+    "the",
+    "and",
+  ].includes(normalized);
+}
+
+function chooseDuplicateKeepRoot(rows) {
+  return sortRootRows(rows)
+    .slice()
+    .sort((left, right) => {
+      const qualityDiff = scoreRootQuality(right) - scoreRootQuality(left);
+      if (qualityDiff !== 0) {
+        return qualityDiff;
+      }
+      const leftIndex = Number.isInteger(Number(left?.item_index)) ? Number(left.item_index) : Number.MAX_SAFE_INTEGER;
+      const rightIndex = Number.isInteger(Number(right?.item_index)) ? Number(right.item_index) : Number.MAX_SAFE_INTEGER;
+      if (leftIndex !== rightIndex) {
+        return leftIndex - rightIndex;
+      }
+      return normalizeText(left?.root_key).localeCompare(normalizeText(right?.root_key));
+    })[0] || null;
+}
+
+function scoreRootQuality(row) {
+  const summaryLength = normalizeText(row?.summary).length;
+  const tagCount = Array.isArray(row?.tags) ? row.tags.length : 0;
+  const idBonus = normalizeText(row?.item_id) ? 8 : 0;
+  const legacyBonus = (Number(row?.version_count) || 0) + (Number(row?.branch_count) || 0);
+  return Math.min(80, summaryLength) + (tagCount * 6) + idBonus + legacyBonus;
+}
+
+function summarizeDuplicateRootRow(row) {
+  return {
+    root_key: normalizeText(row?.root_key),
+    source_type: normalizeText(row?.source_type),
+    payload_section: normalizeText(row?.payload_section),
+    title: normalizeText(row?.title),
+    canonical_name: normalizeText(row?.canonical_name),
+    summary: normalizeText(row?.summary),
+    tags: Array.isArray(row?.tags) ? row.tags.map((tag) => normalizeText(tag)).filter(Boolean).slice(0, 8) : [],
+    item_id: normalizeText(row?.item_id),
+    item_index: Number.isFinite(Number(row?.item_index)) ? Number(row.item_index) : null,
+    file: normalizeText(row?.file),
+  };
+}
+
+function sortRootRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .slice()
+    .sort((left, right) => {
+      const sourceDiff = normalizeText(left?.source_type).localeCompare(normalizeText(right?.source_type));
+      if (sourceDiff !== 0) {
+        return sourceDiff;
+      }
+      const titleDiff = normalizeText(left?.title).localeCompare(normalizeText(right?.title));
+      if (titleDiff !== 0) {
+        return titleDiff;
+      }
+      return normalizeText(left?.root_key).localeCompare(normalizeText(right?.root_key));
+    });
+}
+
 function resolveLegacySnapshotPointer(baseDir, scope) {
   const candidates = [
     {
@@ -897,6 +1209,14 @@ function clampLimit(value, fallback, min = 1, max = 50) {
   return Math.min(max, Math.max(min, Math.trunc(numeric)));
 }
 
+function clampDuplicateScore(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(100, Math.max(50, Math.trunc(numeric)));
+}
+
 function normalizePatchMode(value) {
   const mode = normalizeText(value).toLowerCase();
   if (mode === "replace" || mode === "delete") {
@@ -918,6 +1238,26 @@ function normalizeRootKeys(value) {
         output.push(item);
       }
     });
+  return output;
+}
+
+function normalizeDuplicateText(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "");
+}
+
+function uniqueTexts(values) {
+  const seen = new Set();
+  const output = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = normalizeText(value);
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    output.push(normalized);
+  });
   return output;
 }
 

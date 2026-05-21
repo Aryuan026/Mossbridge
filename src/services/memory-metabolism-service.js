@@ -268,10 +268,34 @@ class MemoryMetabolismService {
       .map(compactSourceRecord);
     return {
       records,
+      warmDuplicateClusters: this.collectWarmDuplicateClusters({ userId, limit: 6 }),
       stats: recent.stats || {},
       scoped_user_id: scopes.scopedUserId,
       cutoff_utc: new Date(cutoffMs).toISOString(),
     };
+  }
+
+  collectWarmDuplicateClusters({ userId = "", limit = 6 } = {}) {
+    if (!this.memoryService?.warmMemoryStore || typeof this.memoryService.resolveScopes !== "function") {
+      return [];
+    }
+    try {
+      const scopes = this.memoryService.resolveScopes({ userId });
+      const index = this.memoryService.warmMemoryStore.readIndex(scopes.warmScope);
+      const records = Object.values(index || {});
+      return identifyDuplicateWarmClusters(records)
+        .slice(0, Math.max(1, Number(limit) || 6))
+        .map((cluster) => ({
+          score: cluster.score,
+          material_ids: cluster.materialIds,
+          titles: cluster.records.map((record) => normalizeText(record.title)).filter(Boolean).slice(0, 6),
+          source_archive_refs: uniqueStrings(cluster.records.flatMap((record) => normalizeStringList(record.source_archive_refs))).slice(0, 12),
+          episode_refs: uniqueStrings(cluster.records.flatMap((record) => normalizeStringList(record.episode_refs))).slice(0, 12),
+          case_refs: uniqueStrings(cluster.records.flatMap((record) => normalizeStringList(record.case_refs))).slice(0, 12),
+        }));
+    } catch {
+      return [];
+    }
   }
 
   createAttempt({
@@ -282,6 +306,9 @@ class MemoryMetabolismService {
     nowMs = Date.now(),
   } = {}) {
     const records = Array.isArray(source.records) ? source.records : [];
+    const warmDuplicateClusters = Array.isArray(source.warmDuplicateClusters)
+      ? source.warmDuplicateClusters
+      : [];
     const sourceRecordIds = records.map((record) => normalizeText(record.record_id)).filter(Boolean);
     const timestamps = records
       .map((record) => Date.parse(record.ts_utc || ""))
@@ -300,6 +327,7 @@ class MemoryMetabolismService {
       source_window_end_utc: new Date(endMs).toISOString(),
       source_record_ids: sourceRecordIds,
       source_records: records,
+      warm_duplicate_clusters: warmDuplicateClusters,
       receipts: [],
       retry_count: 0,
     };
@@ -628,6 +656,7 @@ function buildDreamingTriggerText(attempt = {}) {
     "",
     "This is a quiet memory-metabolism pass. Review the source digest, then decide whether any small grounded memory mutation belongs in Mossbridge's local brain.",
     "Allowed routes: warm memory, ongoing tracks, observation journal, episode journal, case index, cold-root patch/version, solitude journal, or no-op when there is no durable candidate.",
+    "Duplicate warm-card consolidation is a first-class dreaming job: if warm cards clearly describe the same stable subject, consolidate the relationship/structure into cold memory while preserving source_material_ids, source_archive_refs, episode_refs, and case_refs. Do not delete source warm cards automatically.",
     "Do not write operational failures, quota notices, debug chatter, raw hidden chain-of-thought, credentials, or ungrounded guesses into memory.",
     "After successful mutations, call mossbridge_memory_metabolism_receipt_write with this attempt_id, source record ids, mutation_count, mutation summaries, and a short shareable summary.",
     "If nothing should be promoted, call the same receipt tool with status=no_op and mutation_count=0. A final JSON reply without this receipt is treated as an incomplete dreaming attempt and will be retried.",
@@ -635,6 +664,9 @@ function buildDreamingTriggerText(attempt = {}) {
     "",
     "Source digest:",
     ...formatSourceDigest(attempt.source_records),
+    "",
+    "Warm duplicate cluster candidates:",
+    ...formatWarmDuplicateClusters(attempt.warm_duplicate_clusters),
   ];
   return lines.join("\n").trim();
 }
@@ -649,6 +681,254 @@ function formatSourceDigest(records = []) {
     record.query ? `user: ${truncateText(record.query, 420)}` : "",
     record.assistant_text_final ? `assistant: ${truncateText(record.assistant_text_final, 420)}` : "",
   ].filter(Boolean).join("\n"));
+}
+
+function formatWarmDuplicateClusters(clusters = []) {
+  const source = Array.isArray(clusters) ? clusters : [];
+  if (!source.length) {
+    return ["(none detected)"];
+  }
+  return source.map((cluster, index) => {
+    const ids = normalizeStringList(cluster.material_ids || cluster.materialIds);
+    const titles = normalizeStringList(cluster.titles);
+    const sourceRefs = normalizeStringList(cluster.source_archive_refs || cluster.sourceArchiveRefs);
+    const episodeRefs = normalizeStringList(cluster.episode_refs || cluster.episodeRefs);
+    const caseRefs = normalizeStringList(cluster.case_refs || cluster.caseRefs);
+    return [
+      `[${index + 1}] score=${Number(cluster.score || 0).toFixed(3)} ids=${ids.join(", ")}`,
+      titles.length ? `titles: ${titles.map((item) => truncateText(item, 120)).join(" | ")}` : "",
+      sourceRefs.length ? `source_archive_refs: ${sourceRefs.join(", ")}` : "",
+      episodeRefs.length ? `episode_refs: ${episodeRefs.join(", ")}` : "",
+      caseRefs.length ? `case_refs: ${caseRefs.join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+  });
+}
+
+function identifyDuplicateWarmClusters(warmRecords = [], { minSimilarity = 0.50, scanLimit = 240 } = {}) {
+  const records = (Array.isArray(warmRecords) ? warmRecords : [])
+    .slice(0, Math.max(1, Number(scanLimit) || 240))
+    .filter((record) => record && typeof record === "object" && isDuplicateClusterCandidate(record));
+  if (records.length < 2) {
+    return [];
+  }
+  const parent = records.map((_, index) => index);
+  const pairScores = new Map();
+  const find = (index) => {
+    let current = index;
+    while (parent[current] !== current) {
+      parent[current] = parent[parent[current]];
+      current = parent[current];
+    }
+    return current;
+  };
+  const union = (left, right) => {
+    const rootLeft = find(left);
+    const rootRight = find(right);
+    if (rootLeft !== rootRight) {
+      parent[rootRight] = rootLeft;
+    }
+  };
+  for (let leftIndex = 0; leftIndex < records.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < records.length; rightIndex += 1) {
+      const score = warmDuplicateScore(records[leftIndex], records[rightIndex]);
+      if (score < Number(minSimilarity)) {
+        continue;
+      }
+      pairScores.set(`${leftIndex}:${rightIndex}`, score);
+      union(leftIndex, rightIndex);
+    }
+  }
+  const groups = new Map();
+  records.forEach((_, index) => {
+    const root = find(index);
+    groups.set(root, [...(groups.get(root) || []), index]);
+  });
+  return [...groups.values()]
+    .filter((indices) => indices.length >= 2)
+    .map((indices) => {
+      const materialIds = uniqueStrings(indices.map((index) => normalizeText(records[index].material_id)));
+      const localScores = [];
+      for (const [key, score] of pairScores.entries()) {
+        const [left, right] = key.split(":").map((item) => Number(item));
+        if (indices.includes(left) && indices.includes(right)) {
+          localScores.push(score);
+        }
+      }
+      return {
+        materialIds,
+        records: indices.map((index) => records[index]),
+        score: Math.max(...localScores, 0),
+      };
+    })
+    .filter((cluster) => cluster.materialIds.length >= 2)
+    .sort((left, right) => (right.score - left.score) || (right.materialIds.length - left.materialIds.length));
+}
+
+const SHORT_CYCLE_TAGS = new Set([
+  "ongoing", "active", "open_loop", "deadline", "todo", "task", "in_progress", "current",
+  "近期追踪", "进行中", "未收口", "待办", "任务", "热记忆", "今日场景",
+]);
+const CLOSED_CYCLE_TAGS = new Set(["closed", "completed", "done", "settled", "已收口", "已完成", "完成"]);
+const STRUCTURAL_TAGS = new Set([
+  "anchor", "identity", "relationship", "family", "person", "people", "thing", "object", "symbol",
+  "nickname", "alias", "锚点", "身份", "关系", "家族", "家庭", "亲属", "人物", "人际", "象征物", "物件", "别名",
+]);
+const GENERIC_CLUSTER_TAGS = new Set(["rikkahub导入", "长期记忆", "legacy", "imported", "导入", "memo", "note", "dreaming", "温卡聚合", "warm_cluster"]);
+const CLUSTER_STOP_TOKENS = new Set([
+  "一个", "一种", "一些", "这个", "那个", "现在", "今天", "明天", "昨天", "已经", "还是", "没有", "可以", "需要",
+  "觉得", "知道", "因为", "所以", "但是", "不过", "如果", "就是", "我们", "你们", "他们", "信息", "内容", "记录",
+  "系统", "记忆", "温卡", "冷树", "dreaming", "阿鸢", "阿霁", "用户", "长期", "导入", "年月", "月日", "年日",
+]);
+
+function isDuplicateClusterCandidate(record = {}) {
+  if (!normalizeText(record.material_id)) {
+    return false;
+  }
+  const tags = recordTags(record);
+  if (tags.some((tag) => ["warm_clustered", "clustered", "superseded"].includes(tag))) {
+    return false;
+  }
+  const shortCycle = tags.some((tag) => SHORT_CYCLE_TAGS.has(tag));
+  const closed = tags.some((tag) => CLOSED_CYCLE_TAGS.has(tag));
+  if (shortCycle && !closed) {
+    return isStructuralRecord(record);
+  }
+  return true;
+}
+
+function isStructuralRecord(record = {}) {
+  const tags = recordTags(record);
+  if (tags.some((tag) => STRUCTURAL_TAGS.has(tag))) {
+    return true;
+  }
+  return ["person", "relationship", "identity", "thing", "object"].includes(normalizeText(record.material_type).toLowerCase());
+}
+
+function warmDuplicateScore(left = {}, right = {}) {
+  const leftTokens = clusterTokens(left);
+  const rightTokens = clusterTokens(right);
+  const shared = intersection(leftTokens, rightTokens);
+  if (shared.size < 4) {
+    return 0;
+  }
+  const tokenOverlap = setOverlapRatio(leftTokens, rightTokens);
+  const unionSize = Math.max(1, new Set([...leftTokens, ...rightTokens]).size);
+  const jaccard = shared.size / unionSize;
+  const titleRatio = sequenceRatio(clusterCompareText(left.title, 140), clusterCompareText(right.title, 140));
+  const summaryRatio = sequenceRatio(clusterCompareText(left.summary, 220), clusterCompareText(right.summary, 220));
+  const tagOverlap = setOverlapRatio(meaningfulTags(left), meaningfulTags(right));
+  const refOverlap = setOverlapRatio(warmRecordRefSet(left), warmRecordRefSet(right));
+  if (refOverlap <= 0 && tagOverlap <= 0 && titleRatio < 0.32 && summaryRatio < 0.34 && tokenOverlap < 0.24) {
+    return 0;
+  }
+  const score = Math.max(
+    0.58 * titleRatio + 0.24 * summaryRatio + 0.18 * tagOverlap,
+    0.40 * summaryRatio + 0.34 * tokenOverlap + 0.16 * tagOverlap + 0.18 * refOverlap,
+    0.32 * jaccard + 0.34 * tokenOverlap + 0.22 * titleRatio + 0.18 * refOverlap,
+  ) + (refOverlap > 0 ? 0.08 : 0);
+  return Math.min(1, Number(score.toFixed(4)));
+}
+
+function clusterTokens(record = {}) {
+  const text = [
+    record.title,
+    record.summary,
+    normalizeText(record.body_markdown).slice(0, 900),
+    ...normalizeStringList(record.tags),
+    ...normalizeStringList(record.entities),
+    ...normalizeStringList(record.aliases),
+    record.storyline_id,
+    record.memory_family,
+  ].map(normalizeText).join(" ").toLowerCase();
+  const tokens = new Set();
+  text.split(/[\s,，。！？!?:：;；、【】\[\]（）()<>《》/\\|]+/u).forEach((part) => {
+    const token = normalizeText(part);
+    if (/^\d+(?:\.\d+)?$/.test(token)) {
+      return;
+    }
+    if (token.length >= 2 && !CLUSTER_STOP_TOKENS.has(token)) {
+      tokens.add(token);
+    }
+  });
+  const cjk = [...text].filter((char) => char >= "\u4e00" && char <= "\u9fff");
+  [2, 3].forEach((size) => {
+    for (let index = 0; index <= cjk.length - size; index += 1) {
+      const token = cjk.slice(index, index + size).join("");
+      if (!CLUSTER_STOP_TOKENS.has(token)) {
+        tokens.add(token);
+      }
+    }
+  });
+  return tokens;
+}
+
+function clusterCompareText(value, limit = 260) {
+  let text = normalizeText(value).toLowerCase().slice(0, Math.max(1, Number(limit) || 260));
+  text = text.replace(/20\d{2}\s*年\s*\d{1,2}\s*月\s*\d{0,2}\s*日?/g, " ");
+  text = text.replace(/\d+(?:\.\d+)?/g, " ");
+  ["阿鸢", "阿霁", "用户", "长期记忆", "rikkahub导入"].forEach((token) => {
+    text = text.replaceAll(token.toLowerCase(), " ");
+  });
+  return text.replace(/[\s,，。！？!?:：;；、【】\[\]（）()<>《》/\\|"“”'‘’\-]+/gu, "");
+}
+
+function sequenceRatio(left = "", right = "") {
+  const a = normalizeText(left);
+  const b = normalizeText(right);
+  if (!a || !b) {
+    return 0;
+  }
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return (2 * dp[a.length][b.length]) / Math.max(1, a.length + b.length);
+}
+
+function recordTags(record = {}) {
+  return normalizeStringList(record.tags).map((tag) => tag.toLowerCase());
+}
+
+function meaningfulTags(record = {}) {
+  return new Set(recordTags(record).filter((tag) => tag && !GENERIC_CLUSTER_TAGS.has(tag)));
+}
+
+function warmRecordRefSet(record = {}) {
+  return new Set([
+    ...normalizeStringList(record.source_archive_refs),
+    ...normalizeStringList(record.episode_refs),
+    ...normalizeStringList(record.case_refs),
+    ...normalizeStringList(record.provenance_refs),
+  ]);
+}
+
+function setOverlapRatio(left = new Set(), right = new Set()) {
+  if (!left.size || !right.size) {
+    return 0;
+  }
+  return intersection(left, right).size / Math.max(1, Math.min(left.size, right.size));
+}
+
+function intersection(left = new Set(), right = new Set()) {
+  return new Set([...left].filter((item) => right.has(item)));
+}
+
+function uniqueStrings(value = []) {
+  const seen = new Set();
+  const output = [];
+  for (const item of Array.isArray(value) ? value : [value]) {
+    const text = normalizeText(item);
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    output.push(text);
+  }
+  return output;
 }
 
 function isDreamingSystemTurn(systemTurn = {}) {

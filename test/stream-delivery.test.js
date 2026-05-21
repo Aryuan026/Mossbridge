@@ -8,7 +8,13 @@ const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 ==
 const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
-function createHarness({ sendText, getKnownContextTokens, onOutboundDelivery } = {}) {
+function createHarness({
+  sendText,
+  getKnownContextTokens,
+  onOutboundDelivery,
+  onDeferredSystemReply,
+  transientDeliveryRetryScheduleMs,
+} = {}) {
   const sent = [];
   const channelAdapter = {
     async sendText(payload) {
@@ -33,7 +39,13 @@ function createHarness({ sendText, getKnownContextTokens, onOutboundDelivery } =
     },
   };
 
-  const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore, onOutboundDelivery });
+  const streamDelivery = new StreamDelivery({
+    channelAdapter,
+    sessionStore,
+    onOutboundDelivery,
+    onDeferredSystemReply,
+    transientDeliveryRetryScheduleMs,
+  });
   return { sent, streamDelivery, bindingByThreadId };
 }
 
@@ -134,6 +146,110 @@ test("plain reply records outbound delivery success", async () => {
   assert.equal(outbound[0].attempt, "initial");
   assert.equal(outbound[0].kind, "plain_reply");
   assert.equal(outbound[0].textPreview, "visible reply");
+});
+
+test("plain reply retries transient send failures with the same context token", async () => {
+  const attempts = [];
+  const outbound = [];
+  const transientError = new TypeError("fetch failed");
+  transientError.cause = { name: "ConnectTimeoutError", code: "UND_ERR_CONNECT_TIMEOUT" };
+  transientError.weixinApi = {
+    label: "sendMessage",
+    endpoint: "ilink/bot/sendmessage",
+    timeoutMs: 15000,
+  };
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({
+    transientDeliveryRetryScheduleMs: [0],
+    async sendText(payload, successful) {
+      attempts.push(payload);
+      if (attempts.length === 1) {
+        throw transientError;
+      }
+      successful.push(payload);
+    },
+    onOutboundDelivery(payload) {
+      outbound.push(payload);
+    },
+  });
+  bindingByThreadId.set("thread-transient", { bindingKey: "binding-transient" });
+  streamDelivery.setReplyTarget("binding-transient", {
+    userId: "user-transient",
+    contextToken: "ctx-transient",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-transient",
+    turnId: "turn-transient",
+    itemId: "item-transient",
+    text: "Mossbridge saw the image",
+  });
+
+  assert.equal(attempts.length, 2);
+  assert.deepEqual(attempts.map((payload) => payload.contextToken), ["ctx-transient", "ctx-transient"]);
+  assert.deepEqual(sent, [{
+    userId: "user-transient",
+    text: "Mossbridge saw the image",
+    contextToken: "ctx-transient",
+  }]);
+  assert.equal(outbound.length, 2);
+  assert.equal(outbound[0].status, "retrying");
+  assert.equal(outbound[0].attempt, "initial_transient_retry_1");
+  assert.equal(outbound[0].errorName, "TypeError");
+  assert.equal(outbound[0].causeName, "ConnectTimeoutError");
+  assert.equal(outbound[0].causeCode, "UND_ERR_CONNECT_TIMEOUT");
+  assert.equal(outbound[0].apiLabel, "sendMessage");
+  assert.equal(outbound[0].apiEndpoint, "ilink/bot/sendmessage");
+  assert.equal(outbound[0].apiTimeoutMs, 15000);
+  assert.equal(outbound[1].status, "sent");
+  assert.equal(outbound[1].attempt, "initial_transient_retry_1");
+});
+
+test("plain reply is deferred after transient delivery retries are exhausted", async () => {
+  const deferred = [];
+  const outbound = [];
+  const transientError = new TypeError("fetch failed");
+  transientError.cause = { code: "UND_ERR_CONNECT_TIMEOUT" };
+  transientError.weixinApi = {
+    label: "sendMessage",
+    endpoint: "ilink/bot/sendmessage",
+    timeoutMs: 15000,
+  };
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({
+    transientDeliveryRetryScheduleMs: [0],
+    async sendText() {
+      throw transientError;
+    },
+    onDeferredSystemReply(payload) {
+      deferred.push(payload);
+    },
+    onOutboundDelivery(payload) {
+      outbound.push(payload);
+    },
+  });
+  bindingByThreadId.set("thread-transient-deferred", { bindingKey: "binding-transient-deferred" });
+  streamDelivery.setReplyTarget("binding-transient-deferred", {
+    userId: "user-transient-deferred",
+    contextToken: "ctx-transient-deferred",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-transient-deferred",
+    turnId: "turn-transient-deferred",
+    itemId: "item-transient-deferred",
+    text: "Mossbridge will defer this reply",
+  });
+
+  assert.deepEqual(sent, []);
+  assert.equal(deferred.length, 1);
+  assert.equal(deferred[0].threadId, "thread-transient-deferred");
+  assert.equal(deferred[0].userId, "user-transient-deferred");
+  assert.equal(deferred[0].text, "Mossbridge will defer this reply");
+  assert.equal(deferred[0].kind, "plain_reply");
+  assert.equal(outbound.at(-1).status, "deferred");
+  assert.equal(outbound.at(-1).causeCode, "UND_ERR_CONNECT_TIMEOUT");
+  assert.equal(outbound.at(-1).apiLabel, "sendMessage");
 });
 
 test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {

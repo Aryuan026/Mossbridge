@@ -80,6 +80,7 @@ const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
 const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 8_000;
 const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 6_000;
+const INBOUND_IMAGE_PRELUDE_IDLE_MS = 12_000;
 
 function resolveFirstRuntimeEventFailureTimeoutMs({ isClaudeCode = false, openingTurn = false } = {}) {
   if (!isClaudeCode) {
@@ -564,6 +565,12 @@ class MossbridgeApp {
       contextTokenPresent: Boolean(payload.contextTokenPresent),
       textPreview: normalizeText(payload.textPreview),
       error: normalizeText(payload.error),
+      errorName: normalizeText(payload.errorName),
+      causeName: normalizeText(payload.causeName),
+      causeCode: normalizeText(payload.causeCode),
+      apiLabel: normalizeText(payload.apiLabel),
+      apiEndpoint: normalizeText(payload.apiEndpoint),
+      apiTimeoutMs: Number.isFinite(Number(payload.apiTimeoutMs)) ? Number(payload.apiTimeoutMs) : null,
     });
   }
 
@@ -693,6 +700,16 @@ class MossbridgeApp {
         workspaceRoot,
         prepared,
         delayMs: INBOUND_IMAGE_TEXT_BATCH_IDLE_MS,
+      });
+      return;
+    }
+
+    if (isLikelyImagePreludePreparedMessage(prepared)) {
+      this.enqueuePendingImageInbound({
+        bindingKey,
+        workspaceRoot,
+        prepared,
+        delayMs: INBOUND_IMAGE_PRELUDE_IDLE_MS,
       });
       return;
     }
@@ -1774,11 +1791,13 @@ class MossbridgeApp {
       imageCount: savedItems.filter((item) => isImageAttachmentItem(item)).length,
       fileCount: savedItems.filter((item) => !isImageAttachmentItem(item)).length,
       savedFiles: savedItems.map((item) => normalizeText(item?.relativePath) || normalizeText(item?.fileName) || normalizeText(item?.absolutePath)).filter(Boolean),
+      savedDiagnostics: savedItems.map((item) => item?.diagnostics).filter((item) => item && typeof item === "object"),
       failedReasons: failedItems.map((item) => {
         const label = normalizeText(item?.sourceFileName) || normalizeText(item?.kind) || "attachment";
         const reason = normalizeText(item?.reason) || "unknown";
         return `${label}: ${reason}`;
       }),
+      failedDiagnostics: failedItems.map((item) => item?.diagnostics).filter((item) => item && typeof item === "object"),
     });
   }
 
@@ -3527,6 +3546,7 @@ class MossbridgeApp {
         runtimeText: prepared.runtimeText,
         text: prepared.text,
         attachments: prepared.attachments || [],
+        attachmentFailures: prepared.attachmentFailures || [],
         receivedAt: prepared.receivedAt,
         memoryContextPacket: prepared.memoryContextPacket || null,
         systemTurn: prepared.systemTurn || null,
@@ -5523,6 +5543,37 @@ function isPlainTextPreparedMessage(prepared) {
   const attachments = Array.isArray(prepared?.attachments) ? prepared.attachments : [];
   const attachmentFailures = Array.isArray(prepared?.attachmentFailures) ? prepared.attachmentFailures : [];
   return Boolean(originalText) && attachments.length === 0 && attachmentFailures.length === 0;
+}
+
+function isLikelyImagePreludePreparedMessage(prepared) {
+  if (!isPlainTextPreparedMessage(prepared)) {
+    return false;
+  }
+  const text = normalizeText(prepared?.originalText);
+  if (!text || text.length > 80) {
+    return false;
+  }
+  const compact = text.replace(/\s+/gu, "");
+  if (!compact || compact.length > 50) {
+    return false;
+  }
+
+  const hasMediaWord = /(图|图片|照片|截图|文件|附件|视频|表情包|稿子|文档)/u.test(compact);
+  const hasDeictic = /(这个|这张|这份|这里|这样|这些|这几个|那张|那个|那份)/u.test(compact);
+  const asksToLook = /(你)?(先)?(帮我|帮忙)?(看|看看|看下|看一下|瞅瞅|瞧瞧)/u.test(compact);
+  if (hasMediaWord && (asksToLook || hasDeictic || compact.length <= 24)) {
+    return true;
+  }
+  if (hasDeictic && asksToLook) {
+    return true;
+  }
+  if (/^(这个|这张|这份|这样|这里|这些|这几个|那个|那张)(呢|吗|咋样|怎么样|可以吗|行吗|对吗|是不是)?[?？!！。]*$/u.test(compact)) {
+    return true;
+  }
+  if (/(发|传|补|贴|放|给你|发你|发给你).{0,10}(图|图片|照片|截图|文件|附件|视频|稿子|文档|表情包)/u.test(compact)) {
+    return true;
+  }
+  return false;
 }
 
 function isImageAttachmentItem(item) {

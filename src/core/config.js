@@ -36,6 +36,8 @@ function readConfig() {
     weixinBaseUrl: readBridgeTextEnv("WEIXIN_BASE_URL") || "https://ilinkai.weixin.qq.com",
     weixinCdnBaseUrl: readBridgeTextEnv("WEIXIN_CDN_BASE_URL") || "https://novac2c.cdn.weixin.qq.com/c2c",
     attachmentDownloadTimeoutMs: readBridgeIntEnv("ATTACHMENT_DOWNLOAD_TIMEOUT_MS") || 30_000,
+    channelFileMaxBytes: readBridgeIntEnv("CHANNEL_FILE_MAX_BYTES") || 20 * 1024 * 1024,
+    channelFileSendTimeoutMs: readBridgeIntEnv("CHANNEL_FILE_SEND_TIMEOUT_MS") || 120_000,
     weixinConfigFile: path.join(stateDir, "weixin-config.json"),
     weixinMinChunkChars: readBridgeIntEnv("WEIXIN_MIN_CHUNK_CHARS"),
     weixinQrBotType: readBridgeTextEnv("WEIXIN_QR_BOT_TYPE") || "3",
@@ -154,6 +156,7 @@ function readConfig() {
     asheriePreludeHotUpstreamLimit: readBridgeIntEnv("ASHERIE_PRELUDE_HOT_UPSTREAM_LIMIT") || 4,
     asheriePreludeHotTurnLimit: readBridgeIntEnv("ASHERIE_PRELUDE_HOT_TURN_LIMIT") || 6,
     asheriePreludeHotSnapshotLimit: readBridgeIntEnv("ASHERIE_PRELUDE_HOT_SNAPSHOT_LIMIT") || 2,
+    asheriePreludeLocalArchiveLimit: readBridgeIntEnv("ASHERIE_PRELUDE_LOCAL_ARCHIVE_LIMIT") || 2,
     asheriePreludeRecentSnippetLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RECENT_SNIPPET_LIMIT") || 8,
     asheriePreludeRecentThreadLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RECENT_THREAD_LIMIT") || 8,
   };

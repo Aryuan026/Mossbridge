@@ -326,6 +326,55 @@ Notion stable memory
 
 Mossbridge 后续需要一个显式归一化层，避免把 Driftstone v1 的中间态直接写进运行记忆。
 
+如果目标是“Driftstone 导出后交给 Codex，Codex 直接激活 Mossbridge 记忆”，优先让 Driftstone 输出 Mossbridge-ready bundle，而不是只输出 Notion projection。
+
+首选目录形状：
+
+```text
+<bundle>/
+  manifest.json                 # schema: mossbridge_memory_bundle_v0.1
+  data/
+    storage/
+      warm_memory/
+      ongoing_tracks.json
+      episode_journal/
+      observation_journal/
+      case_index/
+      memory_tree/
+      truth_layer/
+      memory_versions/
+      raw_transcript_archive/   # optional evidence fallback
+    cache/
+      conversation_cache/       # optional raw/replay sediment
+      hot/                      # optional hot context
+```
+
+`manifest.json` 必须带 `source_identity: { userId, realmId, agentId }`，让 `npm run memory:import` 可以 remap 到目标 Mossbridge identity。ZIP 可以作为传输格式，但解压后必须仍是单根目录；不要带 runtime state、WeChat token、OAuth、session、绝对私密路径或 live 数据。
+
+如果 Driftstone 暂时只能输出归一化候选，使用中间包：
+
+```text
+<bundle>/
+  manifest.json                 # schema: driftstone_mossbridge_ingest_bundle_v0.1
+  normalized/
+    warm_memory.jsonl
+    ongoing_tracks.jsonl
+    episode_journal.jsonl
+    observation_journal.jsonl
+    case_index.jsonl
+    memory_tree_roots.jsonl
+    memory_tree_edges.jsonl
+  evidence/
+    source_traces.jsonl
+    source_spans.jsonl
+    conversation_turns.jsonl
+  qa/
+    sample_queries.jsonl
+    quality_report.json
+```
+
+中间包的每条记录必须有稳定 id、明确 `target_layer`、明确 `import_status`。只有 `accepted` 可以直接进入运行记忆；`candidate`、`review`、`evidence_only` 只能落进候选/审计区。`front_recall_text` 和 `source_trace` 必须分开：前者可短量递给主 AI，后者只用于核验、debug、或 `raw_transcript_archive` 的冷召回失手旧档兜底。
+
 建议中间文件：
 
 ```text

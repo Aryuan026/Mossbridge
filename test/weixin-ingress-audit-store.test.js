@@ -104,6 +104,13 @@ test("WeixinIngressAuditStore persists outbound delivery snapshots", () => {
       attempt: "initial",
       contextTokenPresent: true,
       textPreview: "reply".repeat(80),
+      error: "fetch failed",
+      errorName: "TypeError",
+      causeName: "ConnectTimeoutError",
+      causeCode: "UND_ERR_CONNECT_TIMEOUT",
+      apiLabel: "sendMessage",
+      apiEndpoint: "ilink/bot/sendmessage",
+      apiTimeoutMs: 15000,
     });
 
     const snapshot = new WeixinIngressAuditStore({ filePath }).snapshot();
@@ -112,6 +119,13 @@ test("WeixinIngressAuditStore persists outbound delivery snapshots", () => {
     assert.equal(snapshot.lastOutbound.attempt, "initial");
     assert.equal(snapshot.lastOutbound.contextTokenPresent, true);
     assert.equal(snapshot.lastOutbound.textPreview.endsWith("..."), true);
+    assert.equal(snapshot.lastOutbound.error, "fetch failed");
+    assert.equal(snapshot.lastOutbound.errorName, "TypeError");
+    assert.equal(snapshot.lastOutbound.causeName, "ConnectTimeoutError");
+    assert.equal(snapshot.lastOutbound.causeCode, "UND_ERR_CONNECT_TIMEOUT");
+    assert.equal(snapshot.lastOutbound.apiLabel, "sendMessage");
+    assert.equal(snapshot.lastOutbound.apiEndpoint, "ilink/bot/sendmessage");
+    assert.equal(snapshot.lastOutbound.apiTimeoutMs, 15000);
     assert.equal(snapshot.recentEvents.length, 1);
   } finally {
     fs.rmSync(filePath, { force: true });
@@ -134,6 +148,27 @@ test("WeixinIngressAuditStore persists attachment intake snapshots", () => {
       fileCount: 0,
       savedFiles: ["wechat/inbox/2026-05-17/photo.jpg"],
       failedReasons: ["file: attachment download timed out after 30000ms"],
+      savedDiagnostics: [{
+        kind: "image",
+        declaredSizeBytes: 12345,
+        downloadedSizeBytes: 12000,
+        contentType: "image/jpeg",
+        directUrlCount: 0,
+        hasEncryptedQueryParam: true,
+        candidateCount: 2,
+        referenceTypes: ["encrypted_query_param", "filekey"],
+      }],
+      failedDiagnostics: [{
+        kind: "image",
+        declaredSizeBytes: 45678,
+        directUrlCount: 0,
+        hasEncryptedQueryParam: true,
+        hasFileKey: true,
+        candidateCount: 2,
+        errorCode: "ATTACHMENT_DOWNLOAD_TIMEOUT",
+        errorStatus: 408,
+        downloadStage: "response_body",
+      }],
     });
 
     const snapshot = new WeixinIngressAuditStore({ filePath }).snapshot();
@@ -142,6 +177,10 @@ test("WeixinIngressAuditStore persists attachment intake snapshots", () => {
     assert.equal(snapshot.lastAttachmentIntake.failedCount, 1);
     assert.deepEqual(snapshot.lastAttachmentIntake.savedFiles, ["wechat/inbox/2026-05-17/photo.jpg"]);
     assert.match(snapshot.lastAttachmentIntake.failedReasons[0], /timed out/);
+    assert.equal(snapshot.lastAttachmentIntake.savedDiagnostics[0].declaredSizeBytes, 12345);
+    assert.equal(snapshot.lastAttachmentIntake.failedDiagnostics[0].errorCode, "ATTACHMENT_DOWNLOAD_TIMEOUT");
+    assert.equal(snapshot.lastAttachmentIntake.failedDiagnostics[0].downloadStage, "response_body");
+    assert.deepEqual(snapshot.lastAttachmentIntake.savedDiagnostics[0].referenceTypes, ["encrypted_query_param", "filekey"]);
   } finally {
     fs.rmSync(filePath, { force: true });
   }

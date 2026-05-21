@@ -234,8 +234,12 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_channel_send_file",
-    description: "Send an existing local file back to the current WeChat chat.",
-    shortHint: "Send a local file back to the current WeChat user.",
+    description: [
+      "Send an existing local file back to the current WeChat chat.",
+      "Use this for small, concrete files only. For work-case artifacts, first link the file with the case artifact tool and prefer sending a path/summary or external handoff for large or final files.",
+      "The tool fails safely with diagnostics instead of blocking the conversation when WeChat/CDN upload is too large or slow.",
+    ].join(" "),
+    shortHint: "Send a small local file back to the current WeChat user; link large case files instead.",
     topics: ["channel"],
     inputSchema: {
       type: "object",
@@ -243,11 +247,27 @@ const PROJECT_TOOLS = [
       properties: {
         filePath: { type: "string" },
         userId: { type: "string" },
+        forceLargeFile: { type: "boolean", description: "Only set true after the human explicitly asks to force a large WeChat file upload despite the safe-size guard." },
       },
       additionalProperties: false,
     },
     async handler({ services, args, context }) {
-      const result = await services.channelFile.sendToCurrentChat(args, context);
+      let result = null;
+      try {
+        result = await services.channelFile.sendToCurrentChat(args, context);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || "unknown file delivery error");
+        return {
+          text: `File not sent safely: ${message}`,
+          data: {
+            ok: false,
+            status: "failed",
+            error: message,
+            code: normalizeText(error?.code),
+            diagnostics: error?.channelFile || {},
+          },
+        };
+      }
       return {
         text: `File sent: ${result.filePath}`,
         data: result,
@@ -712,6 +732,11 @@ const PROJECT_TOOLS = [
         aliases: { type: "array", items: { type: "string" } },
         storyline_id: { type: "string" },
         memory_family: { type: "string" },
+        provenance_refs: { type: "array", items: { type: "string" }, description: "Optional source refs, such as conversation cache record ids or imported archive ids." },
+        source_record_id: { type: "string", description: "Optional conversation cache record id when this card is distilled from a known turn." },
+        source_query: { type: "string", description: "Optional exact user-side excerpt used as evidence for this warm card." },
+        source_assistant_text: { type: "string", description: "Optional assistant-side excerpt paired with source_query." },
+        source_excerpt: { type: "string", description: "Optional concise evidence excerpt when the original turn is not in conversation cache." },
         episode_refs: { type: "array", items: { type: "string" }, description: "Optional related episode ids, e.g. 2026-may-henan-trip, when this warm card is distilled from a bounded event journal." },
         case_refs: { type: "array", items: { type: "string" }, description: "Optional related case ids when this warm card is distilled from or supports a file/work case." },
         certainty_state: { type: "string" },
@@ -1146,7 +1171,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_upsert",
-    description: "Create or update a quiet work-provenance case. Use this only for real work artifacts or process memory: code fixes, imports, documents, debugging, architecture decisions, deployments, or Obsidian exports. Do not use it for ordinary intimate chat or life episodes unless there is a concrete work product.",
+    description: "Create or update a quiet work-provenance case. Use this only for real work artifacts or process memory: code fixes, imports, documents, debugging, architecture decisions, deployments, or Obsidian exports. Do not use it for ordinary intimate chat or life episodes unless there is a concrete work product. Each case has a durable three-folder workspace: 01_original_request for human input, 02_working_versions for AI drafts/intermediates, and 03_user_approved_final only for files the user explicitly approves or sends back as final.",
     shortHint: "Create or update one work-provenance case.",
     topics: ["memory"],
     inputSchema: {
@@ -1170,6 +1195,7 @@ const PROJECT_TOOLS = [
         related_episode_refs: { type: "array", items: { type: "string" } },
         related_track_ids: { type: "array", items: { type: "string" } },
         related_warm_refs: { type: "array", items: { type: "string" } },
+        related_cold_refs: { type: "array", items: { type: "string" }, description: "Cold memory/tree refs that must preserve this case_id as case_refs when promoted or attached." },
         userId: { type: "string" },
       },
       additionalProperties: false,
@@ -1223,7 +1249,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_artifact",
-    description: "Link one artifact to a work-provenance case, such as a file path, generated document, image folder, commit, diagnostic JSON, or exported Markdown note. Treat linked artifacts as scratch, working, or candidate unless the user explicitly names a human-approved final; do not auto-sync finals to cloud services.",
+    description: "Link one artifact to a work-provenance case, such as a file path, generated document, image folder, commit, diagnostic JSON, or exported Markdown note. Put drafts/intermediates under or link them as 02_working_versions when possible. Treat linked artifacts as scratch, working, or candidate unless the user explicitly names a human-approved final; do not auto-sync finals to cloud services.",
     shortHint: "Link an artifact to a case.",
     topics: ["memory"],
     inputSchema: {
@@ -1317,7 +1343,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_close",
-    description: "Close a work-provenance case when the goal is complete, paused, handed off, or no longer active. Closing does not make any artifact final; when final output matters, remind the user to send or name the human-approved final, record its storage id, and do not clear intermediates without explicit cleanup confirmation.",
+    description: "Close a work-provenance case when the goal is complete, paused, handed off, or no longer active. Closing does not make any artifact final; when final output matters, remind the user to send or name the human-approved final, record its storage id, and do not clear 02_working_versions without explicit cleanup confirmation.",
     shortHint: "Close one case.",
     topics: ["memory"],
     inputSchema: {
@@ -1574,6 +1600,34 @@ const PROJECT_TOOLS = [
       });
       return {
         text: `Cold memory root search returned ${Number(result?.hit_count) || 0} hits.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "mossbridge_memory_cold_duplicates",
+    description: "Inspect likely duplicate projected cold-memory roots for the current user. This is read-only: use it to identify duplicate or conflicting cold cards, then read exact roots before patching or deleting one.",
+    shortHint: "Find likely duplicate cold-memory roots.",
+    topics: ["memory"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Optional focus query, such as a person, symbol, fact key, or topic." },
+        limit: { type: "integer", description: "Maximum duplicate clusters to return." },
+        maxRows: { type: "integer", description: "Maximum projected roots to scan before clustering." },
+        minScore: { type: "integer", description: "Similarity threshold from 50 to 100. Defaults to 78." },
+        version: { type: "string" },
+        userId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args, context }) {
+      const result = await services.asherieMemory.inspectColdRootDuplicates({
+        ...args,
+        userId: resolveBoundUserId(args, context),
+      });
+      return {
+        text: `Cold memory duplicate scan returned ${Number(result?.duplicate_cluster_count) || 0} clusters.`,
         data: result,
       };
     },
@@ -1913,6 +1967,10 @@ const FOREGROUND_TOOL_NAMES = new Set([
   "mossbridge_memory_observation_search",
   "mossbridge_memory_observation_read",
   "mossbridge_memory_observation_update",
+  "mossbridge_memory_cold_search",
+  "mossbridge_memory_cold_duplicates",
+  "mossbridge_memory_cold_root_read",
+  "mossbridge_memory_cold_patch",
   "mossbridge_wakeup_agenda_read",
 ]);
 

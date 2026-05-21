@@ -6,7 +6,7 @@ const path = require("path");
 
 const { ProjectToolHost } = require("../src/tools/tool-host");
 
-function createHost() {
+function createHost(overrides = {}) {
   return new ProjectToolHost({
     services: {
       diary: {
@@ -353,6 +353,21 @@ function createHost() {
             }],
           };
         },
+        async inspectColdRootDuplicates(args) {
+          return {
+            ok: true,
+            query: args.query || "",
+            active_version: args.version || "v2",
+            duplicate_cluster_count: 1,
+            clusters: [{
+              cluster_id: "cold_dup_01",
+              score: 100,
+              reasons: ["same source type and normalized root identity"],
+              root_keys: ["hard_fact:f1", "hard_fact:f2"],
+              suggested_keep_root_key: "hard_fact:f1",
+            }],
+          };
+        },
         async readColdRoot(args) {
           return {
             ok: true,
@@ -415,6 +430,7 @@ function createHost() {
         async sendToCurrentChat(args) {
           return { filePath: args.filePath, userId: args.userId || "user-1" };
         },
+        ...(overrides.channelFile || {}),
       },
       sticker: {
         async listTags() {
@@ -831,8 +847,13 @@ test("tool host filters MCP tools by runtime profile", async () => {
   assert.ok(foregroundNames.includes("mossbridge_memory_warm_update"));
   assert.ok(foregroundNames.includes("mossbridge_memory_episode_append"));
   assert.ok(foregroundNames.includes("mossbridge_memory_observation_update"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_cold_duplicates"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_cold_root_read"));
+  assert.ok(foregroundNames.includes("mossbridge_memory_cold_patch"));
   assert.ok(!foregroundNames.includes("mossbridge_bridge_status"));
-  assert.ok(!foregroundNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(!foregroundNames.includes("mossbridge_memory_cold_read"));
+  assert.ok(!foregroundNames.includes("mossbridge_memory_cold_upsert"));
   assert.ok(!foregroundNames.includes("mossbridge_memory_case_upsert"));
   assert.ok(!foregroundNames.includes("mossbridge_timeline_write"));
   assert.ok(!foregroundNames.includes("mossbridge_solitude_journal_write"));
@@ -840,15 +861,17 @@ test("tool host filters MCP tools by runtime profile", async () => {
   assert.ok(!foregroundNames.includes("whereabouts_snapshot"));
 
   assert.ok(taskNames.includes("mossbridge_memory_case_upsert"));
-  assert.ok(!taskNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(taskNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(taskNames.includes("mossbridge_memory_cold_duplicates"));
   assert.ok(fullNames.includes("mossbridge_memory_cold_search"));
+  assert.ok(fullNames.includes("mossbridge_memory_cold_duplicates"));
   assert.ok(fullNames.includes("mossbridge_timeline_write"));
   assert.deepEqual(liteNames, []);
 
-  await assert.rejects(
-    () => host.invokeTool("mossbridge_memory_cold_search", {}, { toolProfile: "foreground" }),
-    /not available in foreground profile/,
-  );
+  const foregroundScan = await host.invokeTool("mossbridge_memory_cold_duplicates", {
+    query: "Shanghai",
+  }, { toolProfile: "foreground" });
+  assert.equal(foregroundScan.text, "Cold memory duplicate scan returned 1 clusters.");
 });
 
 test("tool host exposes structured warm-memory lookup and exact-card mutation tools", async () => {
@@ -879,6 +902,27 @@ test("tool host exposes structured warm-memory lookup and exact-card mutation to
   assert.equal(update.text, "Warm memory updated: memo-1");
   assert.equal(update.data.record.body_markdown, "User switched to hand-brew at home.");
   assert.equal(removal.text, "Warm memory deleted: memo-1");
+});
+
+test("channel file tool returns safe delivery failures instead of throwing into the runtime", async () => {
+  const host = createHost({
+    channelFile: {
+      async sendToCurrentChat() {
+        const error = new Error("File is too large for safe WeChat delivery.");
+        error.code = "CHANNEL_FILE_TOO_LARGE";
+        error.channelFile = { code: error.code, sizeBytes: 30, maxBytes: 20 };
+        throw error;
+      },
+    },
+  });
+
+  const result = await host.invokeTool("mossbridge_channel_send_file", {
+    filePath: "/tmp/too-large.zip",
+  }, { senderId: "user-1" });
+
+  assert.equal(result.data.ok, false);
+  assert.equal(result.data.code, "CHANNEL_FILE_TOO_LARGE");
+  assert.match(result.text, /File not sent safely/);
 });
 
 test("tool host exposes ongoing-track tools for medium-horizon live threads", async () => {
@@ -1025,11 +1069,15 @@ test("tool host exposes cold root search, read, and exact patch tools", async ()
   const host = createHost();
   const tools = host.listTools();
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_search"));
+  assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_duplicates"));
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_root_read"));
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_cold_patch"));
 
   const search = await host.invokeTool("mossbridge_memory_cold_search", {
     query: "Shanghai",
+  }, { senderId: "user-1" });
+  const duplicates = await host.invokeTool("mossbridge_memory_cold_duplicates", {
+    query: "city",
   }, { senderId: "user-1" });
   const read = await host.invokeTool("mossbridge_memory_cold_root_read", {
     root_key: "hard_fact:f1",
@@ -1046,6 +1094,8 @@ test("tool host exposes cold root search, read, and exact patch tools", async ()
   }, { senderId: "user-1" });
 
   assert.equal(search.text, "Cold memory root search returned 1 hits.");
+  assert.equal(duplicates.text, "Cold memory duplicate scan returned 1 clusters.");
+  assert.equal(duplicates.data.clusters[0].root_keys.length, 2);
   assert.equal(read.text, "Cold memory root loaded: hard_fact:f1");
   assert.equal(read.data.root.item.fact_value, "Shanghai");
   assert.equal(patch.text, "Cold memory root patched: hard_fact:f1");

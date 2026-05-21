@@ -46,6 +46,11 @@ async function persistIncomingWeixinAttachments({
         kind: attachment?.kind || "file",
         sourceFileName: attachment?.fileName || "",
         reason: error instanceof Error ? error.message : String(error || "unknown attachment error"),
+        diagnostics: buildAttachmentFailureDiagnostics({
+          attachment,
+          cdnBaseUrl,
+          error,
+        }),
       });
     }
   }
@@ -108,6 +113,14 @@ async function persistSingleAttachment({ attachment, officePaths, config = {}, c
     noteAbsolutePath,
     noteRelativePath,
     sizeBytes: plaintext.length,
+    diagnostics: {
+      ...buildAttachmentReferenceDiagnostics(attachment, cdnBaseUrl),
+      downloadedSizeBytes: plaintext.length,
+      contentType: download.contentType,
+      responseContentLength: Number.isFinite(Number(download.responseContentLength))
+        ? Number(download.responseContentLength)
+        : null,
+    },
   };
 }
 
@@ -126,7 +139,10 @@ function normalizeDateFolder(receivedAt) {
 async function downloadAttachmentPayload(attachment, cdnBaseUrl, config = {}) {
   const candidates = buildDownloadCandidates(attachment, cdnBaseUrl);
   if (!candidates.length) {
-    throw new Error("attachment did not include a supported download reference");
+    const error = new Error("attachment did not include a supported download reference");
+    error.code = "ATTACHMENT_DOWNLOAD_NO_REFERENCE";
+    error.candidateCount = 0;
+    throw error;
   }
 
   let lastError = null;
@@ -136,11 +152,18 @@ async function downloadAttachmentPayload(attachment, cdnBaseUrl, config = {}) {
     try {
       return await downloadCandidateWithRetries(candidate, { timeoutMs, retryDelaysMs });
     } catch (error) {
+      attachDownloadCandidateSummary(error, candidates.length);
       lastError = error;
     }
   }
 
-  throw lastError || new Error("attachment download failed");
+  if (lastError) {
+    throw lastError;
+  }
+  const error = new Error("attachment download failed");
+  error.code = "ATTACHMENT_DOWNLOAD_FAILED";
+  error.candidateCount = candidates.length;
+  throw error;
 }
 
 async function downloadCandidateWithRetries(candidate, { timeoutMs, retryDelaysMs } = {}) {
@@ -168,25 +191,52 @@ async function downloadCandidateWithRetries(candidate, { timeoutMs, retryDelaysM
 async function downloadCandidateOnce(candidate, timeoutMs = DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS) {
   const controller = new AbortController();
   let timedOut = false;
+  let downloadStage = "request";
+  let responseContentLength = null;
+  let responseContentType = "";
   const timeout = Math.max(1, Number(timeoutMs) || DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
   }, timeout);
-  let response;
   try {
-    response = await fetch(candidate, {
+    const response = await fetch(candidate, {
       method: "GET",
       headers: {
         Accept: "*/*",
       },
       signal: controller.signal,
     });
+
+    downloadStage = "response_headers";
+    responseContentLength = parsePositiveInteger(response.headers.get("content-length"));
+    responseContentType = normalizeContentType(response.headers.get("content-type"));
+
+    if (!response.ok) {
+      const error = new Error(`download failed with HTTP ${response.status}`);
+      error.status = response.status;
+      error.code = "ATTACHMENT_DOWNLOAD_HTTP_STATUS";
+      error.downloadStage = downloadStage;
+      error.responseContentLength = responseContentLength;
+      error.responseContentType = responseContentType;
+      throw error;
+    }
+
+    downloadStage = "response_body";
+    const arrayBuffer = await response.arrayBuffer();
+    return {
+      bytes: Buffer.from(arrayBuffer),
+      contentType: responseContentType,
+      responseContentLength,
+    };
   } catch (error) {
     if (timedOut || error?.name === "AbortError") {
       const timeoutError = new Error(`attachment download timed out after ${timeout}ms`);
       timeoutError.status = 408;
       timeoutError.code = "ATTACHMENT_DOWNLOAD_TIMEOUT";
+      timeoutError.downloadStage = downloadStage;
+      timeoutError.responseContentLength = responseContentLength;
+      timeoutError.responseContentType = responseContentType;
       timeoutError.cause = error;
       throw timeoutError;
     }
@@ -194,18 +244,15 @@ async function downloadCandidateOnce(candidate, timeoutMs = DEFAULT_ATTACHMENT_D
   } finally {
     clearTimeout(timer);
   }
+}
 
-  if (!response.ok) {
-    const error = new Error(`download failed with HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
+function attachDownloadCandidateSummary(error, candidateCount) {
+  if (!error || typeof error !== "object") {
+    return;
   }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return {
-    bytes: Buffer.from(arrayBuffer),
-    contentType: normalizeContentType(response.headers.get("content-type")),
-  };
+  if (!Number.isFinite(Number(error.candidateCount))) {
+    error.candidateCount = Number(candidateCount) || 0;
+  }
 }
 
 function resolveAttachmentDownloadTimeoutMs(config = {}) {
@@ -231,6 +278,65 @@ function isRetriableAttachmentDownloadError(error) {
   }
   const message = String(error?.message || error || "");
   return /fetch failed|network|socket|timeout|timed out|econnreset|etimedout|eai_again|aborted/i.test(message);
+}
+
+function buildAttachmentFailureDiagnostics({ attachment, cdnBaseUrl, error } = {}) {
+  const diagnostics = buildAttachmentReferenceDiagnostics(attachment, cdnBaseUrl);
+  const source = error && typeof error === "object" ? error : {};
+  const cause = source.cause && typeof source.cause === "object" ? source.cause : {};
+  return {
+    ...diagnostics,
+    errorCode: normalizeText(source.code),
+    errorStatus: Number.isFinite(Number(source.status)) ? Number(source.status) : null,
+    errorName: normalizeText(source.name),
+    errorMessage: truncateText(source.message || error, 240),
+    causeName: normalizeText(cause.name),
+    causeCode: normalizeText(cause.code),
+    downloadStage: normalizeText(source.downloadStage),
+    responseContentLength: Number.isFinite(Number(source.responseContentLength))
+      ? Number(source.responseContentLength)
+      : null,
+    responseContentType: normalizeContentType(source.responseContentType),
+    candidateCount: Number.isFinite(Number(source.candidateCount))
+      ? Number(source.candidateCount)
+      : diagnostics.candidateCount,
+  };
+}
+
+function buildAttachmentReferenceDiagnostics(attachment, cdnBaseUrl) {
+  const mediaRef = attachment?.mediaRef && typeof attachment.mediaRef === "object"
+    ? attachment.mediaRef
+    : {};
+  const directUrls = Array.isArray(attachment?.directUrls) ? attachment.directUrls.filter((item) => normalizeText(item)) : [];
+  const encryptedQueryParam = normalizeText(mediaRef.encryptQueryParam);
+  const fileKey = normalizeText(mediaRef.fileKey);
+  const referenceTypes = [];
+  if (directUrls.length) {
+    referenceTypes.push("direct_url");
+  }
+  if (encryptedQueryParam) {
+    referenceTypes.push("encrypted_query_param");
+  }
+  if (fileKey) {
+    referenceTypes.push("filekey");
+  }
+
+  return {
+    kind: normalizeText(attachment?.kind) || "file",
+    itemType: Number.isFinite(Number(attachment?.itemType)) ? Number(attachment.itemType) : null,
+    index: Number.isFinite(Number(attachment?.index)) ? Number(attachment.index) : null,
+    sourceFileName: normalizeText(attachment?.fileName),
+    declaredSizeBytes: parsePositiveInteger(attachment?.sizeBytes),
+    directUrlCount: directUrls.length,
+    hasEncryptedQueryParam: Boolean(encryptedQueryParam),
+    hasFileKey: Boolean(fileKey),
+    encryptType: Number.isFinite(Number(mediaRef.encryptType)) ? Number(mediaRef.encryptType) : null,
+    hasAesKey: Boolean(normalizeText(mediaRef.aesKey)),
+    hasAesKeyHex: Boolean(normalizeText(mediaRef.aesKeyHex)),
+    cdnBasePresent: Boolean(normalizeText(cdnBaseUrl)),
+    candidateCount: buildDownloadCandidates(attachment, cdnBaseUrl).length,
+    referenceTypes,
+  };
 }
 
 function sleep(ms) {
@@ -735,6 +841,11 @@ function normalizeText(value) {
 
 function normalizeContentType(value) {
   return typeof value === "string" ? value.split(";")[0].trim().toLowerCase() : "";
+}
+
+function parsePositiveInteger(value) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function replacePendingSection(markdown, title, replacement) {

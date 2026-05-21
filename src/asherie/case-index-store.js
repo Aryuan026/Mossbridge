@@ -3,6 +3,15 @@ const path = require("path");
 const crypto = require("crypto");
 
 const CASE_STATUSES = new Set(["active", "paused", "blocked", "completed", "archived"]);
+const CASE_FOLDER_NAMES = Object.freeze({
+  original_request: "01_original_request",
+  working_versions: "02_working_versions",
+  user_approved_final: "03_user_approved_final",
+});
+const CASE_CLEANUP_POLICY = Object.freeze({
+  working_versions_cleanup: "human_confirmed_only",
+  ai_may_delete_working_versions: false,
+});
 
 class CaseIndexStore {
   constructor(rootDir, options = {}) {
@@ -44,8 +53,11 @@ class CaseIndexStore {
       merged.related_episode_refs = mergeStrings(existing.related_episode_refs, data.related_episode_refs || data.relatedEpisodeRefs);
       merged.related_track_ids = mergeStrings(existing.related_track_ids, data.related_track_ids || data.relatedTrackIds);
       merged.related_warm_refs = mergeStrings(existing.related_warm_refs, data.related_warm_refs || data.relatedWarmRefs);
+      merged.related_cold_refs = mergeStrings(existing.related_cold_refs, data.related_cold_refs || data.relatedColdRefs);
     }
-    fs.mkdirSync(this.caseDir(scoped, realmId, agentId, caseId), { recursive: true });
+    merged.case_folders = caseFolderContract();
+    merged.cleanup_policy = normalizeCleanupPolicy(merged.cleanup_policy);
+    this.ensureCaseWorkspace(scoped, realmId, agentId, caseId);
     writeJson(this.caseFile(scoped, realmId, agentId, caseId), merged);
     this.exportMarkdown(scoped, caseId, { realmId, agentId });
     return this.projectCase(scoped, realmId, agentId, caseId);
@@ -217,6 +229,7 @@ class CaseIndexStore {
       ...record,
       event_count: events.length,
       case_dir: this.caseDir(scoped, realm, agent, target),
+      case_workspace: this.ensureCaseWorkspace(scoped, realm, agent, target),
       markdown_path: this.markdownFile(scoped, realm, agent, target),
     };
   }
@@ -259,6 +272,15 @@ class CaseIndexStore {
     return path.join(this.scopeDir(scopedUserId, realmId, agentId), safeId(caseId));
   }
 
+  ensureCaseWorkspace(scopedUserId, realmId, agentId, caseId) {
+    const dir = this.caseDir(scopedUserId, realmId, agentId, caseId);
+    fs.mkdirSync(dir, { recursive: true });
+    Object.values(CASE_FOLDER_NAMES).forEach((folderName) => {
+      fs.mkdirSync(path.join(dir, folderName), { recursive: true });
+    });
+    return caseWorkspacePaths(dir);
+  }
+
   caseFile(scopedUserId, realmId, agentId, caseId) {
     return path.join(this.caseDir(scopedUserId, realmId, agentId, caseId), "case.json");
   }
@@ -297,6 +319,9 @@ function normalizeCase(payload = {}) {
     related_episode_refs: stringList(source.related_episode_refs || source.relatedEpisodeRefs || source.episode_refs || source.episodeRefs),
     related_track_ids: stringList(source.related_track_ids || source.relatedTrackIds),
     related_warm_refs: stringList(source.related_warm_refs || source.relatedWarmRefs || source.warm_refs || source.warmRefs),
+    related_cold_refs: stringList(source.related_cold_refs || source.relatedColdRefs || source.cold_refs || source.coldRefs),
+    case_folders: caseFolderContract(),
+    cleanup_policy: normalizeCleanupPolicy(source.cleanup_policy || source.cleanupPolicy),
     created_at: normalizeIso(source.created_at || source.createdAt) || new Date().toISOString(),
     updated_at: normalizeIso(source.updated_at || source.updatedAt) || new Date().toISOString(),
     last_touched_at: normalizeIso(source.last_touched_at || source.lastTouchedAt || source.updated_at || source.updatedAt) || new Date().toISOString(),
@@ -425,6 +450,9 @@ function renderMarkdown(record = {}, events = []) {
   pushListSection(lines, "Decisions", record.decisions, (item) => [item.summary, item.reason].filter(Boolean).join(" | "));
   pushListSection(lines, "Followups", record.followups, (item) => [item.status, item.summary, item.due_at].filter(Boolean).join(" | "));
   pushListSection(lines, "Source Refs", record.source_refs, (item) => item);
+  pushListSection(lines, "Related Cold Refs", record.related_cold_refs, (item) => item);
+  pushSection(lines, "Case Folders", JSON.stringify(record.case_folders || caseFolderContract(), null, 2));
+  pushSection(lines, "Cleanup Policy", JSON.stringify(record.cleanup_policy || normalizeCleanupPolicy(), null, 2));
   if (events.length) {
     lines.push("", "## Events");
     events.forEach((event) => {
@@ -469,6 +497,7 @@ function scoreCase(record = {}, query = "") {
     ...(record.related_episode_refs || []),
     ...(record.related_track_ids || []),
     ...(record.related_warm_refs || []),
+    ...(record.related_cold_refs || []),
     ...(record.actions || []).map((item) => item.summary),
     ...(record.artifacts || []).flatMap((item) => [item.title, item.path, item.note, item.status, item.artifact_id, item.final_artifact_id, item.storage_id, item.manual_archive_ref, item.manual_archive_note]),
     ...(record.tests || []).flatMap((item) => [item.command, item.status, item.note]),
@@ -551,6 +580,32 @@ function mergeObjects(left, right) {
     }
   });
   return merged;
+}
+
+function caseFolderContract() {
+  return {
+    root: ".",
+    original_request: CASE_FOLDER_NAMES.original_request,
+    working_versions: CASE_FOLDER_NAMES.working_versions,
+    user_approved_final: CASE_FOLDER_NAMES.user_approved_final,
+  };
+}
+
+function caseWorkspacePaths(caseDir) {
+  return {
+    root: caseDir,
+    original_request_dir: path.join(caseDir, CASE_FOLDER_NAMES.original_request),
+    working_versions_dir: path.join(caseDir, CASE_FOLDER_NAMES.working_versions),
+    user_approved_final_dir: path.join(caseDir, CASE_FOLDER_NAMES.user_approved_final),
+  };
+}
+
+function normalizeCleanupPolicy(value = {}) {
+  const source = isObject(value) ? value : {};
+  return {
+    working_versions_cleanup: normalizeText(source.working_versions_cleanup || source.workingVersionsCleanup) || CASE_CLEANUP_POLICY.working_versions_cleanup,
+    ai_may_delete_working_versions: false,
+  };
 }
 
 function objectList(value) {

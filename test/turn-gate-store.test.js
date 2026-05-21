@@ -813,6 +813,53 @@ test("writebackRuntimeTurn keeps attachment references with caption-only image t
   assert.match(captured.incomingMessages[0].content, /attachment-4\.jpg/);
 });
 
+test("rememberTurnWritebackContext keeps failed attachment references for conversation cache", () => {
+  const appLike = {
+    turnWritebackContextByRunKey: new Map(),
+    pendingTurnWritebackByThreadId: new Map(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          getRuntimeParamsForWorkspace() {
+            return { model: "claude-opus-4-6" };
+          },
+        };
+      },
+    },
+  };
+
+  MossbridgeApp.prototype.rememberTurnWritebackContext.call(appLike, {
+    turn: { threadId: "thread-1", turnId: "turn-1" },
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    dispatchedAtMs: 123,
+    prepared: {
+      workspaceId: "default",
+      accountId: "account-1",
+      senderId: "user-1",
+      provider: "weixin",
+      originalText: "看看这组图",
+      runtimeText: "runtime text",
+      text: "runtime text",
+      attachments: [{
+        kind: "image",
+        relativePath: "wechat/inbox/2026-05-05/attachment.jpg",
+      }],
+      attachmentFailures: [{
+        kind: "image",
+        sourceFileName: "lost-photo.jpg",
+        reason: "terminated",
+      }],
+      receivedAt: "2026-05-05T08:42:19.820Z",
+    },
+  });
+
+  const snapshot = appLike.turnWritebackContextByRunKey.get("thread-1:turn-1");
+  assert.equal(snapshot.prepared.attachments.length, 1);
+  assert.equal(snapshot.prepared.attachmentFailures.length, 1);
+  assert.equal(snapshot.prepared.attachmentFailures[0].sourceFileName, "lost-photo.jpg");
+});
+
 test("flushPendingInboundMessages batches queued messages from the same scope into one turn", async () => {
   const dispatched = [];
   const scopeKey = "binding-1::/workspace";

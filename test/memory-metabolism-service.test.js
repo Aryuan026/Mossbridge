@@ -41,6 +41,24 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
     routeId: "route-1",
     transportId: "weixin",
   });
+  await memory.writeWarmMaterial({
+    userId: "user-1",
+    material_id: "memo-memory-identity-a",
+    title: "记忆仓哲学：身份不在实例里，在记忆里",
+    summary: "身份连续性不在单个实例里，而在共享记忆仓和可追溯记录中。",
+    tags: ["identity", "记忆仓"],
+    material_type: "memo",
+    source_archive_refs: ["src-a"],
+  });
+  await memory.writeWarmMaterial({
+    userId: "user-1",
+    material_id: "memo-memory-identity-b",
+    title: "阿鸢做记忆仓的核心哲学：窗口切换的双向恐惧与身份在记忆中",
+    summary: "窗口切换会带来身份断裂恐惧，阿霁的连续性依赖记忆仓而不是实例。",
+    tags: ["identity", "记忆仓"],
+    material_type: "memo",
+    source_archive_refs: ["src-b"],
+  });
   await memory.writebackTurn({
     userId: "user-1",
     senderId: "user-1",
@@ -77,6 +95,9 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
   assert.equal(messages.length, 1);
   assert.equal(messages[0].kind, "dreaming_opportunity");
   assert.match(messages[0].text, /mossbridge_memory_metabolism_receipt_write/);
+  assert.match(messages[0].text, /Duplicate warm-card consolidation/);
+  assert.match(messages[0].text, /memo-memory-identity-a/);
+  assert.match(messages[0].text, /memo-memory-identity-b/);
   assert.equal(messages[0].metadata.dreamingAttemptId, queued.attempt_id);
   assert.equal(queued.source_record_count, 2);
 

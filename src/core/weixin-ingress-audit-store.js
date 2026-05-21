@@ -116,6 +116,12 @@ class WeixinIngressAuditStore {
       failedReasons: Array.isArray(payload.failedReasons)
         ? payload.failedReasons.map((item) => truncateText(item, 180)).slice(0, 12)
         : [],
+      savedDiagnostics: Array.isArray(payload.savedDiagnostics)
+        ? payload.savedDiagnostics.map(sanitizeAttachmentDiagnostic).slice(0, 12)
+        : [],
+      failedDiagnostics: Array.isArray(payload.failedDiagnostics)
+        ? payload.failedDiagnostics.map(sanitizeAttachmentDiagnostic).slice(0, 12)
+        : [],
     });
     this.state.lastAttachmentIntake = event;
     this.save();
@@ -158,6 +164,45 @@ function truncateText(value, maxLength) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function sanitizeAttachmentDiagnostic(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return {
+    kind: truncateText(value.kind, 40),
+    itemType: normalizeNullableNumber(value.itemType),
+    index: normalizeNullableNumber(value.index),
+    sourceFileName: truncateText(value.sourceFileName, 120),
+    declaredSizeBytes: normalizeNullableNumber(value.declaredSizeBytes),
+    downloadedSizeBytes: normalizeNullableNumber(value.downloadedSizeBytes),
+    contentType: truncateText(value.contentType, 80),
+    directUrlCount: normalizeNullableNumber(value.directUrlCount),
+    hasEncryptedQueryParam: Boolean(value.hasEncryptedQueryParam),
+    hasFileKey: Boolean(value.hasFileKey),
+    encryptType: normalizeNullableNumber(value.encryptType),
+    hasAesKey: Boolean(value.hasAesKey),
+    hasAesKeyHex: Boolean(value.hasAesKeyHex),
+    cdnBasePresent: Boolean(value.cdnBasePresent),
+    candidateCount: normalizeNullableNumber(value.candidateCount),
+    referenceTypes: Array.isArray(value.referenceTypes)
+      ? value.referenceTypes.map((item) => truncateText(item, 40)).filter(Boolean).slice(0, 8)
+      : [],
+    errorCode: truncateText(value.errorCode, 80),
+    errorStatus: normalizeNullableNumber(value.errorStatus),
+    errorName: truncateText(value.errorName, 80),
+    errorMessage: truncateText(value.errorMessage, 240),
+    causeName: truncateText(value.causeName, 80),
+    causeCode: truncateText(value.causeCode, 80),
+    downloadStage: truncateText(value.downloadStage, 80),
+    responseContentLength: normalizeNullableNumber(value.responseContentLength),
+    responseContentType: truncateText(value.responseContentType, 80),
+  };
+}
+
+function normalizeNullableNumber(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 module.exports = { WeixinIngressAuditStore };

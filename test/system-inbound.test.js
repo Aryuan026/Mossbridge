@@ -1021,6 +1021,210 @@ test("caption after a pending image waits so the next short text can join", asyn
   assert.equal(routed[0].prepared.attachments.length, 1);
 });
 
+test("short image prelude waits for a later poll image and merges", async () => {
+  const routed = [];
+  const scheduledDelays = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingImageInboundByScope: new Map(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text || "image payload",
+        text: normalized.text || "image payload",
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+        attachmentFailures: [],
+      };
+    },
+    async routePreparedInbound(payload) {
+      routed.push(payload);
+      return true;
+    },
+    async attachMemoryContextToPreparedText(_normalized, runtimeText) {
+      return { text: runtimeText, packet: null };
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      scheduledDelays.push(delayMs);
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingImageInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    currentInboundBatchMayContainImageForSender() {
+      return false;
+    },
+  };
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "你看这个",
+    attachments: [],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.equal(scheduledDelays[0], 12_000);
+  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 1);
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [{
+      kind: "image",
+      absolutePath: "/workspace/inbox/courtyard.jpg",
+      sourceFileName: "courtyard.jpg",
+      contentType: "image/jpeg",
+      isImage: true,
+    }],
+    receivedAt: "2026-05-05T10:00:08.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.equal(scheduledDelays[1], 8000);
+
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, true);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].prepared.originalText, "你看这个");
+  assert.equal(routed[0].prepared.attachments.length, 1);
+  assert.match(routed[0].prepared.text, /你看这个/);
+  assert.match(routed[0].prepared.text, /courtyard\.jpg/);
+});
+
+test("short image prelude falls back to normal text if no image arrives", async () => {
+  const routed = [];
+  const scheduledDelays = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingInboundByScope: new Map(),
+    pendingImageInboundByScope: new Map(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text,
+        text: normalized.text,
+        attachments: [],
+        attachmentFailures: [],
+      };
+    },
+    async attachMemoryContextToPreparedText(_normalized, runtimeText) {
+      return { text: runtimeText, packet: null };
+    },
+    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      scheduledDelays.push(delayMs);
+      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingImageInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    flushPendingInboundMessages: MossbridgeApp.prototype.flushPendingInboundMessages,
+    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    currentInboundBatchMayContainImageForSender() {
+      return false;
+    },
+    isTurnDispatchBlocked() {
+      return false;
+    },
+    async dispatchPreparedTurn(payload) {
+      routed.push(payload);
+      return true;
+    },
+  };
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "这个呢？",
+    attachments: [],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.equal(scheduledDelays[0], 12_000);
+
+  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, false);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].prepared.originalText, "这个呢？");
+});
+
 test("caption before an image in the same WeChat poll batch waits and merges", async () => {
   const routed = [];
   const scheduledDelays = [];

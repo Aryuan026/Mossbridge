@@ -12,6 +12,7 @@ const {
 } = require("../asherie/hot-context-store");
 const { WakeupStore } = require("../asherie/wakeup-store");
 const { CalendarStore } = require("../asherie/calendar-store");
+const { LocalArchiveStore } = require("../asherie/local-archive-store");
 const { OngoingTrackStore, isOngoingOverviewQuery } = require("../asherie/ongoing-track-store");
 const { ObservationJournalStore } = require("../asherie/observation-journal-store");
 const { EpisodeJournalStore, buildEpisodeJournalPacket } = require("../asherie/episode-journal-store");
@@ -68,6 +69,7 @@ class AsherieMemoryService {
     );
     ensureGatewayStorageLayout(this.layout);
     this.conversationCache = new ConversationCacheStore(this.layout.conversationCacheDir, 10, { identity: this.identity });
+    this.localArchiveStore = new LocalArchiveStore(this.layout.rawTranscriptArchiveDir);
     this.wakeupStore = new WakeupStore(this.layout.wakeupStorePath, 300);
     this.calendarStore = new CalendarStore(this.layout.calendarStorePath, 3000);
     this.ongoingTrackStore = new OngoingTrackStore(
@@ -331,6 +333,22 @@ class AsherieMemoryService {
     ) {
       coldMemoryError = "";
     }
+    const localArchivePacket = shouldSearchLocalArchiveFallback({
+      query: recallQuery,
+      proactiveLite,
+      shouldSearchColdRoots,
+      coldRootPacket,
+    })
+      ? this.localArchiveStore.search(scopes.warmScope, {
+          scopedUserId: scopes.scopedUserId,
+          query: recallQuery,
+          limit: resolvePositiveInt(
+            args.prelude_local_archive_limit || args.preludeLocalArchiveLimit,
+            Number(this.config.asheriePreludeLocalArchiveLimit) || 2,
+          ),
+          minScore: recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context ? 1 : 2,
+        })
+      : buildEmptyLocalArchivePacket(scopes.warmScope, recallQuery, "local_archive_suppressed");
     const retrieval = buildMemoryRetrievalPacket({
       mode: "mossbridge_context_packet",
       warmMemoryPacket,
@@ -339,7 +357,7 @@ class AsherieMemoryService {
       observationJournalPacket,
       solitudeJournalPacket,
       curatedHits: [],
-      liteFallbackHits: [],
+      liteFallbackHits: localArchivePacket.hits,
       hippocovePacket: coldMemoryVersion
         ? {
             version: coldMemoryVersion,
@@ -361,6 +379,7 @@ class AsherieMemoryService {
       coldSource,
       coldRootPacket,
       coldVinePacket,
+      localArchivePacket,
       temporalRecallPacket,
       hotContextPacket,
       ongoingTrackPacket,
@@ -410,6 +429,10 @@ class AsherieMemoryService {
         args.prelude_recent_thread_limit || args.preludeRecentThreadLimit,
         Number(this.config.asheriePreludeRecentThreadLimit) || 3,
       ),
+      preludeLocalArchiveLimit: resolvePositiveInt(
+        args.prelude_local_archive_limit || args.preludeLocalArchiveLimit,
+        Number(this.config.asheriePreludeLocalArchiveLimit) || 2,
+      ),
     });
 
     return {
@@ -443,6 +466,7 @@ class AsherieMemoryService {
       },
       cold_root_packet: coldRootPacket,
       cold_vine_packet: coldVinePacket,
+      local_archive_packet: localArchivePacket,
       calendar_packet: calendarPacket,
       wakeup_packet: wakeupPacket,
       conversation_cache: recent,
@@ -537,8 +561,20 @@ class AsherieMemoryService {
         : (assistantTextFinal ? [{ role: "assistant", content: assistantTextFinal, timestamp: new Date().toISOString() }] : []),
     };
     const appendResult = this.conversationCache.append(record);
+    const archivedTurnEvidence = this.localArchiveStore.upsertTurnEvidence(scopes.warmScope, {
+      scopedUserId: scopes.scopedUserId,
+      record: {
+        ...record,
+        record_id: appendResult.record_id,
+      },
+      memoryContextPacket: args.memory_context_packet || args.memoryContextPacket || null,
+    });
 
-    const warmMemoryWrite = this.applyWarmMemoryWritePayloads(scopes.warmScope, args.warm_memory_write || args.warmMemoryWrite || []);
+    const warmMemoryWrite = this.applyWarmMemoryWritePayloads(
+      scopes.warmScope,
+      args.warm_memory_write || args.warmMemoryWrite || [],
+      { scopedUserId: scopes.scopedUserId },
+    );
     const coldMemoryWrite = this.applyColdMemoryWrite(scopes, args);
     const calendarWrite = this.applyCalendarWrite(scopes.scopedUserId, args.calendar_items || args.calendarItems || args.calendar_write_items || []);
     const wakeupWrite = this.applyWakeupWrite(scopes.scopedUserId, args.wakeup_record || args.wakeupRecord);
@@ -548,6 +584,7 @@ class AsherieMemoryService {
       user_id: scopes.resolvedUserId,
       scoped_user_id: scopes.scopedUserId,
       appended_record: appendResult,
+      local_archive_write: archivedTurnEvidence,
       warm_memory_write: warmMemoryWrite,
       cold_memory_write: coldMemoryWrite,
       calendar_write: calendarWrite,
@@ -558,10 +595,15 @@ class AsherieMemoryService {
   async writeWarmMaterial(args = {}) {
     const scopes = this.resolveScopes(args);
     const stored = this.warmMemoryStore.upsertMaterial(scopes.warmScope, args);
+    const archive = this.localArchiveStore.upsertWarmMaterial(scopes.warmScope, stored, {
+      scopedUserId: scopes.scopedUserId,
+      sourceRecord: buildArchiveSourceRecordFromArgs(args),
+    });
     return {
       ok: true,
       scope_id: scopes.warmScope.scopeId(),
       record: stored,
+      local_archive: compactLocalArchiveWrite(archive),
     };
   }
 
@@ -995,6 +1037,20 @@ class AsherieMemoryService {
     });
   }
 
+  async inspectColdRootDuplicates(args = {}) {
+    const scopes = this.resolveScopes(args);
+    return this.coldRootStore.inspectDuplicateRoots({
+      userId: scopes.resolvedUserId,
+      realmId: scopes.coldScope.realm_id,
+      agentId: scopes.coldScope.agent_id,
+      query: normalizeText(args.query || args.text),
+      limit: Number(args.limit) || 8,
+      maxRows: Number(args.maxRows || args.max_rows) || 220,
+      minScore: Number(args.minScore || args.min_score) || 78,
+      version: normalizeText(args.version),
+    });
+  }
+
   async readColdRoot(args = {}) {
     const scopes = this.resolveScopes(args);
     return this.coldRootStore.readRoot({
@@ -1063,15 +1119,21 @@ class AsherieMemoryService {
     });
   }
 
-  applyWarmMemoryWritePayloads(scope, payloads) {
+  applyWarmMemoryWritePayloads(scope, payloads, { scopedUserId = "" } = {}) {
     const source = Array.isArray(payloads) ? payloads : [];
     const results = source
       .filter((item) => item && typeof item === "object")
       .map((item) => {
         try {
+          const record = this.warmMemoryStore.upsertMaterial(scope, item);
+          const archive = this.localArchiveStore.upsertWarmMaterial(scope, record, {
+            scopedUserId,
+            sourceRecord: buildArchiveSourceRecordFromArgs(item),
+          });
           return {
             ok: true,
-            record: this.warmMemoryStore.upsertMaterial(scope, item),
+            record,
+            local_archive: compactLocalArchiveWrite(archive),
           };
         } catch (error) {
           return {
@@ -1302,6 +1364,7 @@ function buildRuntimePrelude({
   coldSource,
   coldRootPacket,
   coldVinePacket,
+  localArchivePacket,
   temporalRecallPacket,
   hotContextPacket,
   forceRecentContext = false,
@@ -1315,6 +1378,7 @@ function buildRuntimePrelude({
   preludeOngoingShadowLimit = 2,
   preludeObservationLimit = 4,
   preludeSolitudeLimit = 3,
+  preludeLocalArchiveLimit = 2,
   preludeRecentSnippetLimit = 4,
   preludeRecentThreadLimit = 3,
   includeGuidance = true,
@@ -1324,6 +1388,7 @@ function buildRuntimePrelude({
   const residentWarmHits = Array.isArray(residentWarmPacket?.hits) ? residentWarmPacket.hits : [];
   const coldRootHits = Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits : [];
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
+  const localArchiveHits = Array.isArray(localArchivePacket?.hits) ? localArchivePacket.hits : [];
   const includeRecentContext = forceRecentContext || shouldIncludeRecentContextPrelude(recallFocus, recallMode);
   const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
   const sessionHandoffLines = forceRecentContext && normalizeText(recallMode) !== "proactive"
@@ -1460,6 +1525,17 @@ function buildRuntimePrelude({
     const snapshotVersion = normalizeText(coldSource?.active_version) || "truth_layer:latest";
     const rootCount = Number(coldSource?.root_count) || 0;
     lines.push(`- cold-snapshot: ${snapshotVersion}${rootCount ? ` | roots=${rootCount}` : ""}`);
+  }
+
+  if (localArchiveHits.length) {
+    ensurePreludeHeader(lines);
+    lines.push("- archive-fallback: 冷记忆没有命中；下面是温记忆触发时留下的旧档证据，只用于接回语境，不等同于已整理长期事实。");
+    localArchiveHits.slice(0, Math.max(1, Number(preludeLocalArchiveLimit) || 1)).forEach((hit) => {
+      const title = normalizePreludeText(hit.title) || normalizePreludeText(hit.material_id) || "archive";
+      const snippet = normalizePreludeText(hit.snippet || hit.summary);
+      const materialId = normalizePreludeText(hit.material_id);
+      lines.push(`- archive-evidence: ${title}${snippet ? ` | ${snippet}` : ""}${materialId ? ` | warm_ref=${materialId}` : ""}`);
+    });
   }
 
   if (recallFocus?.used_recent_context) {
@@ -1731,6 +1807,37 @@ function shouldSearchColdRootsForTurn({ query = "", recallFocus = {}, recallMode
     return false;
   }
   return Boolean(recallFocus?.used_recent_context && looksLikeColdContinuationQuery(normalizedQuery));
+}
+
+function shouldSearchLocalArchiveFallback({
+  query = "",
+  proactiveLite = false,
+  shouldSearchColdRoots = false,
+  coldRootPacket = {},
+} = {}) {
+  if (proactiveLite || !normalizeText(query) || !shouldSearchColdRoots) {
+    return false;
+  }
+  const coldRootHits = Number(coldRootPacket?.hit_count) || (Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits.length : 0);
+  if (coldRootHits > 0) {
+    return false;
+  }
+  return true;
+}
+
+function buildEmptyLocalArchivePacket(scope, query = "", routeTag = "local_archive_empty") {
+  return {
+    ok: true,
+    mode: "local_archive_fallback",
+    route_tag: routeTag,
+    scope_id: scope.scopeId(),
+    query: normalizeText(query),
+    hit_count: 0,
+    hits: [],
+    stats: {
+      scanned_records: 0,
+    },
+  };
 }
 
 function shouldIncludeColdPrelude(recallFocus = {}, coldRootHits = []) {
@@ -2148,6 +2255,62 @@ function normalizeMessageArray(messages) {
       content: typeof item.content === "string" ? item.content : String(item.content || ""),
       timestamp: normalizeText(item.timestamp) || new Date().toISOString(),
     }));
+}
+
+function buildArchiveSourceRecordFromArgs(args = {}) {
+  const embedded = args.source_record || args.sourceRecord || {};
+  const source = embedded && typeof embedded === "object" ? embedded : {};
+  const query = normalizeText(
+    args.source_query
+      || args.sourceQuery
+      || args.evidence_query
+      || args.evidenceQuery
+      || source.query,
+  );
+  const assistantText = normalizeText(
+    args.source_assistant_text
+      || args.sourceAssistantText
+      || args.evidence_assistant_text
+      || args.evidenceAssistantText
+      || source.assistant_text_final
+      || source.assistantTextFinal,
+  );
+  const excerpt = normalizeText(
+    args.source_excerpt
+      || args.sourceExcerpt
+      || args.evidence_excerpt
+      || args.evidenceExcerpt
+      || source.compressed_digest
+      || source.compressedDigest,
+  );
+  if (!query && !assistantText && !excerpt) {
+    return null;
+  }
+  return {
+    record_id: normalizeText(
+      args.source_record_id
+        || args.sourceRecordId
+        || source.record_id
+        || source.recordId,
+    ),
+    ts_utc: normalizeText(args.source_ts_utc || args.sourceTsUtc || source.ts_utc || source.tsUtc),
+    query,
+    assistant_text_final: assistantText,
+    compressed_digest: excerpt,
+  };
+}
+
+function compactLocalArchiveWrite(archive = null) {
+  if (!archive || typeof archive !== "object") {
+    return null;
+  }
+  return {
+    archive_id: normalizeText(archive.archive_id),
+    material_id: normalizeText(archive.material_id),
+    title: normalizeText(archive.title),
+    snippet_count: Array.isArray(archive.snippets) ? archive.snippets.length : 0,
+    updated_at: normalizeText(archive.updated_at),
+  };
 }
 
 function truncateText(value, limit = 120) {

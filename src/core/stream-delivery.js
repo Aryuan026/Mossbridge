@@ -5,14 +5,26 @@ const { RUNTIME_NOTICE_KIND, shieldRuntimeNoticeForDelivery } = require("./runti
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, onRuntimeNotice, onOutboundDelivery, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({
+    channelAdapter,
+    sessionStore,
+    onDeferredSystemReply,
+    onRuntimeNotice,
+    onOutboundDelivery,
+    systemReplyRetryScheduleMs,
+    transientDeliveryRetryScheduleMs,
+    sameTokenRetryDelayMs,
+  }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
     this.onRuntimeNotice = typeof onRuntimeNotice === "function" ? onRuntimeNotice : null;
     this.onOutboundDelivery = typeof onOutboundDelivery === "function" ? onOutboundDelivery : null;
-    this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
-      ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
+    const retrySchedule = Array.isArray(transientDeliveryRetryScheduleMs) && transientDeliveryRetryScheduleMs.length
+      ? transientDeliveryRetryScheduleMs
+      : systemReplyRetryScheduleMs;
+    this.transientDeliveryRetryScheduleMs = Array.isArray(retrySchedule) && retrySchedule.length
+      ? retrySchedule.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
     this.sameTokenRetryDelayMs = Number.isFinite(sameTokenRetryDelayMs) && sameTokenRetryDelayMs >= 0
       ? sameTokenRetryDelayMs
@@ -426,9 +438,7 @@ class StreamDelivery {
   async sendTextWithRetry(state, payload, { kind }) {
     const initialTarget = state.replyTarget;
     try {
-      await this.channelAdapter.sendText(payload);
-      this.recordOutboundDelivery(state, payload, { kind, status: "sent", attempt: "initial" });
-      recordAiReply();
+      await this.sendTextWithTransientRetry(state, payload, { kind, attempt: "initial" });
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -453,9 +463,7 @@ class StreamDelivery {
         if (payload.preserveBlock) {
           retryPayload.preserveBlock = true;
         }
-        await this.channelAdapter.sendText(retryPayload);
-        this.recordOutboundDelivery(state, retryPayload, { kind, status: "sent", attempt: "retry" });
-        recordAiReply();
+        await this.sendTextWithTransientRetry(state, retryPayload, { kind, attempt: "retry" });
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
           this.replyTargetByBindingKey.set(state.bindingKey, {
@@ -472,6 +480,35 @@ class StreamDelivery {
         }
         this.recordOutboundDelivery(state, payload, { kind, status: "failed", attempt: "retry", error: retryError });
         throw retryError;
+      }
+    }
+  }
+
+  async sendTextWithTransientRetry(state, payload, { kind = "", attempt = "initial" } = {}) {
+    const delays = Array.isArray(this.transientDeliveryRetryScheduleMs)
+      ? this.transientDeliveryRetryScheduleMs
+      : [];
+    for (let retryIndex = 0; ; retryIndex += 1) {
+      try {
+        await this.channelAdapter.sendText(payload);
+        this.recordOutboundDelivery(state, payload, {
+          kind,
+          status: "sent",
+          attempt: retryIndex === 0 ? attempt : `${attempt}_transient_retry_${retryIndex}`,
+        });
+        recordAiReply();
+        return;
+      } catch (error) {
+        if (!isTransientDeliveryFailure(error) || retryIndex >= delays.length) {
+          throw error;
+        }
+        this.recordOutboundDelivery(state, payload, {
+          kind,
+          status: "retrying",
+          attempt: `${attempt}_transient_retry_${retryIndex + 1}`,
+          error,
+        });
+        await sleep(delays[retryIndex]);
       }
     }
   }
@@ -494,6 +531,7 @@ class StreamDelivery {
         contextTokenPresent: Boolean(payload?.contextToken),
         textPreview: payload?.text || "",
         error: error instanceof Error ? error.message : String(error || ""),
+        ...buildDeliveryErrorDiagnosticPayload(error),
       });
     } catch (hookError) {
       console.error(`[mossbridge] outbound delivery audit failed thread=${state?.threadId || ""}: ${hookError.message}`);
@@ -504,7 +542,7 @@ class StreamDelivery {
     if (typeof this.onDeferredSystemReply !== "function") {
       return false;
     }
-    if (!isSystemReplyContextFailure(error)) {
+    if (!shouldDeferReplyAfterDeliveryFailure(error)) {
       return false;
     }
     const target = state?.replyTarget || {};
@@ -969,6 +1007,24 @@ function extractSystemActionJsonCandidate(text) {
   return "";
 }
 
+function shouldDeferReplyAfterDeliveryFailure(error) {
+  return isSystemReplyContextFailure(error) || isTransientDeliveryFailure(error);
+}
+
+function buildDeliveryErrorDiagnosticPayload(error) {
+  if (!(error instanceof Error)) {
+    return {};
+  }
+  return {
+    errorName: normalizeText(error.name),
+    causeName: normalizeText(error.cause?.name),
+    causeCode: normalizeText(error.cause?.code || error.code),
+    apiLabel: normalizeText(error.weixinApi?.label),
+    apiEndpoint: normalizeText(error.weixinApi?.endpoint),
+    apiTimeoutMs: Number.isFinite(Number(error.weixinApi?.timeoutMs)) ? Number(error.weixinApi.timeoutMs) : null,
+  };
+}
+
 function isSystemReplyContextFailure(error) {
   const message = String(error?.message || "");
   const ret = normalizeNumericErrorCode(error?.ret);
@@ -979,12 +1035,40 @@ function isSystemReplyContextFailure(error) {
     || message.includes("errcode=-2");
 }
 
+function isTransientDeliveryFailure(error) {
+  const message = String(error?.message || "").toLowerCase();
+  const name = String(error?.name || "").toLowerCase();
+  const causeCode = String(error?.cause?.code || error?.code || "").toLowerCase();
+  return name === "aborterror"
+    || causeCode === "und_err_connect_timeout"
+    || causeCode === "econnreset"
+    || causeCode === "etimedout"
+    || causeCode === "eai_again"
+    || message.includes("fetch failed")
+    || message.includes("operation was aborted")
+    || message.includes("network")
+    || message.includes("socket")
+    || message.includes("timeout")
+    || message.includes("timed out")
+    || message.includes("econnreset")
+    || message.includes("etimedout")
+    || message.includes("eai_again");
+}
+
 function normalizeNumericErrorCode(value) {
   if (value === undefined || value === null || value === "") {
     return null;
   }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function sleep(ms) {
+  const delayMs = Math.max(0, Number(ms) || 0);
+  if (delayMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 module.exports = { StreamDelivery };
