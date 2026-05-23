@@ -72,6 +72,8 @@ If using a local provider such as Ollama, copy `templates/codex-local-provider.s
 
 At runtime, `/model <id>` updates the current WeChat binding. If choices are configured, aliases work too, such as `/model local`. For Codex, `/model --provider ollama <id>` also stores the provider for that binding; `/model --clear` returns the binding to defaults. Env-level `MOSSBRIDGE_CODEX_MODEL` / `MOSSBRIDGE_CODEX_MODEL_PROVIDER` still win as deployment defaults, so clear or update them before restart if you want `/model` to control selection dynamically.
 
+Session pressure refresh is runtime-neutral at the bridge layer. A maintainer can run `npm run shared:refresh-session` or `npm run shared:refresh-session:claudecode` to queue a fresh-thread handoff for the currently bound workspace. Runtime-reported context pressure can also queue one automatically via `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT`; the queued request waits for the next normal foreground user message, so system check-ins and dreaming passes do not accidentally consume it.
+
 For Claude Code, change only:
 
 ```dotenv

@@ -39,6 +39,20 @@ class DeferredSystemReplyStore {
     if (!normalized) {
       throw new Error("invalid deferred system reply");
     }
+    const existingIndex = findCoalescableReplyIndex(this.state.replies, normalized);
+    if (existingIndex >= 0) {
+      const existing = this.state.replies[existingIndex];
+      const merged = {
+        ...existing,
+        text: mergeDeferredReplyText(existing.text, normalized.text),
+        failedAt: normalized.failedAt || existing.failedAt,
+        lastError: normalized.lastError || existing.lastError,
+      };
+      this.state.replies[existingIndex] = merged;
+      this.state.replies.sort(compareDeferredReplies);
+      this.save();
+      return merged;
+    }
     this.state.replies.push(normalized);
     this.state.replies.sort(compareDeferredReplies);
     this.save();
@@ -92,6 +106,7 @@ function normalizeDeferredSystemReply(reply) {
   const threadId = normalizeText(reply.threadId);
   const text = normalizeText(reply.text);
   const kind = normalizeDeferredReplyKind(reply.kind);
+  const dedupeKey = normalizeText(reply.dedupeKey);
   const createdAt = normalizeIsoTime(reply.createdAt);
   const failedAt = normalizeIsoTime(reply.failedAt);
   const lastError = normalizeText(reply.lastError);
@@ -105,10 +120,39 @@ function normalizeDeferredSystemReply(reply) {
     threadId,
     text,
     kind,
+    dedupeKey,
     createdAt: createdAt || new Date().toISOString(),
     failedAt: failedAt || new Date().toISOString(),
     lastError,
   };
+}
+
+function findCoalescableReplyIndex(replies, incoming) {
+  if (!incoming?.dedupeKey) {
+    return -1;
+  }
+  return replies.findIndex((reply) =>
+    reply.accountId === incoming.accountId &&
+    reply.senderId === incoming.senderId &&
+    reply.threadId === incoming.threadId &&
+    reply.kind === incoming.kind &&
+    reply.dedupeKey === incoming.dedupeKey
+  );
+}
+
+function mergeDeferredReplyText(existing, incoming) {
+  const left = normalizeText(existing);
+  const right = normalizeText(incoming);
+  if (!left) {
+    return right;
+  }
+  if (!right || left === right || left.includes(right)) {
+    return left;
+  }
+  if (right.includes(left)) {
+    return right;
+  }
+  return `${left}\n\n${right}`;
 }
 
 function compareDeferredReplies(left, right) {

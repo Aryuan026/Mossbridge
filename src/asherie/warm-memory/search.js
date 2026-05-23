@@ -78,7 +78,7 @@ const QUERY_STOP_TOKENS = new Set([
 
 const QUERY_SIGNAL_TERMS = new Set([
   "选择", "决策", "决定", "模式", "方式", "风格", "偏好", "喜欢", "喜好",
-  "倾向", "性格", "特质", "习惯", "忌口", "饮食", "过敏", "药物", "项目",
+  "倾向", "性格", "特质", "习惯", "忌口", "饮食", "吃面", "加蛋", "清淡", "面条", "过敏", "药物", "项目",
   "健康", "身体", "健身", "运动", "训练", "减脂", "减肥", "体重", "睡眠",
   "作息", "压力", "加班", "疲劳", "能量", "恢复",
   "装修", "关系", "家人", "父亲", "妈妈", "生日", "约定",
@@ -107,6 +107,40 @@ Object.entries(ENTITY_ALIASES).forEach(([key, values]) => {
 const QUERY_NOISE_PATTERN = /^(?:我|你|她|他|它|这|那|哪|啥|呢|呀|啊|吧|吗|哈|嘻|根据|提问|记忆|调用|突袭|知道|觉得|比较|适合|印象|什么)+$/;
 const QUERY_BRIDGE_NOISE_CHARS = new Set("我你她他它这那哪啥呢呀啊吧吗嘻哈的是得较么知知道忆调用突袭问根据对象会合什".split(""));
 const ANSWER_TYPE_RE = /什么([^\s，。？！!?,]{2,4})/;
+
+const EXPLICIT_WARM_RECALL_PATTERNS = [
+  /还记得/i,
+  /记不记得/i,
+  /上次(?:说过|提过|聊过)?/i,
+  /之前(?:说过|提过|聊过)?/i,
+  /以前(?:说过|提过|聊过)?/i,
+  /你.*?(?:对我|觉得我|印象)/i,
+  /对我的印象/i,
+  /根据.*?印象/i,
+  /我.*?(?:偏好|习惯|风格|喜欢|讨厌|适合)/i,
+  /长期.*?(?:关系|记忆|印象|偏好)/i,
+];
+
+const WARM_TOPIC_INTENT_PATTERNS = [
+  /偏好|习惯|风格|喜欢|讨厌|忌口|过敏|体质|审美|美甲|颜色|色系/i,
+  /关系|家人|妈妈|父亲|生日|约定|象征|信物|纪念|重要|有意义/i,
+  /家族|家庭|亲属|亲戚|八卦|吃瓜|连续剧/i,
+  /作息|睡眠|压力|恢复|健康|饮食|吃面|加蛋|清淡|面条|运动|训练|减脂|体重/i,
+];
+
+const OPERATIONAL_WARM_SUPPRESSION_PATTERNS = [
+  /删掉|删除|撤掉|取消|关掉|清理|改一下|改掉|重新建|重建/i,
+  /提醒|日历|时间|几点|时区|测试|激活|触发/i,
+  /服务器|后台|服务|部署|同步|推送|github|仓库|代码|bug|报错|日志/i,
+  /模型|sonnet|opus|claude|codex|token|thread|context|mcp|工具|白名单/i,
+  /文件夹|目录|路径|附件|图片|inbox|outbox|case|备份|温卡|召回/i,
+  /这啥|是啥|啥时候|看不懂|对不上茬/i,
+];
+
+const PHATIC_OR_REACTION_PATTERNS = [
+  /^(嗯+|啊+|哦+|好+|okk+|收到|哈哈+|嘿嘿+|嘻嘻+|行吧|可以了)[~～。！!，,]*$/i,
+  /^[\s\p{Emoji_Presentation}\p{Extended_Pictographic}（）()╮╯▽¯敲打揉脸]+$/u,
+];
 
 const DEFAULT_WARM_MEMORY_RECALL_CONFIG = Object.freeze({
   scanLimit: 240,
@@ -158,6 +192,26 @@ function buildWarmMemoryRecallPacket(
   const retrievalTokens = uniqueTokens([...signalQueryTokens, ...answerTypes]);
   const keywordMatchTokens = expandQueryTokens(retrievalTokens);
   const semanticTokens = retrievalTokens.length ? retrievalTokens : rawQueryTokens;
+  const recallGate = buildWarmRecallGate({
+    query: normalizedQuery,
+    rawQueryTokens,
+    retrievalTokens,
+    answerTypes,
+    recallMode,
+  });
+  if (recallGate.suppressed) {
+    return buildEmptyWarmRecallPacket({
+      scope,
+      normalizedQuery,
+      rawQueryTokens,
+      semanticTokens,
+      retrievalTokens,
+      answerTypes,
+      keywordMatchTokens,
+      recallMode,
+      recallGate,
+    });
+  }
   const queryTokenCounts = countTerms(semanticTokens);
   const queryNgramCounts = countTerms(
     semanticTokens.length
@@ -220,7 +274,7 @@ function buildWarmMemoryRecallPacket(
   }));
 
   const feedbackRows = trackRetrieval
-    ? hits.map((hit) => ({
+    ? hits.filter((hit) => shouldApplyWarmRecallFeedback(hit, recallGate)).map((hit) => ({
       material_id: hit.material_id,
       recalled_at: recalledAt,
       storage_boost: Math.min(
@@ -244,9 +298,164 @@ function buildWarmMemoryRecallPacket(
     hits,
     mode: "warm_material_recall",
     recall_mode: recallMode,
+    route_tag: hits.length ? "warm_hit" : "warm_empty",
+    recall_gate: recallGate,
     hit_count: hits.length,
     feedback_rows: feedbackRows,
   };
+}
+
+function buildEmptyWarmRecallPacket({
+  scope,
+  normalizedQuery = "",
+  rawQueryTokens = [],
+  semanticTokens = [],
+  retrievalTokens = [],
+  answerTypes = [],
+  keywordMatchTokens = [],
+  recallMode = "user_triggered",
+  recallGate = {},
+} = {}) {
+  return {
+    scope_id: scope.scopeId(),
+    query: normalizedQuery,
+    raw_query_tokens: rawQueryTokens,
+    query_tokens: semanticTokens,
+    query_signal_tokens: retrievalTokens,
+    query_answer_types: answerTypes,
+    keyword_match_tokens: keywordMatchTokens,
+    hits: [],
+    mode: "warm_material_recall",
+    recall_mode: recallMode,
+    route_tag: recallGate.route_tag || "warm_query_suppressed",
+    recall_gate: recallGate,
+    hit_count: 0,
+    feedback_rows: [],
+  };
+}
+
+function buildWarmRecallGate({
+  query = "",
+  retrievalTokens = [],
+  answerTypes = [],
+  recallMode = "user_triggered",
+} = {}) {
+  const normalized = normalizeText(query).toLowerCase();
+  const tokenList = Array.isArray(retrievalTokens) ? retrievalTokens : [];
+  const answerTypeList = Array.isArray(answerTypes) ? answerTypes : [];
+  const contentChars = countQueryContentChars(normalized);
+  const explicit = hasExplicitWarmRecallIntent(normalized);
+  const topicIntent = hasWarmTopicIntent(normalized, tokenList, answerTypeList);
+  const operational = looksLikeOperationalWarmSuppression(normalized);
+  const phatic = looksLikePhaticOrReaction(normalized, contentChars);
+  const strongTokenCount = tokenList.filter((token) => isStrongRecallKeyword(token)).length;
+  const base = {
+    suppressed: false,
+    reason: "",
+    explicit_intent: explicit,
+    topic_intent: topicIntent,
+    operational,
+    phatic,
+    content_chars: contentChars,
+    strong_token_count: strongTokenCount,
+    feedback_policy: explicit ? "explicit" : "high_confidence_only",
+  };
+
+  if (isBackgroundRecallMode(recallMode) || isProactiveRecallMode(recallMode)) {
+    return {
+      ...base,
+      reason: "background_or_proactive",
+      feedback_policy: "normal",
+    };
+  }
+
+  if (!normalized) {
+    return suppressWarmRecall(base, "empty_query");
+  }
+  if (explicit || topicIntent) {
+    return {
+      ...base,
+      reason: explicit ? "explicit_warm_recall" : "warm_topic_intent",
+    };
+  }
+  if (phatic) {
+    return suppressWarmRecall(base, "phatic_or_reaction");
+  }
+  if (operational && strongTokenCount < 3) {
+    return suppressWarmRecall(base, "operational_low_signal");
+  }
+  if (contentChars <= 18 && strongTokenCount < 1 && !answerTypeList.length) {
+    return suppressWarmRecall(base, "short_low_signal");
+  }
+  if (!tokenList.length && contentChars <= 28) {
+    return suppressWarmRecall(base, "no_signal_tokens");
+  }
+
+  return {
+    ...base,
+    reason: "ordinary_warm_recall",
+  };
+}
+
+function suppressWarmRecall(base = {}, reason = "suppressed") {
+  return {
+    ...base,
+    suppressed: true,
+    reason,
+    route_tag: "warm_query_suppressed",
+    feedback_policy: "none",
+  };
+}
+
+function hasExplicitWarmRecallIntent(text = "") {
+  return EXPLICIT_WARM_RECALL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasWarmTopicIntent(text = "", retrievalTokens = [], answerTypes = []) {
+  if (WARM_TOPIC_INTENT_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  if ((Array.isArray(answerTypes) ? answerTypes : []).some((token) => isStrongRecallKeyword(token))) {
+    return true;
+  }
+  const strongTokenCount = (Array.isArray(retrievalTokens) ? retrievalTokens : [])
+    .filter((token) => isStrongRecallKeyword(token)).length;
+  return strongTokenCount >= 2 && !looksLikeOperationalWarmSuppression(text);
+}
+
+function looksLikeOperationalWarmSuppression(text = "") {
+  return OPERATIONAL_WARM_SUPPRESSION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function looksLikePhaticOrReaction(text = "", contentChars = 0) {
+  if (Number(contentChars) <= 2) {
+    return true;
+  }
+  return PHATIC_OR_REACTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function countQueryContentChars(text = "") {
+  return Array.from(normalizeText(text))
+    .filter((char) => /[a-z0-9\u4e00-\u9fff]/i.test(char))
+    .length;
+}
+
+function shouldApplyWarmRecallFeedback(hit = {}, recallGate = {}) {
+  if (recallGate?.suppressed || recallGate?.feedback_policy === "none") {
+    return false;
+  }
+  if (recallGate?.feedback_policy === "normal" || recallGate?.feedback_policy === "explicit") {
+    return true;
+  }
+  const score = Number(hit.score) || 0;
+  const semanticBlend = Number(hit.semantic_blend) || 0;
+  const semanticScore = Number(hit.semantic_score) || 0;
+  const exactMatch = Number(hit.exact_match) || 0;
+  const hasStrongKeywordHit = Array.isArray(hit.keyword_hits)
+    && hit.keyword_hits.some((token) => isStrongRecallKeyword(token));
+  return score >= 0.42
+    && semanticBlend >= 0.14
+    && (hasStrongKeywordHit || exactMatch > 0 || semanticScore >= 0.08);
 }
 
 function scoreWarmRow(
@@ -447,6 +656,20 @@ function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMOR
     return true;
   }
   return false;
+}
+
+function isStrongRecallKeyword(token = "") {
+  const clean = normalizeText(token).toLowerCase();
+  if (!clean || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
+    return false;
+  }
+  if (/^[a-z0-9_-]{4,}$/i.test(clean)) {
+    return true;
+  }
+  if (/^[\u4e00-\u9fff]{4,}$/.test(clean)) {
+    return true;
+  }
+  return QUERY_SIGNAL_TERMS.has(clean);
 }
 
 function buildActivationScore(row, config = DEFAULT_WARM_MEMORY_RECALL_CONFIG) {

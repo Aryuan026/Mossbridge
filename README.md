@@ -57,6 +57,9 @@ The control plane is the guardrail against "just adding another fallback". It ke
 - **Runtime flexibility**
   Codex and Claude Code are both supported. Shared mode is the preferred daily workflow, with commands for opening the same thread from terminal and WeChat and for selecting the next-turn model when supported by the local runtime.
 
+- **Session pressure refresh**
+  When runtime context pressure gets too high, Mossbridge can queue one safe session refresh for the next normal user message. Background check-ins do not consume it; the next foreground turn opens a fresh runtime thread with the normal opening instructions and compact memory packet.
+
 - **Safe self-check by default**
   Random check-ins use a lightweight no-tool profile so they can reconnect or stay silent without loading the full MCP tool surface. Calendar, reminder, dreaming, and explicit maintenance wakeups can inspect bridge health, queues, cooldowns, and context pressure, but public Mossbridge defaults to reporting instead of silently restarting services, rebinding accounts, editing files, deleting memory, or changing credentials. See [docs/safe-self-check.md](./docs/safe-self-check.md).
 
@@ -73,6 +76,7 @@ Mossbridge carries more configuration than the original bridge because it is try
 - `storage/raw_transcript_archive` under the data root is the small old-file fallback for warm-triggered dialogue evidence. It is only opened when cold-root recall is explicitly attempted and misses, with `MOSSBRIDGE_ASHERIE_PRELUDE_LOCAL_ARCHIVE_LIMIT` keeping the delivered evidence short.
 - `MOSSBRIDGE_WORKSPACE_ROOT` is the working area exposed to the runtime for files, attachments, and project work. It should not be the user's whole home directory.
 - `MOSSBRIDGE_CHECKIN_*` settings control heartbeat opportunities. They are not simple alarm frequency knobs: hot-window and token-backoff settings keep proactive wakeups from interrupting an active chat or overloading a near-full runtime context. Random check-ins keep a lightweight no-tool runtime profile; due reminders, calendar wakeups, dreaming, and explicit maintenance turns can still use the full tool profile when there is actual work to do.
+- `MOSSBRIDGE_SESSION_REFRESH_*` settings protect long-running Codex/Claude sessions from context pressure by queuing a fresh-thread handoff. The default threshold is intentionally high, and only one pending refresh is kept per runtime/workspace binding.
 - `MOSSBRIDGE_ASHERIE_PRELUDE_*` settings are historical memory-layer names for how much context gets delivered into a turn. Keep these limits modest so memory helps the model land the current reply instead of flooding it.
 - `MOSSBRIDGE_MAINTENANCE_*` settings keep the public heartbeat posture read-only by default. Private operators can opt into repair, but public clone smoke tests should only inspect and report.
 

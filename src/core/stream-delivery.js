@@ -338,9 +338,11 @@ class StreamDelivery {
       return;
     }
 
+    let failedDeliveryIndex = 0;
     state.sendChain = state.sendChain.then(async () => {
       for (let index = 0; index < pendingDeliveries.length; index += 1) {
         const delivery = pendingDeliveries[index];
+        failedDeliveryIndex = index;
         await this.sendReplyDelivery(state, delivery, {
           prependDeferredPrefix: index === 0 && Boolean(state.deferredReplyPrefix),
         });
@@ -349,10 +351,24 @@ class StreamDelivery {
           state.deferredReplyPrefix = "";
         }
       }
-    }).catch((error) => {
-      const failedDelivery = pendingDeliveries[0];
-      const failedText = buildDeliveryPreviewText(failedDelivery);
-      void this.deferSystemReply(state, buildEffectiveReplyText(state.deferredReplyPrefix, failedText), error, "plain_reply");
+    }).catch(async (error) => {
+      const failedDeliveries = pendingDeliveries.slice(failedDeliveryIndex);
+      const failedText = buildPendingDeliveryBatchText(failedDeliveries, state.deferredReplyPrefix);
+      const deferred = await this.deferSystemReply(state, failedText, error, "plain_reply");
+      if (deferred) {
+        this.recordOutboundDelivery(state, {
+          userId: state.replyTarget?.userId || "",
+          text: failedText,
+          contextToken: state.replyTarget?.contextToken || "",
+        }, { kind: "plain_reply", status: "deferred", attempt: "batch", error });
+        for (const delivery of failedDeliveries) {
+          if (delivery?.itemId) {
+            state.sentItemIds.add(delivery.itemId);
+          }
+        }
+        state.deferredReplyPrefix = "";
+        return;
+      }
       console.error(`[mossbridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
     });
 
@@ -422,7 +438,7 @@ class StreamDelivery {
     if (prependDeferredPrefix) {
       payload.preserveBlock = true;
     }
-    await this.sendTextWithRetry(state, payload, { kind: "plain_reply" });
+    await this.sendTextWithRetry(state, payload, { kind: "plain_reply", deferOnFailure: false });
   }
 
   async sendSystemReply(state, text) {
@@ -435,7 +451,7 @@ class StreamDelivery {
     await this.sendTextWithRetry(state, payload, { kind: "system_reply" });
   }
 
-  async sendTextWithRetry(state, payload, { kind }) {
+  async sendTextWithRetry(state, payload, { kind, deferOnFailure = true }) {
     const initialTarget = state.replyTarget;
     try {
       await this.sendTextWithTransientRetry(state, payload, { kind, attempt: "initial" });
@@ -443,6 +459,9 @@ class StreamDelivery {
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
       if (!retryTarget) {
+        if (!deferOnFailure) {
+          throw error;
+        }
         const deferred = await this.deferSystemReply(state, payload.text, error, kind);
         if (deferred) {
           this.recordOutboundDelivery(state, payload, { kind, status: "deferred", attempt: "initial", error });
@@ -473,6 +492,9 @@ class StreamDelivery {
           });
         }
       } catch (retryError) {
+        if (!deferOnFailure) {
+          throw retryError;
+        }
         const deferred = await this.deferSystemReply(state, payload.text, retryError, kind);
         if (deferred) {
           this.recordOutboundDelivery(state, payload, { kind, status: "deferred", attempt: "retry", error: retryError });
@@ -556,6 +578,7 @@ class StreamDelivery {
         text,
         error,
         kind,
+        dedupeKey: state.runKey,
       });
       console.warn(
         `[mossbridge] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
@@ -964,6 +987,14 @@ function buildDeliveryPreviewText(delivery) {
     return delivery.text || "";
   }
   return "";
+}
+
+function buildPendingDeliveryBatchText(deliveries, deferredPrefix = "") {
+  const body = (Array.isArray(deliveries) ? deliveries : [])
+    .map((delivery) => trimOuterBlankLines(normalizeLineEndings(buildDeliveryPreviewText(delivery))))
+    .filter(Boolean)
+    .join("\n\n");
+  return buildEffectiveReplyText(deferredPrefix, body);
 }
 
 function normalizeSystemActionName(value) {

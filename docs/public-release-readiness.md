@@ -102,7 +102,7 @@ Mossbridge 当前处在“可继续私有优化、可备份、不可直接公开
 
 可从当前 bridge 低风险同步、但不属于 Home 搬家：
 
-- session refresh request：当前 private bridge 多了“下一次正常用户消息前清掉旧 thread、开新 session”的请求队列。Mossbridge 可在后续同步，但必须改成 `MOSSBRIDGE_*` env、`MossbridgeApp` 命名，并避免后台 system turn 抢先刷新。
+- session refresh request：已同步为公开仓 `MOSSBRIDGE_*` 版本。终端脚本可以排队 refresh；runtime context 压力过高时也会自动排一个 refresh 请求；真正清旧 thread 只发生在下一次正常用户消息前，后台 system turn 不会抢先刷新。
 - WeChat ingress diagnosis：private bridge 多了只读诊断脚本，可帮助判断 poll、context token、sync buffer 和队列是否健康。公开版可以保留为诊断工具，但输出必须去私人路径、账号细节和 live 术语。
 
 继续不搬或暂缓：

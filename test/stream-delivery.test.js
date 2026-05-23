@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { StreamDelivery } = require("../src/core/stream-delivery");
+const { DeferredSystemReplyStore } = require("../src/core/deferred-system-reply-store");
 
 const DEFERRED_REPLY_NOTICE = "[Mossbridge] deferred_delivery\n上一轮有内容因 WeChat context_token 失效未能发送；本次 token 刷新后补发。\n若频繁出现，可发送 /chunk <数字> 调大最小合并字符数。";
 const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 =====";
@@ -250,6 +254,83 @@ test("plain reply is deferred after transient delivery retries are exhausted", a
   assert.equal(outbound.at(-1).status, "deferred");
   assert.equal(outbound.at(-1).causeCode, "UND_ERR_CONNECT_TIMEOUT");
   assert.equal(outbound.at(-1).apiLabel, "sendMessage");
+});
+
+test("plain reply defers one combined batch when multiple items fail in the same turn", async () => {
+  const outbound = [];
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-deferred-"));
+  const store = new DeferredSystemReplyStore({
+    filePath: path.join(tempDir, "deferred-system-replies.json"),
+  });
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({
+    async sendText() {
+      const error = new Error("sendMessage ret=-2");
+      error.ret = -2;
+      throw error;
+    },
+    async onDeferredSystemReply(payload) {
+      store.enqueue({
+        id: `${payload.dedupeKey}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+        accountId: "account-batch-defer",
+        senderId: payload.userId,
+        threadId: payload.threadId,
+        text: payload.text,
+        kind: payload.kind,
+        dedupeKey: payload.dedupeKey,
+        createdAt: new Date().toISOString(),
+        failedAt: new Date().toISOString(),
+        lastError: payload.error instanceof Error ? payload.error.message : "",
+      });
+    },
+    onOutboundDelivery(payload) {
+      outbound.push(payload);
+    },
+  });
+  bindingByThreadId.set("thread-batch-defer", { bindingKey: "binding-batch-defer" });
+  streamDelivery.setReplyTarget("binding-batch-defer", {
+    userId: "user-batch-defer",
+    contextToken: "ctx-batch-defer",
+    provider: "weixin",
+  });
+
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: { threadId: "thread-batch-defer", turnId: "turn-batch-defer" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.reply.completed",
+    payload: {
+      threadId: "thread-batch-defer",
+      turnId: "turn-batch-defer",
+      itemId: "item-batch-a",
+      text: "Mossbridge keeps the first piece",
+    },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.reply.completed",
+    payload: {
+      threadId: "thread-batch-defer",
+      turnId: "turn-batch-defer",
+      itemId: "item-batch-b",
+      text: "Mossbridge merges the second piece into the same deferred reply",
+    },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.completed",
+    payload: { threadId: "thread-batch-defer", turnId: "turn-batch-defer" },
+  });
+
+  assert.deepEqual(sent, []);
+  store.load();
+  assert.equal(store.state.replies.length, 1);
+  assert.equal(
+    store.state.replies[0].text,
+    "Mossbridge keeps the first piece\n\nMossbridge merges the second piece into the same deferred reply"
+  );
+  assert.equal(store.state.replies[0].kind, "plain_reply");
+  assert.equal(store.state.replies[0].dedupeKey, "thread-batch-defer:turn-batch-defer");
+  assert.equal(outbound.filter((entry) => entry.status === "deferred").length, 2);
+  fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
 test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {

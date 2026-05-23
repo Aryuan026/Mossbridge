@@ -26,6 +26,7 @@ const { StreamDelivery } = require("./stream-delivery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { RuntimeCooldownStore } = require("./runtime-cooldown-store");
 const { RuntimeContextUsageStore } = require("./runtime-context-usage-store");
+const { SessionRefreshRequestStore } = require("./session-refresh-request-store");
 const { WeixinIngressAuditStore } = require("./weixin-ingress-audit-store");
 const { DeferredSystemReplyStore } = require("./deferred-system-reply-store");
 const { SystemMessageQueueStore } = require("./system-message-queue-store");
@@ -81,6 +82,8 @@ const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
 const INBOUND_IMAGE_BATCH_IDLE_MS = 8_000;
 const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 6_000;
 const INBOUND_IMAGE_PRELUDE_IDLE_MS = 12_000;
+const DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT = 92;
+const DEFAULT_SESSION_REFRESH_MIN_INTERVAL_MS = 30 * 60_000;
 
 function resolveFirstRuntimeEventFailureTimeoutMs({ isClaudeCode = false, openingTurn = false } = {}) {
   if (!isClaudeCode) {
@@ -119,6 +122,7 @@ class MossbridgeApp {
     this.threadStateStore = new ThreadStateStore();
     this.runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
     this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
+    this.sessionRefreshRequests = new SessionRefreshRequestStore({ filePath: config.sessionRefreshRequestsFile });
     this.weixinIngressAuditStore = new WeixinIngressAuditStore({ filePath: config.weixinIngressAuditFile });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
@@ -149,6 +153,7 @@ class MossbridgeApp {
     this.watchdogCancelledRunKeys = new Set();
     this.pendingAutoCompactByThreadId = new Map();
     this.lastAutoCompactAtByThreadId = new Map();
+    this.lastAutoSessionRefreshAtByScope = new Map();
     this.pendingOperationByRunKey = new Map();
     this.lastSystemFailureNoticeAtByKey = new Map();
     this.runtimeEventChain = Promise.resolve();
@@ -574,7 +579,7 @@ class MossbridgeApp {
     });
   }
 
-  deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply" }) {
+  deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply", dedupeKey = "" }) {
     const queued = this.deferredSystemReplyQueue.enqueue({
       id: `${normalizeCommandArgument(threadId) || "system"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
       accountId: this.activeAccountId || this.channelAdapter.resolveAccount().accountId,
@@ -582,6 +587,7 @@ class MossbridgeApp {
       threadId,
       text,
       kind,
+      dedupeKey,
       createdAt: new Date().toISOString(),
       failedAt: new Date().toISOString(),
       lastError: error instanceof Error ? error.message : String(error || ""),
@@ -781,6 +787,9 @@ class MossbridgeApp {
     });
 
     try {
+      const sessionRefresh = typeof this.maybeApplySessionRefreshRequest === "function"
+        ? await this.maybeApplySessionRefreshRequest({ bindingKey, workspaceRoot, prepared })
+        : null;
       const dispatchedAtMs = Date.now();
       const runtimeParams = this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
       const turn = await this.runtimeAdapter.sendTextTurn({
@@ -846,6 +855,12 @@ class MossbridgeApp {
           systemRuntimeBinding: Boolean(prepared.systemRuntimeBinding),
         },
       });
+      if (sessionRefresh?.id) {
+        this.sessionRefreshRequests?.markCompleted?.(sessionRefresh.id, {
+          newThreadId: turn.threadId,
+          openingTurn: Boolean(turn?.openingTurn),
+        });
+      }
       this.scheduleRuntimeEventWatchdog({
         bindingKey,
         workspaceRoot,
@@ -892,6 +907,54 @@ class MossbridgeApp {
       }).catch(() => {});
       return false;
     }
+  }
+
+  async maybeApplySessionRefreshRequest({ bindingKey = "", workspaceRoot = "", prepared = null } = {}) {
+    if (!this.sessionRefreshRequests || normalizeText(prepared?.provider) === "system") {
+      return null;
+    }
+    const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id) || normalizeText(this.config.runtime) || "codex";
+    const request = this.sessionRefreshRequests.getPendingRequest({
+      bindingKey,
+      workspaceRoot,
+      runtimeId,
+    });
+    if (!request) {
+      return null;
+    }
+
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const currentThreadId = normalizeCommandArgument(
+      sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "",
+    );
+    const requestedOldThreadId = normalizeCommandArgument(request.oldThreadId);
+    if (requestedOldThreadId && currentThreadId && requestedOldThreadId !== currentThreadId) {
+      this.sessionRefreshRequests.markSkipped(request.id, "current_thread_changed", {
+        currentThreadId,
+      });
+      console.warn(
+        `[mossbridge] session refresh skipped id=${request.id} reason=current_thread_changed requested=${requestedOldThreadId} current=${currentThreadId}`
+      );
+      return null;
+    }
+
+    if (typeof this.runtimeAdapter.startFreshThreadDraft === "function") {
+      await this.runtimeAdapter.startFreshThreadDraft({
+        bindingKey,
+        workspaceRoot,
+        oldThreadId: currentThreadId,
+        reason: request.reason || "manual_maintenance",
+      });
+    }
+    sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+    sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+    const applied = this.sessionRefreshRequests.markApplied(request.id, {
+      oldThreadId: currentThreadId,
+    }) || request;
+    console.log(
+      `[mossbridge] session refresh applied id=${request.id} runtime=${runtimeId} workspace=${workspaceRoot} oldThread=${currentThreadId || "(none)"} reason=${request.reason || "manual_maintenance"}`
+    );
+    return applied;
   }
 
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
@@ -1394,6 +1457,7 @@ class MossbridgeApp {
       config: this.config,
     });
     this.runtimeContextUsageStore?.recordContext?.(usage);
+    this.maybeQueueAutoSessionRefreshForPressure?.({ usage, linked });
     const decision = evaluateClaudeAutoCompact(usage, this.config);
     if (!decision.shouldCompact || !threadId) {
       return;
@@ -1410,6 +1474,76 @@ class MossbridgeApp {
       workspaceRoot: linked?.workspaceRoot || "",
       bindingKey: linked?.bindingKey || "",
     });
+  }
+
+  maybeQueueAutoSessionRefreshForPressure({ usage = {}, linked = null } = {}) {
+    const decision = evaluateSessionAutoRefresh(usage, this.config);
+    const threadId = normalizeCommandArgument(usage.threadId);
+    if (!decision.shouldRefresh || !threadId || !linked?.bindingKey || !linked?.workspaceRoot || !this.sessionRefreshRequests) {
+      return null;
+    }
+    const runtimeId = normalizeText(usage.runtimeId) || normalizeText(this.runtimeAdapter?.describe?.().id) || "codex";
+    if (
+      runtimeId === "claudecode"
+      && this.config.claudeAutoCompactEnabled !== false
+      && (readNonNegativeNumber(usage.compactThresholdTokens) ?? 0) > 0
+    ) {
+      return null;
+    }
+    const sessionStore = this.runtimeAdapter?.getSessionStore?.();
+    const binding = sessionStore?.getBinding?.(linked.bindingKey) || {};
+    if (binding?.systemRuntimeBinding) {
+      return null;
+    }
+    const existing = this.sessionRefreshRequests.getPendingRequest({
+      bindingKey: linked.bindingKey,
+      workspaceRoot: linked.workspaceRoot,
+      runtimeId,
+    });
+    if (existing) {
+      return existing;
+    }
+    const scopeKey = [runtimeId, linked.bindingKey, linked.workspaceRoot].join("::");
+    const lastRequestedAt = Number(this.lastAutoSessionRefreshAtByScope?.get(scopeKey)) || 0;
+    const minIntervalMs = Math.max(
+      60_000,
+      Number(this.config.sessionRefreshMinIntervalMs) || DEFAULT_SESSION_REFRESH_MIN_INTERVAL_MS,
+    );
+    if (lastRequestedAt && Date.now() - lastRequestedAt < minIntervalMs) {
+      return null;
+    }
+    const request = this.sessionRefreshRequests.requestRefresh({
+      bindingKey: linked.bindingKey,
+      workspaceRoot: linked.workspaceRoot,
+      runtimeId,
+      oldThreadId: threadId,
+      reason: decision.reason,
+      requestedBy: "auto_context_pressure",
+    });
+    this.lastAutoSessionRefreshAtByScope?.set(scopeKey, Date.now());
+    this.recordControlEvent?.({
+      type: "runtime.context.session_refresh_queued",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.maybeQueueAutoSessionRefreshForPressure",
+      subject: threadId,
+      reason: decision.reason,
+      outcome: "queued",
+      correlationId: request.id,
+      payload: {
+        bindingKey: linked.bindingKey,
+        workspaceRoot: linked.workspaceRoot,
+        runtimeId,
+        currentTokens: decision.currentTokens,
+        contextWindow: decision.contextWindow,
+        refreshThresholdTokens: decision.refreshThresholdTokens,
+        refreshThresholdPercent: decision.refreshThresholdPercent,
+      },
+    });
+    console.log(
+      `[mossbridge] session refresh queued thread=${threadId} current=${formatCompactNumber(decision.currentTokens)} threshold=${formatCompactNumber(decision.refreshThresholdTokens)}`
+    );
+    return request;
   }
 
   async maybeAutoCompactAfterTurn({ event, linked, pendingOperation }) {
@@ -3761,7 +3895,7 @@ function buildWechatFrontstageTurnNote(normalized = {}) {
     "[微信前台对话提醒]",
     "这是和用户的一对一自然微信对话，不是工具回执、调试报告或工程答复；后台 short/concise 不支配前台表达。",
     "用户发来的 emoji、表情包或括号小动作只作为情绪线索；不要把 `[微笑]` 这类传输占位符当成你的表达习惯。",
-    "先接住这一拍的情绪和关系节奏，再决定要不要提问或处理事实；自然、亲近、具体，比机械简短更重要。",
+    "关系、情绪和事实不用排队。按当下最合适的节奏回应：该直接推进就推进，该共情就共情，该调侃就调侃，该短短接话就短短接话；不要套固定起手式。",
   ].join("\n");
 }
 
@@ -4176,6 +4310,35 @@ function evaluateClaudeAutoCompact(usage = {}, config = {}) {
     contextWindow: usage.contextWindow,
     availableMessageWindow: usage.availableMessageWindow,
     compactThresholdPercent: usage.compactThresholdPercent,
+  };
+}
+
+function evaluateSessionAutoRefresh(usage = {}, config = {}) {
+  if (Number(config.sessionRefreshPressurePercent) === 0) {
+    return { shouldRefresh: false, reason: "disabled" };
+  }
+  const refreshThresholdPercent = clampPercent(
+    config.sessionRefreshPressurePercent,
+    DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT,
+  );
+  const contextWindow = readNonNegativeNumber(usage.contextWindow) ?? 0;
+  const currentTokens = readNonNegativeNumber(usage.currentTokens) ?? 0;
+  const refreshThresholdTokens = contextWindow > 0
+    ? Math.floor((contextWindow * refreshThresholdPercent) / 100)
+    : 0;
+  if (refreshThresholdTokens <= 0) {
+    return { shouldRefresh: false, reason: "context_window_unavailable" };
+  }
+  if (currentTokens < refreshThresholdTokens) {
+    return { shouldRefresh: false, reason: "below_threshold" };
+  }
+  return {
+    shouldRefresh: true,
+    reason: "context_pressure_session_refresh",
+    currentTokens,
+    contextWindow,
+    refreshThresholdPercent,
+    refreshThresholdTokens,
   };
 }
 

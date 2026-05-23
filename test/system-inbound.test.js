@@ -164,6 +164,8 @@ test("stable WeChat guidance is delivered once per runtime thread and pressure t
   );
 
   assert.match(first.text, /微信前台对话提醒/);
+  assert.match(first.text, /关系、情绪和事实不用排队/);
+  assert.doesNotMatch(first.text, /先接住这一拍/);
   assert.doesNotMatch(second.text, /微信前台对话提醒/);
   assert.equal(captureArgs[0].includeRuntimePreludeGuidance, true);
   assert.equal(captureArgs[1].includeRuntimePreludeGuidance, false);
@@ -1704,6 +1706,9 @@ test("system dispatcher keeps random checkin as an opportunity instead of a mand
   assert.match(prepared.text, /lightweight maintenance and reconnection window/i);
   assert.match(prepared.text, /small, low-risk maintenance pass/i);
   assert.match(prepared.text, /Prefer read-only checks first/i);
+  assert.match(prepared.text, /Safe writes are small continuity handles/i);
+  assert.match(prepared.text, /capability request/i);
+  assert.match(prepared.text, /Do not restart services, rebind accounts, change credentials, delete memory/i);
   assert.match(prepared.text, /solitude journal entry/i);
   assert.match(prepared.text, /Do not store raw hidden chain-of-thought/i);
   assert.match(prepared.text, /wakeup decision record/i);

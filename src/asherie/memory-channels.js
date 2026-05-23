@@ -49,7 +49,7 @@ function buildWarmMemoryRuntimePacket(
 
   return {
     ...packet,
-    route_tag: hits.length ? "warm_hit" : "warm_empty",
+    route_tag: packet.route_tag || (hits.length ? "warm_hit" : "warm_empty"),
     hit_count: hits.length,
     summary: summaryBits.join(" | ").trim(),
   };

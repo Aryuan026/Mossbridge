@@ -1001,6 +1001,43 @@ test("asherie memory service keeps broad-basis taste questions focused on their 
   assert.ok(packet.warm_memory_packet.keyword_match_tokens.includes("指甲"));
 });
 
+test("asherie memory service suppresses noisy operational warm-card recall", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-denoise-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  const created = await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Calendar cleanup",
+    summary: "日历提醒测试已经结束，旧提醒要删除。",
+    body_markdown: "这张卡故意包含删除、结束、日历、提醒、测试，模拟运维短句可能误撞到温卡。",
+    tags: ["日历", "提醒", "测试", "删除"],
+    storage_strength: 1.6,
+  });
+  const materialId = created.record.material_id;
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "啊那就不要了，已经结束了哈哈，删掉",
+  });
+
+  assert.equal(packet.warm_memory_packet.hit_count, 0);
+  assert.equal(packet.warm_memory_packet.route_tag, "warm_query_suppressed");
+  assert.equal(packet.warm_memory_packet.recall_gate.suppressed, true);
+  assert.equal(packet.warm_memory_packet.recall_gate.reason, "operational_low_signal");
+  assert.deepEqual(packet.warm_memory_packet.feedback_rows, []);
+
+  const stored = await service.readWarmMaterial({
+    userId: "demo-user",
+    material_id: materialId,
+  });
+  assert.equal(Number(stored.record.recall_count) || 0, 0);
+});
+
 test("asherie memory service lets proactive recall surface symbolic relationship objects before the candidate window clips them", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-symbolic-"));
   const service = new AsherieMemoryService({

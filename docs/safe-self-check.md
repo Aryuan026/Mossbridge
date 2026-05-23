@@ -11,6 +11,13 @@ The goal is to help Codex or a human operator see what is wrong, not to let a ch
 
 The heartbeat/status tool exposes this as `maintenance.action_level = read_only_report`.
 
+Random check-ins have two different envelopes:
+
+- `checkin_lite` is a lightweight no-tool heartbeat. It should only use injected memory/status context and choose `silent` or one natural WeChat `send_message`.
+- Full-tool reminder, calendar, dreaming, case, or maintenance wakeups may do a small backstage pass first: read bridge status, wakeup agenda, pending reminders, memory/ongoing/episode/observation state, timeline/notebook, and other configured status surfaces. Safe writes are small continuity handles such as a reminder, notebook/timeline note, observation, ongoing-track update, solitude journal entry, or explicit capability request.
+
+That broader full-tool envelope is still not general autonomy. It must stay inside the safe scope below.
+
 ## Allowed During Heartbeat
 
 - Read bridge status, queues, pending reminders, runtime cooldowns, and context pressure.

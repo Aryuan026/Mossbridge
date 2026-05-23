@@ -67,9 +67,23 @@ The intentionally small public set is:
 - `npm run shared:start`
 - `npm run shared:open`
 - `npm run shared:status`
+- `npm run shared:refresh-session`
+- `npm run shared:refresh-session:claudecode`
 - `npm run start:dreaming`
 - `npm run doctor`
 - `npm run help`
+
+### Session Refresh
+
+`shared:refresh-session` queues a session refresh request for the currently bound workspace. The running bridge applies it on the next normal user message by clearing the old runtime thread/session binding and letting that foreground turn open a fresh thread with the regular opening instructions and memory packet. Background check-ins and other system turns do not consume the request.
+
+Mossbridge can also queue the same kind of request automatically when a runtime reports high context pressure. The public defaults are conservative: one pending refresh per runtime/workspace binding, with `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` and `MOSSBRIDGE_SESSION_REFRESH_MIN_INTERVAL_MS` controlling the threshold and repeat interval.
+
+Example:
+
+```bash
+npm run shared:refresh-session:claudecode -- --reason context_airing
+```
 
 ## Project Tools
 
