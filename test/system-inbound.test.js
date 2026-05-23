@@ -720,7 +720,7 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
       userName: "User",
       workspaceRoot: "/workspace",
     },
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       describe() {
         return { id: "claudecode" };
@@ -741,14 +741,14 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
         packet: { hit_count: 1 },
       };
     },
-    schedulePendingImageInboundFlush: MossbridgeApp.prototype.schedulePendingImageInboundFlush,
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    schedulePendingAttachmentInboundFlush: MossbridgeApp.prototype.schedulePendingAttachmentInboundFlush,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
   };
   const bindingKey = "binding:user-1";
   const workspaceRoot = "/workspace";
 
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -772,7 +772,7 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -800,7 +800,7 @@ test("image-only inbound messages are batched before runtime dispatch", async ()
   assert.equal(routed.length, 0);
   assert.equal(typings.length, 2);
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey,
     workspaceRoot,
   });
@@ -823,7 +823,7 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       userName: "User",
       workspaceRoot: "/workspace",
     },
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       describe() {
         return { id: "claudecode" };
@@ -836,14 +836,14 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       routed.push(payload);
       return true;
     },
-    schedulePendingImageInboundFlush: MossbridgeApp.prototype.schedulePendingImageInboundFlush,
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    schedulePendingAttachmentInboundFlush: MossbridgeApp.prototype.schedulePendingAttachmentInboundFlush,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
   };
   const bindingKey = "binding:user-1";
   const workspaceRoot = "/workspace";
 
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -867,7 +867,7 @@ test("image batch can merge with a trailing plain-text caption", async () => {
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -887,7 +887,7 @@ test("image batch can merge with a trailing plain-text caption", async () => {
     delayMs: 3000,
   });
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey,
     workspaceRoot,
   });
@@ -908,7 +908,7 @@ test("caption after a pending image waits so the next short text can join", asyn
       userName: "User",
       workspaceRoot: "/workspace",
     },
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       getSessionStore() {
         return {
@@ -944,19 +944,19 @@ test("caption after a pending image waits so the next short text can join", asyn
       routed.push(payload);
       return true;
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
       scheduledDelays.push(delayMs);
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (draft?.timer) {
         clearTimeout(draft.timer);
       }
       draft.timer = setTimeout(() => {}, 60_000);
-      this.pendingImageInboundByScope.set(scopeKey, draft);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
   };
 
   await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
@@ -989,10 +989,10 @@ test("caption after a pending image waits so the next short text can join", asyn
 
   assert.equal(routed.length, 0);
   assert.deepEqual(scheduledDelays, [8000, 6000]);
-  const pending = [...appLike.pendingImageInboundByScope.values()][0];
+  const pending = [...appLike.pendingAttachmentInboundByScope.values()][0];
   assert.equal(pending.messages.length, 2);
 
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
     prepared: {
@@ -1011,7 +1011,7 @@ test("caption after a pending image waits so the next short text can join", asyn
     delayMs: 3000,
   });
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -1031,7 +1031,7 @@ test("short image prelude waits for a later poll image and merges", async () => 
       userName: "User",
       workspaceRoot: "/workspace",
     },
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       getSessionStore() {
         return {
@@ -1070,20 +1070,20 @@ test("short image prelude waits for a later poll image and merges", async () => 
     async attachMemoryContextToPreparedText(_normalized, runtimeText) {
       return { text: runtimeText, packet: null };
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
       scheduledDelays.push(delayMs);
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (draft?.timer) {
         clearTimeout(draft.timer);
       }
       draft.timer = setTimeout(() => {}, 60_000);
-      this.pendingImageInboundByScope.set(scopeKey, draft);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
-    currentInboundBatchMayContainImageForSender() {
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
+    currentInboundBatchMayContainAttachmentForSender() {
       return false;
     },
   };
@@ -1101,7 +1101,7 @@ test("short image prelude waits for a later poll image and merges", async () => 
 
   assert.equal(routed.length, 0);
   assert.equal(scheduledDelays[0], 12_000);
-  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 1);
+  assert.equal([...appLike.pendingAttachmentInboundByScope.values()][0].messages.length, 1);
 
   await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
     workspaceId: "default",
@@ -1123,7 +1123,7 @@ test("short image prelude waits for a later poll image and merges", async () => 
   assert.equal(routed.length, 0);
   assert.equal(scheduledDelays[1], 8000);
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -1145,7 +1145,7 @@ test("short image prelude falls back to normal text if no image arrives", async 
       workspaceRoot: "/workspace",
     },
     pendingInboundByScope: new Map(),
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       getSessionStore() {
         return {
@@ -1177,21 +1177,21 @@ test("short image prelude falls back to normal text if no image arrives", async 
     async attachMemoryContextToPreparedText(_normalized, runtimeText) {
       return { text: runtimeText, packet: null };
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
       scheduledDelays.push(delayMs);
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (draft?.timer) {
         clearTimeout(draft.timer);
       }
       draft.timer = setTimeout(() => {}, 60_000);
-      this.pendingImageInboundByScope.set(scopeKey, draft);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
     flushPendingInboundMessages: MossbridgeApp.prototype.flushPendingInboundMessages,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
-    currentInboundBatchMayContainImageForSender() {
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
+    currentInboundBatchMayContainAttachmentForSender() {
       return false;
     },
     isTurnDispatchBlocked() {
@@ -1217,7 +1217,7 @@ test("short image prelude falls back to normal text if no image arrives", async 
   assert.equal(routed.length, 0);
   assert.equal(scheduledDelays[0], 12_000);
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -1236,10 +1236,10 @@ test("caption before an image in the same WeChat poll batch waits and merges", a
       workspaceRoot: "/workspace",
     },
     pendingInboundByScope: new Map(),
-    pendingImageInboundByScope: new Map(),
-    deferredImageInboundFlushScopeKeys: new Set(),
+    pendingAttachmentInboundByScope: new Map(),
+    deferredAttachmentInboundFlushScopeKeys: new Set(),
     inboundUpdateBatchDepth: 0,
-    inboundUpdateBatchImageSenders: new Set(),
+    inboundUpdateBatchAttachmentSenders: new Set(),
     runtimeAdapter: {
       getSessionStore() {
         return {
@@ -1278,26 +1278,26 @@ test("caption before an image in the same WeChat poll batch waits and merges", a
     async attachMemoryContextToPreparedText(_normalized, runtimeText) {
       return { text: runtimeText, packet: null };
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
       scheduledDelays.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (draft?.timer) {
         clearTimeout(draft.timer);
       }
       draft.timer = setTimeout(() => {}, 60_000);
-      this.pendingImageInboundByScope.set(scopeKey, draft);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
     flushPendingInboundMessages: MossbridgeApp.prototype.flushPendingInboundMessages,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
     beginInboundUpdateBatch: MossbridgeApp.prototype.beginInboundUpdateBatch,
     endInboundUpdateBatch: MossbridgeApp.prototype.endInboundUpdateBatch,
-    shouldDeferImageInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferImageInboundFlushUntilPollBatchEnds,
-    currentInboundBatchMayContainImageForSender: MossbridgeApp.prototype.currentInboundBatchMayContainImageForSender,
-    rememberDeferredImageInboundFlush: MossbridgeApp.prototype.rememberDeferredImageInboundFlush,
-    scheduleDeferredImageInboundFlushes: MossbridgeApp.prototype.scheduleDeferredImageInboundFlushes,
+    shouldDeferAttachmentInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferAttachmentInboundFlushUntilPollBatchEnds,
+    currentInboundBatchMayContainAttachmentForSender: MossbridgeApp.prototype.currentInboundBatchMayContainAttachmentForSender,
+    rememberDeferredAttachmentInboundFlush: MossbridgeApp.prototype.rememberDeferredAttachmentInboundFlush,
+    scheduleDeferredAttachmentInboundFlushes: MossbridgeApp.prototype.scheduleDeferredAttachmentInboundFlushes,
     isTurnDispatchBlocked() {
       return false;
     },
@@ -1347,12 +1347,12 @@ test("caption before an image in the same WeChat poll batch waits and merges", a
   }, { allowCommands: true });
 
   assert.equal(routed.length, 0);
-  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 2);
+  assert.equal([...appLike.pendingAttachmentInboundByScope.values()][0].messages.length, 2);
 
   MossbridgeApp.prototype.endInboundUpdateBatch.call(appLike);
   assert.equal(scheduledDelays.length, 1);
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -1365,6 +1365,145 @@ test("caption before an image in the same WeChat poll batch waits and merges", a
   assert.match(routed[0].prepared.text, /lamp\.jpg/);
 });
 
+test("caption before a file in the same WeChat poll batch waits and merges", async () => {
+  const routed = [];
+  const scheduledDelays = [];
+  const appLike = {
+    config: {
+      userName: "User",
+      workspaceRoot: "/workspace",
+    },
+    pendingInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
+    deferredAttachmentInboundFlushScopeKeys: new Set(),
+    inboundUpdateBatchDepth: 0,
+    inboundUpdateBatchAttachmentSenders: new Set(),
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding:user-1";
+          },
+        };
+      },
+      describe() {
+        return { id: "claudecode" };
+      },
+    },
+    streamDelivery: {
+      setReplyTarget() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+    },
+    resolveWorkspaceRoot() {
+      return "/workspace";
+    },
+    async prepareIncomingMessageForRuntime(normalized) {
+      return {
+        ...normalized,
+        originalText: normalized.text,
+        runtimeText: normalized.text || "file payload",
+        text: normalized.text || "file payload",
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+        attachmentFailures: [],
+      };
+    },
+    async routePreparedInbound(payload) {
+      routed.push(payload);
+      return true;
+    },
+    async attachMemoryContextToPreparedText(_normalized, runtimeText) {
+      return { text: runtimeText, packet: null };
+    },
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      scheduledDelays.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
+      if (draft?.timer) {
+        clearTimeout(draft.timer);
+      }
+      draft.timer = setTimeout(() => {}, 60_000);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
+    },
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
+    flushPendingInboundMessages: MossbridgeApp.prototype.flushPendingInboundMessages,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
+    beginInboundUpdateBatch: MossbridgeApp.prototype.beginInboundUpdateBatch,
+    endInboundUpdateBatch: MossbridgeApp.prototype.endInboundUpdateBatch,
+    shouldDeferAttachmentInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferAttachmentInboundFlushUntilPollBatchEnds,
+    currentInboundBatchMayContainAttachmentForSender: MossbridgeApp.prototype.currentInboundBatchMayContainAttachmentForSender,
+    rememberDeferredAttachmentInboundFlush: MossbridgeApp.prototype.rememberDeferredAttachmentInboundFlush,
+    scheduleDeferredAttachmentInboundFlushes: MossbridgeApp.prototype.scheduleDeferredAttachmentInboundFlushes,
+    isTurnDispatchBlocked() {
+      return false;
+    },
+    async dispatchPreparedTurn(payload) {
+      routed.push(payload);
+      return true;
+    },
+  };
+
+  MossbridgeApp.prototype.beginInboundUpdateBatch.call(appLike, 2, [
+    {
+      from_user_id: "user-1",
+      item_list: [{ type: 1, text_item: { text: "这是那份稿子" } }],
+    },
+    {
+      from_user_id: "user-1",
+      item_list: [{ type: 4, file_item: { media: {} } }],
+    },
+  ]);
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "这是那份稿子",
+    attachments: [],
+    receivedAt: "2026-05-05T10:00:01.000Z",
+  }, { allowCommands: true });
+
+  await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+    text: "",
+    attachments: [{
+      kind: "file",
+      absolutePath: "/workspace/inbox/draft.md",
+      sourceFileName: "draft.md",
+      contentType: "text/markdown",
+      isImage: false,
+    }],
+    receivedAt: "2026-05-05T10:00:02.000Z",
+  }, { allowCommands: true });
+
+  assert.equal(routed.length, 0);
+  assert.equal([...appLike.pendingAttachmentInboundByScope.values()][0].messages.length, 2);
+
+  MossbridgeApp.prototype.endInboundUpdateBatch.call(appLike);
+  assert.equal(scheduledDelays.length, 1);
+
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(flushed, true);
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0].prepared.originalText, "这是那份稿子");
+  assert.equal(routed[0].prepared.attachments.length, 1);
+  assert.match(routed[0].prepared.text, /这是那份稿子/);
+  assert.match(routed[0].prepared.text, /draft\.md/);
+  assert.match(routed[0].prepared.text, /文档、视频或其他文件/);
+});
+
 test("failed image intake can wait and merge with later saved images", async () => {
   const routed = [];
   const appLike = {
@@ -1372,7 +1511,7 @@ test("failed image intake can wait and merge with later saved images", async () 
       userName: "User",
       workspaceRoot: "/workspace",
     },
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     runtimeAdapter: {
       getSessionStore() {
         return {
@@ -1408,18 +1547,18 @@ test("failed image intake can wait and merge with later saved images", async () 
       routed.push(payload);
       return true;
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 8000) {
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (draft?.timer) {
         clearTimeout(draft.timer);
       }
       draft.timer = setTimeout(() => {}, 60_000);
-      this.pendingImageInboundByScope.set(scopeKey, draft);
+      this.pendingAttachmentInboundByScope.set(scopeKey, draft);
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
-    flushPendingImageInboundBatch: MossbridgeApp.prototype.flushPendingImageInboundBatch,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    flushPendingAttachmentInboundBatch: MossbridgeApp.prototype.flushPendingAttachmentInboundBatch,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
   };
 
   await MossbridgeApp.prototype.handlePreparedMessage.call(appLike, {
@@ -1457,10 +1596,10 @@ test("failed image intake can wait and merge with later saved images", async () 
   }, { allowCommands: true });
 
   assert.equal(routed.length, 0);
-  const pending = [...appLike.pendingImageInboundByScope.values()][0];
+  const pending = [...appLike.pendingAttachmentInboundByScope.values()][0];
   assert.equal(pending.messages.length, 2);
 
-  const flushed = await MossbridgeApp.prototype.flushPendingImageInboundBatch.call(appLike, {
+  const flushed = await MossbridgeApp.prototype.flushPendingAttachmentInboundBatch.call(appLike, {
     bindingKey: "binding:user-1",
     workspaceRoot: "/workspace",
   });
@@ -1474,34 +1613,34 @@ test("failed image intake can wait and merge with later saved images", async () 
   assert.match(routed[0].prepared.text, /do not ignore the saved attachments/i);
 });
 
-test("image flush waits until a multi-message WeChat poll batch has been processed", () => {
+test("attachment flush waits until a multi-message WeChat poll batch has been processed", () => {
   const scheduled = [];
   const typings = [];
   const appLike = {
-    pendingImageInboundByScope: new Map(),
-    deferredImageInboundFlushScopeKeys: new Set(),
+    pendingAttachmentInboundByScope: new Map(),
+    deferredAttachmentInboundFlushScopeKeys: new Set(),
     inboundUpdateBatchDepth: 0,
     channelAdapter: {
       async sendTyping(payload) {
         typings.push(payload);
       },
     },
-    schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = 1500) {
       scheduled.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
     },
-    clearPendingImageInboundTimer: MossbridgeApp.prototype.clearPendingImageInboundTimer,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
     beginInboundUpdateBatch: MossbridgeApp.prototype.beginInboundUpdateBatch,
     endInboundUpdateBatch: MossbridgeApp.prototype.endInboundUpdateBatch,
-    shouldDeferImageInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferImageInboundFlushUntilPollBatchEnds,
-    rememberDeferredImageInboundFlush: MossbridgeApp.prototype.rememberDeferredImageInboundFlush,
-    scheduleDeferredImageInboundFlushes: MossbridgeApp.prototype.scheduleDeferredImageInboundFlushes,
-    enqueuePendingImageInbound: MossbridgeApp.prototype.enqueuePendingImageInbound,
+    shouldDeferAttachmentInboundFlushUntilPollBatchEnds: MossbridgeApp.prototype.shouldDeferAttachmentInboundFlushUntilPollBatchEnds,
+    rememberDeferredAttachmentInboundFlush: MossbridgeApp.prototype.rememberDeferredAttachmentInboundFlush,
+    scheduleDeferredAttachmentInboundFlushes: MossbridgeApp.prototype.scheduleDeferredAttachmentInboundFlushes,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
   };
   const bindingKey = "binding:user-1";
   const workspaceRoot = "/workspace";
 
   MossbridgeApp.prototype.beginInboundUpdateBatch.call(appLike, 5);
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -1525,7 +1664,7 @@ test("image flush waits until a multi-message WeChat poll batch has been process
       receivedAt: "2026-05-05T10:00:01.000Z",
     },
   });
-  MossbridgeApp.prototype.enqueuePendingImageInbound.call(appLike, {
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
     bindingKey,
     workspaceRoot,
     prepared: {
@@ -1552,12 +1691,104 @@ test("image flush waits until a multi-message WeChat poll batch has been process
 
   assert.equal(scheduled.length, 0);
   assert.equal(typings.length, 2);
-  assert.equal([...appLike.pendingImageInboundByScope.values()][0].messages.length, 2);
+  assert.equal([...appLike.pendingAttachmentInboundByScope.values()][0].messages.length, 2);
 
   MossbridgeApp.prototype.endInboundUpdateBatch.call(appLike);
 
   assert.equal(scheduled.length, 1);
   assert.equal(scheduled[0].scopeKey, "binding:user-1::/workspace");
+});
+
+test("attachment flush waits until slow attachment intake finishes", async () => {
+  const typings = [];
+  const appLike = {
+    pendingAttachmentInboundByScope: new Map(),
+    pendingAttachmentIntakeByScope: new Map(),
+    deferredAttachmentInboundFlushScopeKeys: new Set(),
+    channelAdapter: {
+      async sendTyping(payload) {
+        typings.push(payload);
+      },
+    },
+    schedulePendingAttachmentInboundFlush: MossbridgeApp.prototype.schedulePendingAttachmentInboundFlush,
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    beginPendingAttachmentIntake: MossbridgeApp.prototype.beginPendingAttachmentIntake,
+    endPendingAttachmentIntake: MossbridgeApp.prototype.endPendingAttachmentIntake,
+    enqueuePendingAttachmentInbound: MossbridgeApp.prototype.enqueuePendingAttachmentInbound,
+  };
+  const bindingKey = "binding:user-1";
+  const workspaceRoot = "/workspace";
+  const scopeKey = "binding:user-1::/workspace";
+
+  MossbridgeApp.prototype.beginPendingAttachmentIntake.call(appLike, bindingKey, workspaceRoot);
+  MossbridgeApp.prototype.enqueuePendingAttachmentInbound.call(appLike, {
+    bindingKey,
+    workspaceRoot,
+    prepared: {
+      workspaceId: "default",
+      accountId: "wx-account",
+      senderId: "user-1",
+      messageId: "msg-1",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      originalText: "",
+      runtimeText: "image one",
+      text: "image one",
+      attachments: [{
+        kind: "image",
+        absolutePath: "/workspace/inbox/photo-1.jpg",
+        sourceFileName: "photo-1.jpg",
+        contentType: "image/jpeg",
+        isImage: true,
+      }],
+      attachmentFailures: [],
+      receivedAt: "2026-05-05T10:00:01.000Z",
+    },
+  });
+
+  let draft = appLike.pendingAttachmentInboundByScope.get(scopeKey);
+  assert.equal(typings.length, 1);
+  assert.equal(draft.messages.length, 1);
+  assert.equal(draft.timer, null);
+  assert.equal(appLike.deferredAttachmentInboundFlushScopeKeys.has(scopeKey), true);
+
+  MossbridgeApp.prototype.endPendingAttachmentIntake.call(appLike, { bindingKey, workspaceRoot });
+  draft = appLike.pendingAttachmentInboundByScope.get(scopeKey);
+  assert.ok(draft.timer);
+  assert.equal(appLike.deferredAttachmentInboundFlushScopeKeys.has(scopeKey), false);
+  clearTimeout(draft.timer);
+});
+
+test("attachment intake completion stays deferred while the WeChat poll batch is still open", () => {
+  const scheduled = [];
+  const appLike = {
+    pendingAttachmentInboundByScope: new Map(),
+    pendingAttachmentIntakeByScope: new Map(),
+    deferredAttachmentInboundFlushScopeKeys: new Set(),
+    inboundUpdateBatchDepth: 1,
+    schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs) {
+      scheduled.push({ scopeKey, bindingKey, workspaceRoot, delayMs });
+    },
+    clearPendingAttachmentInboundTimer: MossbridgeApp.prototype.clearPendingAttachmentInboundTimer,
+    endPendingAttachmentIntake: MossbridgeApp.prototype.endPendingAttachmentIntake,
+  };
+  const bindingKey = "binding:user-1";
+  const workspaceRoot = "/workspace";
+  const scopeKey = "binding:user-1::/workspace";
+  appLike.pendingAttachmentIntakeByScope.set(scopeKey, 1);
+  appLike.pendingAttachmentInboundByScope.set(scopeKey, {
+    bindingKey,
+    workspaceRoot,
+    messages: [{ messageId: "image-1", attachments: [{ kind: "image" }] }],
+    timer: null,
+  });
+
+  MossbridgeApp.prototype.endPendingAttachmentIntake.call(appLike, { bindingKey, workspaceRoot });
+
+  assert.equal(scheduled.length, 0);
+  assert.equal(appLike.pendingAttachmentIntakeByScope.has(scopeKey), false);
+  assert.equal(appLike.deferredAttachmentInboundFlushScopeKeys.has(scopeKey), true);
+  assert.equal(appLike.pendingAttachmentInboundByScope.get(scopeKey).timer, null);
 });
 
 test("location arrive_home trigger enqueues a system action message", () => {

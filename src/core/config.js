@@ -79,6 +79,7 @@ function readConfig() {
     stickerAssetsDir: readBridgeTextEnv("STICKER_ASSETS_DIR") || path.join(stickersDir, "assets"),
     stickersIndexFile: readBridgeTextEnv("STICKERS_INDEX_FILE") || path.join(stickersDir, "index.json"),
     stickerTagsFile: readBridgeTextEnv("STICKER_TAGS_FILE") || path.join(stickersDir, "tags.json"),
+    stickerDeliveryAuditFile: path.join(stateDir, "sticker-delivery-audit.json"),
     stickersTemplateDir: path.resolve(__dirname, "..", "..", "templates", "stickers"),
     stickersTemplateIndexFile: path.resolve(__dirname, "..", "..", "templates", "stickers", "index.json"),
     stickerTagsTemplateFile: path.resolve(__dirname, "..", "..", "templates", "stickers", "tags.json"),

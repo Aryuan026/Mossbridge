@@ -9,6 +9,9 @@ const { ProjectToolHost } = require("../src/tools/tool-host");
 function createHost(overrides = {}) {
   return new ProjectToolHost({
     services: {
+      config: {
+        ...(overrides.config || {}),
+      },
       diary: {
         async append(args) {
           return { filePath: "/tmp/diary.md", ...args };
@@ -604,6 +607,45 @@ test("tool host exposes a read-only bridge status tool for heartbeat maintenance
   assert.equal(result.data.queues.system_pending, 0);
   assert.equal(result.data.reminders.pending_count, 1);
   assert.equal(result.data.reminders.next_due_at, "2026-05-09T12:00:00.000Z");
+});
+
+test("bridge status includes latest sticker delivery degradation", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-status-sticker-"));
+  const stickerDeliveryAuditFile = path.join(tempRoot, "sticker-delivery-audit.json");
+  fs.writeFileSync(stickerDeliveryAuditFile, `${JSON.stringify({
+    lastDelivery: {
+      kind: "sticker_delivery",
+      ts: new Date().toISOString(),
+      status: "sent",
+      stickerId: "stk_012",
+      sourceFileName: "stk_012.gif",
+      sourceMimeType: "image/gif",
+      deliveryFileName: "stk_012-preview.png",
+      deliveryMimeType: "image/png",
+      deliveryTransform: "gif_static_png_preview",
+      channelDeliveryKind: "file",
+      fallbackFrom: "image",
+      fallbackReason: "image upload failed: CDN 500",
+    },
+    recentDeliveries: [],
+  }, null, 2)}\n`, "utf8");
+  try {
+    const host = createHost({ config: { stickerDeliveryAuditFile } });
+    const result = await host.invokeTool("mossbridge_bridge_status", {
+      includeQueues: false,
+      includeReminders: false,
+      includeRuntime: false,
+      includeControl: false,
+    }, {});
+
+    assert.equal(result.data.channel.last_sticker_delivery.state, "degraded");
+    assert.equal(result.data.channel.last_sticker_delivery.sticker_id, "stk_012");
+    assert.equal(result.data.channel.last_sticker_delivery.channel_kind, "file");
+    assert.equal(result.data.channel.last_sticker_delivery.fallback_from, "image");
+    assert.match(result.text, /Last sticker: degraded stk_012 image\/gif -> image\/png/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("bridge status exposes weighted daily checkin budget pressure", async () => {

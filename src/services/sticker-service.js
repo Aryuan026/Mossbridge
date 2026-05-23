@@ -9,6 +9,7 @@ const { promisify } = require("util");
 const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-store");
 const { loadPersistedContextTokens } = require("../adapters/channel/weixin/context-token-store");
 const { resolvePreferredSenderId } = require("../core/default-targets");
+const { StickerDeliveryAuditStore } = require("../core/sticker-delivery-audit-store");
 const { resolveWorkspaceOfficePaths } = require("../core/workspace-office-layout");
 
 const execFileAsync = promisify(execFile);
@@ -22,11 +23,12 @@ const MIN_STICKER_DESC_CHARS = 16;
 const STICKER_STATUS_ACTIVE = "active";
 const STICKER_STATUS_ARCHIVE = "archive";
 const STICKER_STATUS_VALUES = [STICKER_STATUS_ACTIVE, STICKER_STATUS_ARCHIVE];
+const SUPPORTED_STICKER_EXTENSIONS = [".gif", ".png", ".jpg", ".jpeg", ".webp"];
 const STICKER_TAG_GUIDANCE = "Reuse existing tags when they fit. Otherwise create short new tags; new tags are added to the tag list.";
 const STICKER_DESC_GUIDANCE = `Prefer descs of ${MIN_STICKER_DESC_CHARS} or more characters. If readable text exists, append it after the short scene description.`;
 const STICKER_DESC_FIELD_DESCRIPTION = `A concrete sticker description. ${STICKER_DESC_GUIDANCE}`;
 const STICKER_STATUS_FIELD_DESCRIPTION = "Optional sticker status. active is available for normal picking; archive stays searchable but is not picked by default.";
-const STICKER_SEMANTIC_FIELDS = ["meaning", "gesture", "frontstageEffect", "tone", "useWhen", "avoidWhen", "rawContent"];
+const STICKER_SEMANTIC_FIELDS = ["meaning", "gesture", "frontstageEffect", "tone", "useWhen", "avoidWhen", "rawContent", "group", "drawer"];
 const STICKER_SEARCH_FIELD_WEIGHTS = {
   meaning: 5.0,
   useWhen: 4.2,
@@ -49,6 +51,9 @@ class StickerService {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.channelFileService = channelFileService;
+    this.deliveryAuditStore = new StickerDeliveryAuditStore({
+      filePath: this.config?.stickerDeliveryAuditFile,
+    });
   }
 
   async listTags({ query = "", limit = DEFAULT_TAG_LIST_LIMIT } = {}) {
@@ -134,7 +139,7 @@ class StickerService {
         && value.tags.includes(normalizedTag)
         && (!normalizedPack || normalizeText(value?.pack) === normalizedPack)
         && (includeArchive || normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) === normalizedStatus)
-        && fs.existsSync(resolveStickerFilePath(this.config, stickerId)))
+        && fs.existsSync(resolveStickerFilePath(this.config, stickerId, value)))
       .slice(-normalizedLimit)
       .reverse()
       .map(([stickerId, value]) => ({
@@ -144,7 +149,11 @@ class StickerService {
         pack: normalizeText(value?.pack),
         status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
         favorite: Boolean(value?.favorite),
+        group: normalizeText(value?.group),
+        drawer: normalizeText(value?.drawer),
         ...pickStickerSemanticFields(value),
+        assetFile: normalizeStickerAssetFile(value?.assetFile || value?.asset_file),
+        mimeType: normalizeText(value?.mimeType || value?.mime_type) || guessStickerMimeType(resolveStickerFilePath(this.config, stickerId, value)),
       }));
 
     return {
@@ -175,7 +184,7 @@ class StickerService {
       if (!includeArchive && normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) !== normalizedStatus) {
         continue;
       }
-      if (!fs.existsSync(resolveStickerFilePath(this.config, stickerId))) {
+      if (!fs.existsSync(resolveStickerFilePath(this.config, stickerId, value))) {
         continue;
       }
       let score = scoreStickerEntry(value, normalizedQuery, tokens);
@@ -200,7 +209,11 @@ class StickerService {
         pack: normalizeText(value?.pack),
         status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
         favorite: Boolean(value?.favorite),
+        group: normalizeText(value?.group),
+        drawer: normalizeText(value?.drawer),
         ...pickStickerSemanticFields(value),
+        assetFile: normalizeStickerAssetFile(value?.assetFile || value?.asset_file),
+        mimeType: normalizeText(value?.mimeType || value?.mime_type) || guessStickerMimeType(resolveStickerFilePath(this.config, stickerId, value)),
         score: Number(score.toFixed(4)),
       })),
     };
@@ -218,7 +231,7 @@ class StickerService {
       .filter(([, value]) => !normalizedPack || normalizeText(value?.pack) === normalizedPack)
       .filter(([, value]) => !normalizedStatus || normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE) === normalizedStatus)
       .map(([stickerId, value]) => {
-        const filePath = resolveStickerFilePath(this.config, stickerId);
+        const filePath = resolveStickerFilePath(this.config, stickerId, value);
         return {
           stickerId,
           tags: Array.isArray(value?.tags) ? value.tags : [],
@@ -226,9 +239,13 @@ class StickerService {
           pack: normalizeText(value?.pack),
           status: normalizeStickerStatus(value?.status, STICKER_STATUS_ACTIVE),
           favorite: Boolean(value?.favorite),
+          group: normalizeText(value?.group),
+          drawer: normalizeText(value?.drawer),
           source: normalizeText(value?.source),
           sourceId: normalizeText(value?.sourceId),
           ...pickStickerSemanticFields(value),
+          assetFile: normalizeStickerAssetFile(value?.assetFile || value?.asset_file),
+          mimeType: normalizeText(value?.mimeType || value?.mime_type) || guessStickerMimeType(filePath),
           filePath,
           hasFile: fs.existsSync(filePath),
         };
@@ -253,45 +270,104 @@ class StickerService {
       throw new Error("Sticker id is required.");
     }
     const index = loadStickerIndexSync(this.config);
-    if (!index[normalizedStickerId]) {
+    const entry = index[normalizedStickerId];
+    if (!entry) {
       throw new Error(`Sticker not found: ${normalizedStickerId}`);
     }
-    const filePath = resolveStickerFilePath(this.config, normalizedStickerId);
+    const filePath = resolveStickerFilePath(this.config, normalizedStickerId, entry);
     if (!fs.existsSync(filePath)) {
       throw new Error(`Sticker file is missing: ${filePath}`);
     }
+    const sourceStat = safeFileStat(filePath);
     const deliveryCandidates = await prepareStickerDeliveryCandidates({
       config: this.config,
       stickerId: normalizedStickerId,
       filePath,
     });
     const attemptedDeliveries = [];
+    const deliveryAttempts = [];
     let delivery = null;
     let deliveredCandidate = null;
     for (const candidate of deliveryCandidates) {
+      const attempt = {
+        status: "pending",
+        filePath: candidate.filePath,
+        transform: candidate.transform,
+        mimeType: guessStickerMimeType(candidate.filePath),
+        actualMimeType: sniffMimeTypeFromFile(candidate.filePath),
+        sizeBytes: safeFileStat(candidate.filePath)?.size,
+        delivery: null,
+        error: "",
+      };
+      this.recordDeliveryAudit(buildStickerDeliveryAuditPayload({
+        status: "attempting",
+        stickerId: normalizedStickerId,
+        userId,
+        entry,
+        sourceFilePath: filePath,
+        sourceStat,
+        deliveryFilePath: candidate.filePath,
+        deliveryStat: safeFileStat(candidate.filePath),
+        deliveryTransform: candidate.transform,
+        deliveryTransformError: candidate.error,
+        deliveryMimeType: attempt.mimeType,
+        attempts: [...deliveryAttempts, attempt],
+      }));
       try {
         delivery = await this.channelFileService.sendToCurrentChat({
           filePath: candidate.filePath,
           userId,
         }, context);
+        attempt.status = "sent";
+        attempt.delivery = delivery?.delivery || null;
+        deliveryAttempts.push(attempt);
         deliveredCandidate = candidate;
         break;
       } catch (error) {
+        attempt.status = "failed";
+        attempt.error = error instanceof Error ? error.message : String(error || "unknown error");
+        deliveryAttempts.push(attempt);
+        this.recordDeliveryAudit(buildStickerDeliveryAuditPayload({
+          status: "attempt_failed",
+          stickerId: normalizedStickerId,
+          userId,
+          entry,
+          sourceFilePath: filePath,
+          sourceStat,
+          deliveryFilePath: candidate.filePath,
+          deliveryStat: safeFileStat(candidate.filePath),
+          deliveryTransform: candidate.transform,
+          deliveryTransformError: candidate.error,
+          deliveryMimeType: attempt.mimeType,
+          attempts: deliveryAttempts,
+          error: attempt.error,
+        }));
         attemptedDeliveries.push({
           filePath: candidate.filePath,
           transform: candidate.transform,
-          error: error instanceof Error ? error.message : String(error || "unknown error"),
+          error: attempt.error,
         });
       }
     }
     if (!deliveredCandidate) {
       const lastAttempt = attemptedDeliveries.at(-1);
+      this.recordDeliveryAudit(buildStickerDeliveryAuditPayload({
+        status: "failed",
+        stickerId: normalizedStickerId,
+        userId,
+        entry,
+        sourceFilePath: filePath,
+        sourceStat,
+        attempts: deliveryAttempts,
+        error: lastAttempt?.error || "unknown error",
+      }));
       throw new Error(`Sticker delivery failed: ${lastAttempt?.error || "unknown error"}`);
     }
-    return {
+    const result = {
       stickerId: normalizedStickerId,
       filePath,
-      mimeType: guessStickerMimeType(filePath),
+      assetFile: normalizeStickerAssetFile(entry.assetFile || entry.asset_file),
+      mimeType: normalizeText(entry.mimeType || entry.mime_type) || guessStickerMimeType(filePath),
       deliveryFilePath: deliveredCandidate.filePath,
       deliveryMimeType: guessStickerMimeType(deliveredCandidate.filePath),
       deliveryTransform: deliveredCandidate.transform,
@@ -299,6 +375,30 @@ class StickerService {
       attemptedDeliveries,
       delivery,
     };
+    this.recordDeliveryAudit(buildStickerDeliveryAuditPayload({
+      status: "sent",
+      stickerId: normalizedStickerId,
+      userId: normalizeText(delivery?.userId) || userId,
+      entry,
+      sourceFilePath: filePath,
+      sourceStat,
+      deliveryFilePath: deliveredCandidate.filePath,
+      deliveryStat: safeFileStat(deliveredCandidate.filePath),
+      deliveryTransform: deliveredCandidate.transform,
+      deliveryTransformError: deliveredCandidate.error,
+      deliveryMimeType: result.deliveryMimeType,
+      delivery: delivery?.delivery || null,
+      attempts: deliveryAttempts,
+    }));
+    return result;
+  }
+
+  recordDeliveryAudit(payload = {}) {
+    try {
+      return this.deliveryAuditStore?.recordDelivery?.(payload);
+    } catch {
+      return null;
+    }
   }
 
   async delete({ items = [] } = {}, context = {}) {
@@ -319,7 +419,7 @@ class StickerService {
 
     const results = [];
     for (const stickerId of normalizedStickerIds) {
-      const filePath = resolveStickerFilePath(this.config, stickerId);
+      const filePath = resolveStickerFilePath(this.config, stickerId, index[stickerId]);
       await fsp.rm(filePath, { force: true }).catch(() => {});
       results.push({
         stickerId,
@@ -575,8 +675,10 @@ function normalizeStickerIndexPayload(value) {
       pack: normalizeText(entry?.pack),
       status: normalizeStickerStatus(entry?.status, STICKER_STATUS_ACTIVE),
       favorite: Boolean(entry?.favorite),
+      group: normalizeText(entry?.group),
+      drawer: normalizeText(entry?.drawer),
       source: normalizeText(entry?.source),
-      sourceId: normalizeText(entry?.sourceId),
+      sourceId: normalizeText(entry?.sourceId || entry?.source_id),
       meaning: normalizeText(entry?.meaning),
       gesture: normalizeText(entry?.gesture),
       frontstageEffect: normalizeText(entry?.frontstageEffect || entry?.frontstage_effect),
@@ -584,6 +686,14 @@ function normalizeStickerIndexPayload(value) {
       useWhen: normalizeTextList(entry?.useWhen || entry?.use_when),
       avoidWhen: normalizeTextList(entry?.avoidWhen || entry?.avoid_when),
       rawContent: normalizeText(entry?.rawContent || entry?.raw_content),
+      assetFile: normalizeStickerAssetFile(entry?.assetFile || entry?.asset_file),
+      mimeType: normalizeText(entry?.mimeType || entry?.mime_type),
+      sha256: normalizeText(entry?.sha256),
+      assetWidth: normalizeNonNegativeInt(entry?.assetWidth || entry?.asset_width),
+      assetHeight: normalizeNonNegativeInt(entry?.assetHeight || entry?.asset_height),
+      assetSizeBytes: normalizeNonNegativeInt(entry?.assetSizeBytes || entry?.asset_size_bytes),
+      assetProcessed: Boolean(entry?.assetProcessed || entry?.asset_processed),
+      assetProcessingNotes: normalizeText(entry?.assetProcessingNotes || entry?.asset_processing_notes),
     };
   }
   return normalized;
@@ -615,7 +725,11 @@ function mergeStickerTemplateSemantics(current, template) {
   return merged;
 }
 
-function resolveStickerFilePath(config = {}, stickerId = "") {
+function resolveStickerFilePath(config = {}, stickerId = "", entry = null) {
+  const assetFile = normalizeStickerAssetFile(entry?.assetFile || entry?.asset_file);
+  if (assetFile) {
+    return path.join(buildStickerPaths(config).stickerAssetsDir, assetFile);
+  }
   return path.join(buildStickerPaths(config).stickerAssetsDir, `${normalizeStickerId(stickerId)}.gif`);
 }
 
@@ -677,8 +791,8 @@ function allocateNextStickerId(index = {}) {
 
 function buildStickerHashIndex(config = {}, index = {}) {
   const hashByStickerId = new Map();
-  for (const stickerId of Object.keys(index)) {
-    const filePath = resolveStickerFilePath(config, stickerId);
+  for (const [stickerId, entry] of Object.entries(index)) {
+    const filePath = resolveStickerFilePath(config, stickerId, entry);
     if (!fs.existsSync(filePath)) {
       continue;
     }
@@ -692,11 +806,11 @@ function buildStickerHashIndex(config = {}, index = {}) {
 }
 
 function findDuplicateStickerByHash(config = {}, index = {}, hashByStickerId = new Map(), targetHash = "") {
-  for (const stickerId of Object.keys(index)) {
+  for (const [stickerId, entry] of Object.entries(index)) {
     if (hashByStickerId.get(stickerId) === targetHash) {
       return {
         stickerId,
-        filePath: resolveStickerFilePath(config, stickerId),
+        filePath: resolveStickerFilePath(config, stickerId, entry),
       };
     }
   }
@@ -1174,6 +1288,117 @@ function guessStickerMimeType(filePath = "") {
     return "image/gif";
   }
   return "application/octet-stream";
+}
+
+function buildStickerDeliveryAuditPayload({
+  status = "",
+  stickerId = "",
+  userId = "",
+  entry = {},
+  sourceFilePath = "",
+  sourceStat = null,
+  deliveryFilePath = "",
+  deliveryStat = null,
+  deliveryTransform = "",
+  deliveryTransformError = "",
+  deliveryMimeType = "",
+  delivery = null,
+  attempts = [],
+  error = "",
+} = {}) {
+  return {
+    status,
+    stickerId,
+    userId,
+    sourceAssetFile: normalizeStickerAssetFile(entry.assetFile || entry.asset_file),
+    sourceFilePath,
+    sourceMimeType: normalizeText(entry.mimeType || entry.mime_type) || guessStickerMimeType(sourceFilePath),
+    sourceActualMimeType: sniffMimeTypeFromFile(sourceFilePath),
+    sourceSizeBytes: sourceStat?.size,
+    deliveryFilePath,
+    deliveryMimeType: normalizeText(deliveryMimeType) || guessStickerMimeType(deliveryFilePath),
+    deliveryActualMimeType: sniffMimeTypeFromFile(deliveryFilePath),
+    deliverySizeBytes: deliveryStat?.size,
+    deliveryTransform,
+    deliveryTransformError,
+    delivery,
+    attempts,
+    error,
+  };
+}
+
+function safeFileStat(filePath = "") {
+  const normalizedFilePath = normalizeText(filePath);
+  if (!normalizedFilePath) {
+    return null;
+  }
+  try {
+    const stat = fs.statSync(normalizedFilePath);
+    return stat?.isFile?.() ? stat : null;
+  } catch {
+    return null;
+  }
+}
+
+function sniffMimeTypeFromFile(filePath = "") {
+  const normalizedFilePath = normalizeText(filePath);
+  if (!normalizedFilePath) {
+    return "";
+  }
+  let header = null;
+  try {
+    const fd = fs.openSync(normalizedFilePath, "r");
+    try {
+      header = Buffer.alloc(16);
+      const bytesRead = fs.readSync(fd, header, 0, header.length, 0);
+      header = header.subarray(0, bytesRead);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+  if (header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const ascii = header.toString("ascii", 0, Math.min(header.length, 12));
+  if (ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a")) {
+    return "image/gif";
+  }
+  if (ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP") {
+    return "image/webp";
+  }
+  return "";
+}
+
+function normalizeStickerAssetFile(value) {
+  const raw = normalizeText(value);
+  if (!raw) {
+    return "";
+  }
+  const name = path.basename(raw);
+  const ext = normalizeStickerExtension(path.extname(name));
+  if (!ext) {
+    return "";
+  }
+  const stem = normalizeStickerId(path.basename(name, path.extname(name)));
+  return stem ? `${stem}${ext}` : "";
+}
+
+function normalizeStickerExtension(value) {
+  let ext = normalizeText(value).toLowerCase();
+  if (ext === ".jpeg") {
+    ext = ".jpg";
+  }
+  return SUPPORTED_STICKER_EXTENSIONS.includes(ext) ? ext : "";
+}
+
+function normalizeNonNegativeInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 }
 
 function hasOwn(value, key) {

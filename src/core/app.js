@@ -78,10 +78,10 @@ const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
 const DEFAULT_CHECKIN_RUNTIME_TEXT_CHARS = 8_000;
 const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
-const MAX_INBOUND_STICKER_IMAGE_BATCH = 10;
-const INBOUND_IMAGE_BATCH_IDLE_MS = 8_000;
-const INBOUND_IMAGE_TEXT_BATCH_IDLE_MS = 6_000;
-const INBOUND_IMAGE_PRELUDE_IDLE_MS = 12_000;
+const MAX_INBOUND_ATTACHMENT_BATCH = 10;
+const INBOUND_ATTACHMENT_BATCH_IDLE_MS = 8_000;
+const INBOUND_ATTACHMENT_TEXT_BATCH_IDLE_MS = 6_000;
+const INBOUND_ATTACHMENT_PRELUDE_IDLE_MS = 12_000;
 const DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT = 92;
 const DEFAULT_SESSION_REFRESH_MIN_INTERVAL_MS = 30 * 60_000;
 
@@ -131,10 +131,11 @@ class MossbridgeApp {
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.turnGateStore = new TurnGateStore();
     this.pendingInboundByScope = new Map();
-    this.pendingImageInboundByScope = new Map();
+    this.pendingAttachmentInboundByScope = new Map();
+    this.pendingAttachmentIntakeByScope = new Map();
     this.inboundUpdateBatchDepth = 0;
-    this.inboundUpdateBatchImageSenders = new Set();
-    this.deferredImageInboundFlushScopeKeys = new Set();
+    this.inboundUpdateBatchAttachmentSenders = new Set();
+    this.deferredAttachmentInboundFlushScopeKeys = new Set();
     this.turnBoundaryScopeKeys = new Set();
     this.turnWritebackContextByRunKey = new Map();
     this.pendingTurnWritebackByThreadId = new Map();
@@ -254,7 +255,7 @@ class MossbridgeApp {
     }
 
     const shutdown = createShutdownController(async () => {
-      this.clearPendingImageInboundTimers();
+      this.clearPendingAttachmentInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     });
@@ -320,7 +321,7 @@ class MossbridgeApp {
       }
     } finally {
       shutdown.dispose();
-      this.clearPendingImageInboundTimers();
+      this.clearPendingAttachmentInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
     }
@@ -684,44 +685,70 @@ class MossbridgeApp {
     }
 
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
-    const prepared = await this.prepareIncomingMessageForRuntime(normalized, workspaceRoot);
+    const shouldHoldAttachmentFlush = normalizedHasBatchableAttachment(normalized);
+    if (shouldHoldAttachmentFlush && typeof this.beginPendingAttachmentIntake === "function") {
+      this.beginPendingAttachmentIntake(bindingKey, workspaceRoot);
+    }
+    let prepared = null;
+    try {
+      prepared = await this.prepareIncomingMessageForRuntime(normalized, workspaceRoot);
+    } catch (error) {
+      if (shouldHoldAttachmentFlush && typeof this.endPendingAttachmentIntake === "function") {
+        this.endPendingAttachmentIntake({ bindingKey, workspaceRoot });
+      }
+      throw error;
+    }
     if (!prepared) {
+      if (shouldHoldAttachmentFlush && typeof this.endPendingAttachmentIntake === "function") {
+        this.endPendingAttachmentIntake({ bindingKey, workspaceRoot });
+      }
       return;
     }
 
-    if (shouldBatchImageContextInbound(prepared)) {
-      this.enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared });
+    if (shouldBatchAttachmentContextInbound(prepared)) {
+      this.enqueuePendingAttachmentInbound({ bindingKey, workspaceRoot, prepared });
+      if (shouldHoldAttachmentFlush && typeof this.endPendingAttachmentIntake === "function") {
+        this.endPendingAttachmentIntake({ bindingKey, workspaceRoot });
+      }
       return;
+    }
+
+    if (shouldHoldAttachmentFlush && typeof this.endPendingAttachmentIntake === "function") {
+      this.endPendingAttachmentIntake({ bindingKey, workspaceRoot });
     }
 
     if (
       isPlainTextPreparedMessage(prepared)
       && (
-        this.hasPendingImageInbound(bindingKey, workspaceRoot)
-        || this.currentInboundBatchMayContainImageForSender(normalized.senderId)
+        this.hasPendingAttachmentInbound(bindingKey, workspaceRoot)
+        || (
+          typeof this.hasPendingAttachmentIntake === "function"
+          && this.hasPendingAttachmentIntake(bindingKey, workspaceRoot)
+        )
+        || this.currentInboundBatchMayContainAttachmentForSender(normalized.senderId)
       )
     ) {
-      this.enqueuePendingImageInbound({
+      this.enqueuePendingAttachmentInbound({
         bindingKey,
         workspaceRoot,
         prepared,
-        delayMs: INBOUND_IMAGE_TEXT_BATCH_IDLE_MS,
+        delayMs: INBOUND_ATTACHMENT_TEXT_BATCH_IDLE_MS,
       });
       return;
     }
 
-    if (isLikelyImagePreludePreparedMessage(prepared)) {
-      this.enqueuePendingImageInbound({
+    if (isLikelyAttachmentPreludePreparedMessage(prepared)) {
+      this.enqueuePendingAttachmentInbound({
         bindingKey,
         workspaceRoot,
         prepared,
-        delayMs: INBOUND_IMAGE_PRELUDE_IDLE_MS,
+        delayMs: INBOUND_ATTACHMENT_PRELUDE_IDLE_MS,
       });
       return;
     }
 
-    if (this.hasPendingImageInbound(bindingKey, workspaceRoot)) {
-      await this.flushPendingImageInboundBatch({ bindingKey, workspaceRoot });
+    if (this.hasPendingAttachmentInbound(bindingKey, workspaceRoot)) {
+      await this.flushPendingAttachmentInboundBatch({ bindingKey, workspaceRoot });
     }
 
     await this.routePreparedInbound({ bindingKey, workspaceRoot, prepared });
@@ -993,8 +1020,69 @@ class MossbridgeApp {
     return this.dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared });
   }
 
-  hasPendingImageInbound(bindingKey, workspaceRoot) {
-    return this.pendingImageInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
+  hasPendingAttachmentInbound(bindingKey, workspaceRoot) {
+    return this.pendingAttachmentInboundByScope.has(buildScopeKey(bindingKey, workspaceRoot));
+  }
+
+  hasPendingAttachmentIntake(bindingKey, workspaceRoot) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey) {
+      return false;
+    }
+    if (!(this.pendingAttachmentIntakeByScope instanceof Map)) {
+      this.pendingAttachmentIntakeByScope = new Map();
+    }
+    return Number(this.pendingAttachmentIntakeByScope?.get(scopeKey) || 0) > 0;
+  }
+
+  beginPendingAttachmentIntake(bindingKey, workspaceRoot) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey) {
+      return;
+    }
+    if (!(this.pendingAttachmentIntakeByScope instanceof Map)) {
+      this.pendingAttachmentIntakeByScope = new Map();
+    }
+    const nextCount = Number(this.pendingAttachmentIntakeByScope?.get(scopeKey) || 0) + 1;
+    this.pendingAttachmentIntakeByScope.set(scopeKey, nextCount);
+    if (this.pendingAttachmentInboundByScope.has(scopeKey)) {
+      this.clearPendingAttachmentInboundTimer(scopeKey);
+      this.deferredAttachmentInboundFlushScopeKeys.add(scopeKey);
+    }
+  }
+
+  endPendingAttachmentIntake({ bindingKey = "", workspaceRoot = "" } = {}) {
+    const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
+    if (!scopeKey) {
+      return;
+    }
+    if (!(this.pendingAttachmentIntakeByScope instanceof Map)) {
+      this.pendingAttachmentIntakeByScope = new Map();
+    }
+    const nextCount = Math.max(0, Number(this.pendingAttachmentIntakeByScope?.get(scopeKey) || 0) - 1);
+    if (nextCount > 0) {
+      this.pendingAttachmentIntakeByScope.set(scopeKey, nextCount);
+      return;
+    }
+    this.pendingAttachmentIntakeByScope.delete(scopeKey);
+    if (!this.pendingAttachmentInboundByScope.has(scopeKey)) {
+      return;
+    }
+    const shouldDeferFlush = typeof this.shouldDeferAttachmentInboundFlushUntilPollBatchEnds === "function"
+      ? this.shouldDeferAttachmentInboundFlushUntilPollBatchEnds()
+      : Number(this.inboundUpdateBatchDepth) > 0;
+    if (shouldDeferFlush) {
+      this.clearPendingAttachmentInboundTimer(scopeKey);
+      if (!(this.deferredAttachmentInboundFlushScopeKeys instanceof Set)) {
+        this.deferredAttachmentInboundFlushScopeKeys = new Set();
+      }
+      this.deferredAttachmentInboundFlushScopeKeys.add(scopeKey);
+      return;
+    }
+    if (this.deferredAttachmentInboundFlushScopeKeys instanceof Set) {
+      this.deferredAttachmentInboundFlushScopeKeys.delete(scopeKey);
+    }
+    this.schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, INBOUND_ATTACHMENT_BATCH_IDLE_MS);
   }
 
   beginInboundUpdateBatch(messageCount = 0, messages = []) {
@@ -1002,7 +1090,7 @@ class MossbridgeApp {
       return;
     }
     this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) || 0) + 1;
-    this.inboundUpdateBatchImageSenders = collectBatchImageSenders(messages);
+    this.inboundUpdateBatchAttachmentSenders = collectBatchAttachmentSenders(messages);
   }
 
   endInboundUpdateBatch() {
@@ -1011,106 +1099,113 @@ class MossbridgeApp {
     }
     this.inboundUpdateBatchDepth = Math.max(0, Number(this.inboundUpdateBatchDepth) - 1);
     if (this.inboundUpdateBatchDepth === 0) {
-      this.scheduleDeferredImageInboundFlushes();
-      this.inboundUpdateBatchImageSenders = new Set();
+      this.scheduleDeferredAttachmentInboundFlushes();
+      this.inboundUpdateBatchAttachmentSenders = new Set();
     }
   }
 
-  shouldDeferImageInboundFlushUntilPollBatchEnds() {
+  shouldDeferAttachmentInboundFlushUntilPollBatchEnds() {
     return Number(this.inboundUpdateBatchDepth) > 0;
   }
 
-  currentInboundBatchMayContainImageForSender(senderId = "") {
+  currentInboundBatchMayContainAttachmentForSender(senderId = "") {
     if (!(Number(this.inboundUpdateBatchDepth) > 0)) {
       return false;
     }
     const normalizedSenderId = normalizeText(senderId);
     return Boolean(
       normalizedSenderId
-      && this.inboundUpdateBatchImageSenders instanceof Set
-      && this.inboundUpdateBatchImageSenders.has(normalizedSenderId)
+      && this.inboundUpdateBatchAttachmentSenders instanceof Set
+      && this.inboundUpdateBatchAttachmentSenders.has(normalizedSenderId)
     );
   }
 
-  rememberDeferredImageInboundFlush(scopeKey) {
+  rememberDeferredAttachmentInboundFlush(scopeKey) {
     if (!scopeKey) {
       return;
     }
-    if (!(this.deferredImageInboundFlushScopeKeys instanceof Set)) {
-      this.deferredImageInboundFlushScopeKeys = new Set();
+    if (!(this.deferredAttachmentInboundFlushScopeKeys instanceof Set)) {
+      this.deferredAttachmentInboundFlushScopeKeys = new Set();
     }
-    this.clearPendingImageInboundTimer(scopeKey);
-    this.deferredImageInboundFlushScopeKeys.add(scopeKey);
+    this.clearPendingAttachmentInboundTimer(scopeKey);
+    this.deferredAttachmentInboundFlushScopeKeys.add(scopeKey);
   }
 
-  scheduleDeferredImageInboundFlushes() {
-    const scopeKeys = this.deferredImageInboundFlushScopeKeys instanceof Set
-      ? Array.from(this.deferredImageInboundFlushScopeKeys)
+  scheduleDeferredAttachmentInboundFlushes() {
+    const scopeKeys = this.deferredAttachmentInboundFlushScopeKeys instanceof Set
+      ? Array.from(this.deferredAttachmentInboundFlushScopeKeys)
       : [];
-    if (this.deferredImageInboundFlushScopeKeys instanceof Set) {
-      this.deferredImageInboundFlushScopeKeys.clear();
+    if (this.deferredAttachmentInboundFlushScopeKeys instanceof Set) {
+      this.deferredAttachmentInboundFlushScopeKeys.clear();
     }
     for (const scopeKey of scopeKeys) {
-      const draft = this.pendingImageInboundByScope.get(scopeKey);
+      const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
       if (!draft?.bindingKey || !draft?.workspaceRoot) {
         continue;
       }
-      this.schedulePendingImageInboundFlush(scopeKey, draft.bindingKey, draft.workspaceRoot);
+      this.schedulePendingAttachmentInboundFlush(scopeKey, draft.bindingKey, draft.workspaceRoot);
     }
   }
 
-  enqueuePendingImageInbound({ bindingKey, workspaceRoot, prepared, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS }) {
+  enqueuePendingAttachmentInbound({ bindingKey, workspaceRoot, prepared, delayMs = INBOUND_ATTACHMENT_BATCH_IDLE_MS }) {
     const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
     if (!scopeKey || !prepared) {
       return;
     }
 
-    const current = this.pendingImageInboundByScope.get(scopeKey) || {
+    const current = this.pendingAttachmentInboundByScope.get(scopeKey) || {
       bindingKey,
       workspaceRoot,
       messages: [],
       timer: null,
     };
     current.messages.push(clonePreparedInboundMessage(prepared));
-    this.pendingImageInboundByScope.set(scopeKey, current);
+    this.pendingAttachmentInboundByScope.set(scopeKey, current);
     void this.channelAdapter.sendTyping({
       userId: prepared.senderId,
       status: 1,
       contextToken: prepared.contextToken,
     }).catch(() => {});
-    const shouldDeferFlush = typeof this.shouldDeferImageInboundFlushUntilPollBatchEnds === "function"
-      ? this.shouldDeferImageInboundFlushUntilPollBatchEnds()
+    const shouldDeferFlush = typeof this.shouldDeferAttachmentInboundFlushUntilPollBatchEnds === "function"
+      ? this.shouldDeferAttachmentInboundFlushUntilPollBatchEnds()
       : Number(this.inboundUpdateBatchDepth) > 0;
     if (shouldDeferFlush) {
-      if (typeof this.rememberDeferredImageInboundFlush === "function") {
-        this.rememberDeferredImageInboundFlush(scopeKey);
+      if (typeof this.rememberDeferredAttachmentInboundFlush === "function") {
+        this.rememberDeferredAttachmentInboundFlush(scopeKey);
       } else {
-        this.clearPendingImageInboundTimer(scopeKey);
+        this.clearPendingAttachmentInboundTimer(scopeKey);
       }
       return;
     }
-    this.schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs);
+    this.schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs);
   }
 
-  schedulePendingImageInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = INBOUND_IMAGE_BATCH_IDLE_MS) {
-    const draft = this.pendingImageInboundByScope.get(scopeKey);
+  schedulePendingAttachmentInboundFlush(scopeKey, bindingKey, workspaceRoot, delayMs = INBOUND_ATTACHMENT_BATCH_IDLE_MS) {
+    const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
     if (!draft) {
+      return;
+    }
+    if (Number(this.pendingAttachmentIntakeByScope?.get(scopeKey) || 0) > 0) {
+      this.clearPendingAttachmentInboundTimer(scopeKey);
+      if (this.deferredAttachmentInboundFlushScopeKeys instanceof Set) {
+        this.deferredAttachmentInboundFlushScopeKeys.add(scopeKey);
+      }
       return;
     }
     if (draft.timer) {
       clearTimeout(draft.timer);
     }
     draft.timer = setTimeout(() => {
-      void this.flushPendingImageInboundBatch({ bindingKey, workspaceRoot }).catch((error) => {
+      void this.flushPendingAttachmentInboundBatch({ bindingKey, workspaceRoot }).catch((error) => {
         const message = error instanceof Error ? error.stack || error.message : String(error);
-        console.error(`[mossbridge] image inbound debounce flush failed ${message}`);
+        console.error(`[mossbridge] attachment inbound debounce flush failed ${message}`);
       });
     }, Math.max(0, Number(delayMs) || 0));
-    this.pendingImageInboundByScope.set(scopeKey, draft);
+    this.pendingAttachmentInboundByScope.set(scopeKey, draft);
   }
 
-  clearPendingImageInboundTimer(scopeKey) {
-    const draft = this.pendingImageInboundByScope.get(scopeKey);
+  clearPendingAttachmentInboundTimer(scopeKey) {
+    const draft = this.pendingAttachmentInboundByScope.get(scopeKey);
     if (!draft?.timer) {
       return;
     }
@@ -1118,24 +1213,24 @@ class MossbridgeApp {
     draft.timer = null;
   }
 
-  clearPendingImageInboundTimers() {
-    for (const [scopeKey] of this.pendingImageInboundByScope.entries()) {
-      this.clearPendingImageInboundTimer(scopeKey);
+  clearPendingAttachmentInboundTimers() {
+    for (const [scopeKey] of this.pendingAttachmentInboundByScope.entries()) {
+      this.clearPendingAttachmentInboundTimer(scopeKey);
     }
   }
 
-  async flushPendingImageInboundBatch({ bindingKey = "", workspaceRoot = "", trailingPrepared = null } = {}) {
+  async flushPendingAttachmentInboundBatch({ bindingKey = "", workspaceRoot = "", trailingPrepared = null } = {}) {
     const scopeKey = buildScopeKey(bindingKey, workspaceRoot);
-    const draft = scopeKey ? this.pendingImageInboundByScope.get(scopeKey) || null : null;
+    const draft = scopeKey ? this.pendingAttachmentInboundByScope.get(scopeKey) || null : null;
     if (!draft?.bindingKey || !draft?.workspaceRoot) {
       if (scopeKey) {
-        this.pendingImageInboundByScope.delete(scopeKey);
+        this.pendingAttachmentInboundByScope.delete(scopeKey);
       }
       return false;
     }
 
-    this.clearPendingImageInboundTimer(scopeKey);
-    this.pendingImageInboundByScope.delete(scopeKey);
+    this.clearPendingAttachmentInboundTimer(scopeKey);
+    this.pendingAttachmentInboundByScope.delete(scopeKey);
 
     const queued = Array.isArray(draft.messages)
       ? draft.messages
@@ -1147,7 +1242,7 @@ class MossbridgeApp {
       return false;
     }
 
-    const { batchMessages, remainingMessages } = takeImageContextBatchMessages(queued, MAX_INBOUND_STICKER_IMAGE_BATCH);
+    const { batchMessages, remainingMessages } = takeAttachmentContextBatchMessages(queued, MAX_INBOUND_ATTACHMENT_BATCH);
     if (!batchMessages.length) {
       if (remainingMessages.length && this.pendingInboundByScope instanceof Map && typeof this.flushPendingInboundMessages === "function") {
         const current = this.pendingInboundByScope.get(scopeKey) || {
@@ -1166,7 +1261,7 @@ class MossbridgeApp {
     }
 
     if (remainingMessages.length) {
-      this.pendingImageInboundByScope.set(scopeKey, {
+      this.pendingAttachmentInboundByScope.set(scopeKey, {
         bindingKey: draft.bindingKey,
         workspaceRoot: draft.workspaceRoot,
         messages: remainingMessages,
@@ -1198,7 +1293,7 @@ class MossbridgeApp {
     });
 
     if (remainingMessages.length) {
-      await this.flushPendingImageInboundBatch({
+      await this.flushPendingAttachmentInboundBatch({
         bindingKey: draft.bindingKey,
         workspaceRoot: draft.workspaceRoot,
       });
@@ -5477,11 +5572,13 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
       }
       lines.push("如果图片明显适合作为可复用表情包，可以在看过之后用 sticker 工具保存。");
     }
-    const imageContextCount = saved.filter((item) => isImageAttachmentItem(item)).length
-      + failed.filter((item) => isImageAttachmentFailureItem(item)).length;
-    if (imageContextCount > 1) {
-      lines.push("这些图片可能属于同一组连续分享。先看完所有可用图片，再合成一段自然回应；除非用户要求逐张点评，不要每张都单独长评。");
-      lines.push("考虑微信投递，尽量把多图回应收成一两条自然气泡能承载的长度。");
+    const attachmentContextCount = saved.length + failed.length;
+    if (attachmentContextCount > 1) {
+      lines.push("这些附件可能属于同一组连续分享。先看完所有可用附件，再合成一段自然回应；除非用户要求逐个点评，不要每个附件都单独长评。");
+      lines.push("考虑微信投递，尽量把多附件回应收成一两条自然气泡能承载的长度。");
+    }
+    if (saved.some((item) => !isImageAttachmentItem(item))) {
+      lines.push("如果是文档、视频或其他文件，请优先读取可用文本/元信息；如果当前运行时不能读取该文件，就说明缺口，不要假装看过。");
     }
     if (officePaths.notesRoot) {
       lines.push("如果附件之后还可能被用到，可以更新配套说明笔记，留下简短事实摘要，不要只依赖原文件。");
@@ -5568,31 +5665,31 @@ function buildMergedInboundPrepared({
   };
 }
 
-function shouldBatchImageContextInbound(message) {
-  return isImageContextPreparedMessage(message);
+function shouldBatchAttachmentContextInbound(message) {
+  return isBatchableAttachmentContextPreparedMessage(message);
 }
 
-function isImageContextPreparedMessage(message) {
+function isBatchableAttachmentContextPreparedMessage(message) {
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const attachmentFailures = Array.isArray(message?.attachmentFailures) ? message.attachmentFailures : [];
   if (!attachments.length && !attachmentFailures.length) {
     return false;
   }
-  return attachments.every((item) => isImageAttachmentItem(item))
-    && attachmentFailures.every((item) => isImageAttachmentFailureItem(item));
+  return attachments.every((item) => isBatchableAttachmentItem(item))
+    && attachmentFailures.every((item) => isBatchableAttachmentFailureItem(item));
 }
 
-function takeImageContextBatchMessages(messages, maxAttachments) {
+function takeAttachmentContextBatchMessages(messages, maxAttachments) {
   const batchMessages = [];
   const remainingMessages = [];
   const leadingPlainTextMessages = [];
   let remainingCapacity = Math.max(1, Number(maxAttachments) || 1);
-  let hasImageInBatch = false;
+  let hasAttachmentInBatch = false;
 
   for (const message of Array.isArray(messages) ? messages : []) {
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
-    const imageContext = isImageContextPreparedMessage(message);
-    if (!attachments.length && isPlainTextPreparedMessage(message) && hasImageInBatch) {
+    const attachmentContext = isBatchableAttachmentContextPreparedMessage(message);
+    if (!attachments.length && isPlainTextPreparedMessage(message) && hasAttachmentInBatch) {
       batchMessages.push(message);
       continue;
     }
@@ -5600,49 +5697,49 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
       leadingPlainTextMessages.push(message);
       continue;
     }
-    if (!attachments.length && imageContext) {
-      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+    if (!attachments.length && attachmentContext) {
+      if (!hasAttachmentInBatch && leadingPlainTextMessages.length) {
         batchMessages.push(...leadingPlainTextMessages.splice(0));
       }
       batchMessages.push(message);
-      hasImageInBatch = true;
+      hasAttachmentInBatch = true;
       continue;
     }
     if (!attachments.length) {
-      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+      if (!hasAttachmentInBatch && leadingPlainTextMessages.length) {
         remainingMessages.push(...leadingPlainTextMessages.splice(0));
       }
       remainingMessages.push(message);
       continue;
     }
-    if (!imageContext) {
-      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+    if (!attachmentContext) {
+      if (!hasAttachmentInBatch && leadingPlainTextMessages.length) {
         remainingMessages.push(...leadingPlainTextMessages.splice(0));
       }
       remainingMessages.push(message);
       continue;
     }
     if (remainingCapacity <= 0) {
-      if (!hasImageInBatch && leadingPlainTextMessages.length) {
+      if (!hasAttachmentInBatch && leadingPlainTextMessages.length) {
         remainingMessages.push(...leadingPlainTextMessages.splice(0));
       }
       remainingMessages.push(message);
       continue;
     }
-    if (!hasImageInBatch && leadingPlainTextMessages.length) {
+    if (!hasAttachmentInBatch && leadingPlainTextMessages.length) {
       batchMessages.push(...leadingPlainTextMessages.splice(0));
     }
     if (attachments.length <= remainingCapacity) {
       batchMessages.push(message);
       remainingCapacity -= attachments.length;
-      hasImageInBatch = true;
+      hasAttachmentInBatch = true;
       continue;
     }
     batchMessages.push({
       ...message,
       attachments: attachments.slice(0, remainingCapacity),
     });
-    hasImageInBatch = true;
+    hasAttachmentInBatch = true;
     remainingMessages.push({
       ...message,
       attachments: attachments.slice(remainingCapacity),
@@ -5651,7 +5748,7 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
   }
 
   if (leadingPlainTextMessages.length) {
-    if (hasImageInBatch) {
+    if (hasAttachmentInBatch) {
       batchMessages.push(...leadingPlainTextMessages);
     } else {
       remainingMessages.push(...leadingPlainTextMessages);
@@ -5664,10 +5761,10 @@ function takeImageContextBatchMessages(messages, maxAttachments) {
   };
 }
 
-function collectBatchImageSenders(messages = []) {
+function collectBatchAttachmentSenders(messages = []) {
   const senders = new Set();
   for (const message of Array.isArray(messages) ? messages : []) {
-    if (!rawInboundMessageHasImageAttachment(message)) {
+    if (!rawInboundMessageHasBatchableAttachment(message)) {
       continue;
     }
     const senderId = normalizeText(message?.from_user_id);
@@ -5678,9 +5775,17 @@ function collectBatchImageSenders(messages = []) {
   return senders;
 }
 
-function rawInboundMessageHasImageAttachment(message = {}) {
+function rawInboundMessageHasBatchableAttachment(message = {}) {
   const itemList = Array.isArray(message?.item_list) ? message.item_list : [];
-  return itemList.some((item) => Number(item?.type) === 2);
+  return itemList.some((item) => {
+    const type = Number(item?.type);
+    return type === 2 || type === 4 || type === 5;
+  });
+}
+
+function normalizedHasBatchableAttachment(normalized = {}) {
+  const attachments = Array.isArray(normalized?.attachments) ? normalized.attachments : [];
+  return attachments.some((item) => isBatchableAttachmentItem(item));
 }
 
 function clonePreparedInboundMessage(prepared) {
@@ -5708,7 +5813,7 @@ function isPlainTextPreparedMessage(prepared) {
   return Boolean(originalText) && attachments.length === 0 && attachmentFailures.length === 0;
 }
 
-function isLikelyImagePreludePreparedMessage(prepared) {
+function isLikelyAttachmentPreludePreparedMessage(prepared) {
   if (!isPlainTextPreparedMessage(prepared)) {
     return false;
   }
@@ -5748,6 +5853,19 @@ function isImageAttachmentFailureItem(item) {
   return normalizeText(item?.contentType).toLowerCase().startsWith("image/")
     || normalizeText(item?.kind).toLowerCase() === "image"
     || Boolean(normalizeText(item?.sourceFileName).toLowerCase().match(/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/u));
+}
+
+function isBatchableAttachmentItem(item) {
+  const kind = normalizeText(item?.kind).toLowerCase();
+  return Boolean(kind) || Boolean(normalizeText(item?.absolutePath) || normalizeText(item?.relativePath));
+}
+
+function isBatchableAttachmentFailureItem(item) {
+  return Boolean(
+    normalizeText(item?.kind)
+    || normalizeText(item?.sourceFileName)
+    || normalizeText(item?.reason)
+  );
 }
 
 function isAutoApprovedStateDirOperation(approval, config = {}) {

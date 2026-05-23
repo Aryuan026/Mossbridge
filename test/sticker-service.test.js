@@ -125,7 +125,7 @@ test("StickerService keeps archive stickers searchable but out of default pickin
   assert.equal(listed.stickers[0].sourceId, "demo-1");
 });
 
-test("StickerService searches semantic sticker catalog entries", async () => {
+test("StickerService searches Home-shaped catalog entries and sends asset_file images", async () => {
   const config = createTempStickerConfig();
   const index = loadStickerIndexSync(config);
   index.stk_012 = {
@@ -136,21 +136,130 @@ test("StickerService searches semantic sticker catalog entries", async () => {
     use_when: ["用户难过、委屈、需要被接住的时候。"],
     avoid_when: ["严肃决策或需要先解释事实的时候。"],
     frontstage_effect: "温柔收尾",
+    drawer: "core",
+    group: "affection_hug",
+    asset_file: "stk_012.png",
+    mime_type: "image/png",
     status: "active",
   };
   fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
-  fs.writeFileSync(path.join(config.stickerAssetsDir, "stk_012.gif"), "GIF89a-soft-hug");
+  fs.writeFileSync(path.join(config.stickerAssetsDir, "stk_012.png"), "PNG-soft-hug");
+  const sentFiles = [];
   const service = new StickerService({
     config,
     channelAdapter: null,
     sessionStore: null,
-    channelFileService: null,
+    channelFileService: {
+      async sendToCurrentChat(args, context) {
+        sentFiles.push({ args, context });
+        return { ok: true };
+      },
+    },
   });
 
   const searched = await service.search({ query: "难过的时候给她一个软软抱抱", limit: 3 });
 
   assert.equal(searched.candidates[0].stickerId, "stk_012");
+  assert.equal(searched.candidates[0].assetFile, "stk_012.png");
   assert.equal(searched.candidates[0].rawContent, "一只小狗把哭哭猫抱进怀里，适合难过时软着陆。");
+  assert.equal(searched.candidates[0].drawer, "core");
+
+  const delivery = await service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" });
+  assert.equal(delivery.assetFile, "stk_012.png");
+  assert.equal(delivery.mimeType, "image/png");
+  assert.equal(sentFiles[0].args.filePath, path.join(config.stickerAssetsDir, "stk_012.png"));
+});
+
+test("StickerService records sticker delivery audit with WeChat media fallback details", async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["抱抱"],
+    desc: "一张被微信图片出口降级测试的抱抱表情。",
+    asset_file: "stk_012.png",
+    mime_type: "image/png",
+    status: "active",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  const assetPath = path.join(config.stickerAssetsDir, "stk_012.png");
+  fs.writeFileSync(assetPath, "PNG-soft-hug");
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: {
+      async sendToCurrentChat(args) {
+        return {
+          ok: true,
+          status: "sent",
+          userId: args.userId,
+          filePath: args.filePath,
+          sizeBytes: fs.statSync(args.filePath).size,
+          delivery: {
+            kind: "file",
+            fileName: path.basename(args.filePath),
+            fallbackFrom: "image",
+            fallbackReason: "image upload failed: CDN 500",
+          },
+        };
+      },
+    },
+  });
+
+  await service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" });
+
+  const audit = JSON.parse(fs.readFileSync(config.stickerDeliveryAuditFile, "utf8"));
+  assert.equal(audit.lastDelivery.status, "sent");
+  assert.equal(audit.lastDelivery.stickerId, "stk_012");
+  assert.equal(audit.lastDelivery.sourceFileName, "stk_012.png");
+  assert.equal(audit.lastDelivery.sourceMimeType, "image/png");
+  assert.equal(audit.lastDelivery.deliveryMimeType, "image/png");
+  assert.equal(audit.lastDelivery.deliveryTransform, "none");
+  assert.equal(audit.lastDelivery.channelDeliveryKind, "file");
+  assert.equal(audit.lastDelivery.fallbackFrom, "image");
+  assert.match(audit.lastDelivery.fallbackReason, /CDN 500/);
+  assert.equal(audit.lastDelivery.attempts.length, 1);
+  assert.equal(audit.lastDelivery.attempts[0].status, "sent");
+});
+
+test("StickerService records an attempting audit before channel delivery returns", async () => {
+  const config = createTempStickerConfig();
+  const index = loadStickerIndexSync(config);
+  index.stk_012 = {
+    tags: ["抱抱"],
+    desc: "一张发送中断测试表情。",
+    asset_file: "stk_012.jpg",
+    mime_type: "image/jpeg",
+    status: "active",
+  };
+  fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  const assetPath = path.join(config.stickerAssetsDir, "stk_012.jpg");
+  fs.writeFileSync(assetPath, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9]));
+  const service = new StickerService({
+    config,
+    channelAdapter: null,
+    sessionStore: null,
+    channelFileService: {
+      async sendToCurrentChat() {
+        const audit = JSON.parse(fs.readFileSync(config.stickerDeliveryAuditFile, "utf8"));
+        assert.equal(audit.lastDelivery.status, "attempting");
+        assert.equal(audit.lastDelivery.stickerId, "stk_012");
+        assert.equal(audit.lastDelivery.sourceActualMimeType, "image/jpeg");
+        assert.equal(audit.lastDelivery.attempts[0].status, "pending");
+        throw new Error("simulated interrupted image delivery");
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => service.sendToCurrentChat({ stickerId: "stk_012", userId: "user-a" }, { threadId: "t1" }),
+    /simulated interrupted image delivery/
+  );
+  const audit = JSON.parse(fs.readFileSync(config.stickerDeliveryAuditFile, "utf8"));
+  assert.equal(audit.lastDelivery.status, "failed");
+  assert.equal(audit.lastDelivery.sourceActualMimeType, "image/jpeg");
+  assert.equal(audit.lastDelivery.attempts[0].status, "failed");
+  assert.match(audit.lastDelivery.error, /simulated interrupted/);
 });
 
 test("StickerService sends gif stickers as static png previews first for WeChat stability", {
@@ -294,6 +403,7 @@ function createTempStickerConfig() {
     stickerAssetsDir: path.join(stateDir, "stickers", "assets"),
     stickersIndexFile: path.join(stateDir, "stickers", "index.json"),
     stickerTagsFile: path.join(stateDir, "stickers", "tags.json"),
+    stickerDeliveryAuditFile: path.join(stateDir, "sticker-delivery-audit.json"),
     stickersTemplateDir: path.resolve(__dirname, "..", "templates", "stickers"),
     stickersTemplateIndexFile: path.resolve(__dirname, "..", "templates", "stickers", "index.json"),
     stickerTagsTemplateFile: path.resolve(__dirname, "..", "templates", "stickers", "tags.json"),

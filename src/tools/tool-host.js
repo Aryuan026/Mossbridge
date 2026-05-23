@@ -2057,6 +2057,7 @@ function buildBridgeStatusSnapshot(
   const includeQueues = args.includeQueues !== false;
   const includeReminders = args.includeReminders !== false;
   const includeRuntime = args.includeRuntime !== false;
+  const includeChannel = args.includeChannel !== false;
   const includeControl = args.includeControl !== false;
   const runtimeId = normalizeText(context.runtimeId) || "codex";
   const nowMs = Date.now();
@@ -2114,6 +2115,12 @@ function buildBridgeStatusSnapshot(
         ? usagePayload.autoCompactEvents.length
         : 0,
       daily_checkin_budget: dailyCheckinBudget,
+    };
+  }
+
+  if (includeChannel) {
+    snapshot.channel = {
+      last_sticker_delivery: buildStickerDeliveryStatus(config, nowMs),
     };
   }
 
@@ -2272,9 +2279,43 @@ function readReminderStatus(services = {}, context = {}) {
   }
 }
 
+function buildStickerDeliveryStatus(config = {}, nowMs = Date.now()) {
+  const audit = readJsonFile(config.stickerDeliveryAuditFile);
+  const last = audit?.lastDelivery && typeof audit.lastDelivery === "object" ? audit.lastDelivery : null;
+  if (!last) {
+    return { state: "none" };
+  }
+  const tsMs = parseStatusTimestampMs(last.ts);
+  const ageSeconds = tsMs ? Math.round(Math.max(0, nowMs - tsMs) / 1000) : null;
+  const status = normalizeText(last.status);
+  const channelKind = normalizeText(last.channelDeliveryKind);
+  const fallbackFrom = normalizeText(last.fallbackFrom);
+  const state = status === "failed"
+    ? "failed"
+    : (channelKind === "file" && fallbackFrom ? "degraded" : (status || "unknown"));
+  return {
+    state,
+    ts: normalizeText(last.ts),
+    age_seconds: ageSeconds,
+    sticker_id: normalizeText(last.stickerId),
+    source: normalizeText(last.sourceFileName),
+    source_mime: normalizeText(last.sourceMimeType),
+    source_actual_mime: normalizeText(last.sourceActualMimeType),
+    delivery: normalizeText(last.deliveryFileName),
+    delivery_mime: normalizeText(last.deliveryMimeType),
+    delivery_actual_mime: normalizeText(last.deliveryActualMimeType),
+    transform: normalizeText(last.deliveryTransform),
+    channel_kind: channelKind,
+    fallback_from: fallbackFrom,
+    fallback_reason: normalizeText(last.fallbackReason).slice(0, 240),
+    error: normalizeText(last.error).slice(0, 240),
+  };
+}
+
 function formatBridgeStatusSnapshot(snapshot = {}) {
   const queue = snapshot.queues || {};
   const reminders = snapshot.reminders || {};
+  const channel = snapshot.channel || {};
   const runtime = snapshot.runtime || {};
   const control = snapshot.control || {};
   const context = runtime.context || {};
@@ -2304,6 +2345,15 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
     if (recent) {
       lines.push(`Recent control warning: ${recent.type || "control.event"} ${recent.reason || ""}`.trim());
     }
+  }
+  const sticker = channel.last_sticker_delivery || {};
+  if (sticker.state && sticker.state !== "none") {
+    const fallbackText = sticker.fallback_from
+      ? ` fallback=${sticker.fallback_from}->${sticker.channel_kind || "unknown"}`
+      : "";
+    const sourceMime = sticker.source_actual_mime || sticker.source_mime || "unknown";
+    const deliveryMime = sticker.delivery_actual_mime || sticker.delivery_mime || "unknown";
+    lines.push(`Last sticker: ${sticker.state} ${sticker.sticker_id || "unknown"} ${sourceMime} -> ${deliveryMime} via ${sticker.transform || "none"} channel=${sticker.channel_kind || "unknown"}${fallbackText}`);
   }
   return lines.join("\n");
 }
@@ -2444,6 +2494,11 @@ function resolveLatestRuntimeContext(payload, runtimeId = "") {
 function readNonNegativeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function parseStatusTimestampMs(value) {
+  const parsed = Date.parse(normalizeText(value));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function roundStatusNumber(value, digits = 3) {

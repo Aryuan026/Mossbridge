@@ -48,7 +48,7 @@ test("handlePreparedMessage queues a normal inbound message while the scope is b
       setReplyTarget() {},
     },
     pendingInboundByScope: new Map(),
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     resolveWorkspaceRoot() {
       return "/workspace";
     },
@@ -66,7 +66,7 @@ test("handlePreparedMessage queues a normal inbound message while the scope is b
       queued.push({ bindingKey, workspaceRoot, ...prepared });
     },
     isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
     routePreparedInbound: MossbridgeApp.prototype.routePreparedInbound,
   };
 
@@ -219,7 +219,7 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
       setReplyTarget() {},
     },
     pendingInboundByScope: new Map(),
-    pendingImageInboundByScope: new Map(),
+    pendingAttachmentInboundByScope: new Map(),
     resolveWorkspaceRoot() {
       return "/workspace";
     },
@@ -237,7 +237,7 @@ test("handlePreparedMessage queues while the scope is in a turn-boundary handoff
       queued.push({ bindingKey, workspaceRoot, ...prepared });
     },
     isTurnDispatchBlocked: MossbridgeApp.prototype.isTurnDispatchBlocked,
-    hasPendingImageInbound: MossbridgeApp.prototype.hasPendingImageInbound,
+    hasPendingAttachmentInbound: MossbridgeApp.prototype.hasPendingAttachmentInbound,
     routePreparedInbound: MossbridgeApp.prototype.routePreparedInbound,
   };
 
