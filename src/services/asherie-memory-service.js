@@ -1634,10 +1634,10 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
   ];
 }
 
-function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 8 } = {}) {
+function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 12 } = {}) {
   const records = (Array.isArray(recentRecords) ? recentRecords : [])
     .filter(isSessionHandoffRecord)
-    .slice(0, Math.max(1, Number(coreLimit) || 8));
+    .slice(0, Math.max(1, Number(coreLimit) || 12));
   if (!records.length) {
     return [];
   }
@@ -1645,11 +1645,11 @@ function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 8 } = {}) 
   const chronological = records.slice().reverse();
   const range = buildSessionHandoffRange(chronological);
   const recentUserBeads = chronological
-    .slice(-4)
-    .map((record) => truncateText(record.query, 72))
+    .slice(-6)
+    .map((record) => truncateText(record.query, 96))
     .filter(Boolean);
   const latest = records[0];
-  const latestOutcome = truncateText(latest.assistant_text_final, 120);
+  const latestOutcome = truncateText(latest.assistant_text_final, 180);
   const digest = buildSessionCompressedDigest(records);
 
   const lines = [
@@ -1698,9 +1698,9 @@ function buildSessionCompressedDigest(records = []) {
   const digest = records
     .map((record) => normalizePreludeText(record.compressed_digest))
     .filter(Boolean)
-    .slice(0, 2)
+    .slice(0, 3)
     .join(" / ");
-  return digest ? truncateText(digest, 220) : "";
+  return digest ? truncateText(digest, 420) : "";
 }
 
 function buildStickyCalendarPrelude(calendarPacket = {}) {
@@ -2224,7 +2224,7 @@ function resolveRecentThreadPreludeLimit({
     return 0;
   }
   if (forceRecentContext) {
-    return Math.min(Math.max(base, 6), 8);
+    return Math.min(Math.max(base, 8), 12);
   }
   if (normalizeText(recallMode) === "proactive") {
     return Math.min(base, 2);

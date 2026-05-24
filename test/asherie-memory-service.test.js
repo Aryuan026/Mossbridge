@@ -1383,7 +1383,7 @@ test("asherie memory service builds a session handoff snapshot for long continui
     forceRecentContext: true,
   });
   const recentThreadCount = (freshPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
-  assert.equal(recentThreadCount, 6);
+  assert.equal(recentThreadCount, 8);
   assert.match(freshPacket.runtime_prelude, /session-handoff/);
   assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
   assert.match(freshPacket.runtime_prelude, /论文架构第8步/);

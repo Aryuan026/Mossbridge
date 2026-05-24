@@ -17,6 +17,8 @@ test("weixin operations memory guidance stays operational instead of styling the
   assert.match(memorySection, /write a note proactively and silently/i);
   assert.match(memorySection, /do not wait for an explicit user request/i);
   assert.match(memorySection, /status: rejected/i);
+  assert.match(memorySection, /Case guidance is storage routing only/i);
+  assert.match(memorySection, /front-stage reply sound like a ticket/i);
   assert.doesNotMatch(memorySection, /same natural wechat tone/i);
   assert.doesNotMatch(memorySection, /flatten your wording/i);
   assert.doesNotMatch(memorySection, /emoji|客服腔|语气|人格与关系/i);

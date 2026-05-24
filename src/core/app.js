@@ -4152,10 +4152,10 @@ function buildMemoryCapturePressureOptions(
   });
   const forceRecentOptions = forceRecentContext
     ? {
-        cacheLimit: 32,
-        recallRecentRecordLimit: 12,
+        cacheLimit: 64,
+        recallRecentRecordLimit: 24,
         preludeRecentSnippetLimit: 0,
-        preludeRecentThreadLimit: 6,
+        preludeRecentThreadLimit: 12,
       }
     : {};
   if (!isBackgroundCheckinOpportunity(normalized)) {
