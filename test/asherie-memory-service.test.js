@@ -363,6 +363,76 @@ test("asherie memory service carries solitude digest only for wakeup or explicit
   assert.match(explicit.runtime_prelude, /solitude-digest/);
 });
 
+test("asherie memory runtime does not carry hot warm cards without a real query signal", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-warm-noise-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 0,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "搭档妹妹家的六幕剧场",
+    summary: "妹夫遗嘱、婆婆脑出血与家族八卦线。",
+    body_markdown: "这是一张关系八卦卡，只有聊到对应家族线时才应该出现。普通词：晚上、自己、起来、自动。",
+    tags: ["family", "八卦"],
+    storage_strength: 3,
+    storage_boost: 2.5,
+    recall_count: 30,
+  });
+
+  const foodPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "今天想吃面要不要加蛋",
+    residentLimit: 0,
+  });
+  assert.equal(foodPacket.warm_memory_packet.hit_count, 0);
+  assert.doesNotMatch(foodPacket.runtime_prelude, /搭档妹妹家的六幕剧场/);
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "吃面偏好",
+    summary: "用户吃面时会在清淡和加蛋之间权衡。",
+    body_markdown: "饮食选择需要结合当天状态。",
+    tags: ["饮食", "吃面"],
+  });
+
+  const directPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "今天想吃面要不要加蛋",
+    residentLimit: 0,
+  });
+  assert.equal(directPacket.warm_memory_packet.hit_count, 1);
+  assert.match(directPacket.runtime_prelude, /吃面偏好/);
+
+  const creativeEmptyPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "晚上把 tavern 打包起来玩，全自动产小说",
+    residentLimit: 0,
+  });
+  assert.equal(creativeEmptyPacket.warm_memory_packet.hit_count, 0);
+  assert.doesNotMatch(creativeEmptyPacket.runtime_prelude, /搭档妹妹家的六幕剧场/);
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "tavern 小说自动创作",
+    summary: "用户想把 tavern 打包起来玩，让它全自动产小说。",
+    body_markdown: "这个主题和晚上娱乐、剧情生成、角色创作相关。",
+    tags: ["小说", "tavern", "创作"],
+  });
+
+  const creativeDirectPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "晚上把 tavern 打包起来玩，全自动产小说",
+    residentLimit: 0,
+  });
+  assert.equal(creativeDirectPacket.warm_memory_packet.hit_count, 1);
+  assert.match(creativeDirectPacket.runtime_prelude, /tavern 小说自动创作/);
+});
+
 test("asherie memory runtime prelude redacts private identity seed paths", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-"));
   const service = new AsherieMemoryService({
@@ -1571,6 +1641,13 @@ test("asherie memory service injects ongoing tracks and cold case updates into t
   assert.doesNotMatch(unrelatedPacket.runtime_prelude, /ongoing: 减重/);
   assert.doesNotMatch(unrelatedPacket.runtime_prelude, /open-loop: 减重/);
 
+  const weakPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "腰痛好点了",
+  });
+  assert.equal(weakPacket.ongoing_track_packet.hit_count, 0);
+  assert.doesNotMatch(weakPacket.runtime_prelude, /ongoing: 减重/);
+
   const healthPacket = await service.captureContextPacket({
     userId: "demo-user",
     query: "我最近减脂和饮食怎么安排",
@@ -1734,6 +1811,14 @@ test("asherie memory service keeps bounded event episodes with attachment refs",
   assert.match(packet.runtime_prelude, /case_refs=travel-photo-note-case/);
   assert.match(packet.runtime_prelude, /小事记/);
   assert.equal(packet.episode_attention.active, true);
+
+  const weakEpisodePacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "今天走路还有点肿",
+  });
+  assert.equal(weakEpisodePacket.episode_journal_packet.hit_count, 0);
+  assert.equal(weakEpisodePacket.episode_attention.active, false);
+  assert.doesNotMatch(weakEpisodePacket.runtime_prelude, /小事记：2026 五一河南旅行/);
 
   const markdownPath = path.join(
     tempRoot,

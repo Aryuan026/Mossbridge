@@ -91,6 +91,7 @@ class EpisodeJournalStore {
     const scoped = normalizeText(scopedUserId);
     const query = normalizeText(options.query || options.text);
     const statuses = new Set(stringList(options.statuses).map(normalizeStatus).filter(Boolean));
+    const minScore = Math.max(0, Number(options.min_score ?? options.minScore) || 0);
     const roots = scoped
       ? [path.join(this.rootDir, safeId(scoped))]
       : fs.readdirSync(this.rootDir, { withFileTypes: true })
@@ -114,7 +115,7 @@ class EpisodeJournalStore {
           continue;
         }
         const score = scoreEpisode(normalized, query);
-        if (query && score <= 0) {
+        if (query && score <= minScore) {
           continue;
         }
         rows.push({ ...normalized, query_score: score });
@@ -206,6 +207,7 @@ function buildEpisodeJournalPacket(store, scopedUserId, options = {}) {
     query: options.query || options.text,
     statuses: options.statuses || ["active", "settled"],
     limit: options.limit || 4,
+    minScore: options.minScore ?? options.min_score ?? 4,
   });
   const compactHits = hits.map(compactEpisodeHit);
   const titles = compactHits.slice(0, 3).map((item) => normalizeText(item.title)).filter(Boolean);

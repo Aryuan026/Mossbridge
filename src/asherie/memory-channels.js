@@ -64,7 +64,16 @@ function buildResidentWarmMemoryPacket(
     excludeMaterialIds = [],
   } = {},
 ) {
-  const resolvedLimit = Math.max(1, Number(limit) || 1);
+  const resolvedLimit = Math.max(0, Number(limit) || 0);
+  if (resolvedLimit <= 0) {
+    return {
+      scope_id: scope.scopeId(),
+      hits: [],
+      hit_count: 0,
+      route_tag: "resident_warm_suppressed",
+      summary: "",
+    };
+  }
   const hiddenIds = new Set(
     (Array.isArray(excludeMaterialIds) ? excludeMaterialIds : [excludeMaterialIds])
       .map((item) => normalizeText(item))

@@ -61,8 +61,15 @@ const QUERY_STOP_TOKENS = new Set([
   "是否", "有无", "有没",
   "现在", "目前", "最近", "以前", "之前", "之后", "以后", "曾经",
   "长期", "短期", "一直", "一般", "一样", "一种", "一些",
+  "今天", "白天", "晚上", "今晚", "明天", "昨天",
   "还是", "那条", "那些", "这些", "这个", "那个",
   "新闻", "消息", "事情", "问题", "情况", "情形",
+  "自己", "起来", "回来", "来啦", "一次", "了一", "了全",
+  "好了", "修好", "修好了", "自动", "全自", "全自动", "不自", "不自己",
+  "打算", "我要", "我想", "要把", "别的", "哎嘿", "按它", "它的",
+  "说法", "生效", "果然", "值得", "话说", "后台", "系统",
+  "自然", "不要", "在意", "在后",
+  "codex",
   "后来", "后续", "进展", "新进", "新进展", "有新", "有新进", "更新",
   "看看", "看起", "感觉", "感受",
   "时候", "时是", "时的", "时间",
@@ -87,6 +94,8 @@ const QUERY_SIGNAL_TERMS = new Set([
   "审美", "粉粉", "粉色", "素色", "裸色", "裸粉", "豆沙", "低饱和",
   "嬛嬛",
   "国防部", "五角大楼", "争议", "anthropic", "openai", "grok",
+  "bridge", "mossbridge", "claudecode", "压测", "死机", "保活", "掉线", "重启", "报错", "bug",
+  "小说", "tavern", "剧情", "角色", "创作", "写作",
   "用户",
 ]);
 
@@ -643,13 +652,33 @@ function buildCandidateSeed({
 
 function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMORY_RECALL_CONFIG) {
   const threshold = Number(config.lowRetrievalThreshold) || 0.2;
-  if ((Number(item?.score) || 0) > threshold) {
-    return true;
-  }
   if ((Number(item?.exactMatch) || 0) > 0) {
     return true;
   }
+  const score = Number(item?.score) || 0;
+  const semanticBlend = Number(item?.semanticBlend) || 0;
+  const semanticScore = Number(item?.semanticScore) || 0;
+  const lexicalScore = Number(item?.lexicalScore) || 0;
+  const routePrior = Number(item?.routePrior) || 0;
+  const hasStrongKeywordHit = Array.isArray(item?.keywordHits)
+    && item.keywordHits.some((token) => isStrongRecallKeyword(token));
+  if (!isBackgroundRecallMode(recallMode) && !isProactiveRecallMode(recallMode)) {
+    const semanticFloor = Number(config.userMinimumSemanticBlend) || 0.065;
+    const routeFloor = Number(config.userMinimumRoutePrior) || 0.12;
+    const semanticScoreFloor = Number(config.userMinimumSemanticScore) || 0.03;
+    const lexicalFloor = Number(config.userMinimumLexicalScore) || 0.08;
+    if (hasStrongKeywordHit && (semanticScore >= semanticScoreFloor || lexicalScore >= lexicalFloor)) {
+      return true;
+    }
+    return score > threshold && (
+      (semanticBlend >= semanticFloor && semanticScore >= semanticScoreFloor)
+      || (routePrior >= routeFloor && lexicalScore >= lexicalFloor)
+    );
+  }
   if (Array.isArray(item?.keywordHits) && item.keywordHits.length) {
+    return true;
+  }
+  if (score > threshold) {
     return true;
   }
   if (isProactiveRecallMode(recallMode) && (Number(item?.routePrior) || 0) >= 0.18) {
@@ -843,7 +872,28 @@ function buildQuerySignalTokens(rawTokens = []) {
     addToken(clean);
   });
 
-  return output.length ? output : tokens.map((token) => normalizeText(token).toLowerCase()).filter(Boolean);
+  return output.length ? output : buildFallbackQuerySignalTokens(tokens);
+}
+
+function buildFallbackQuerySignalTokens(tokens = []) {
+  const seen = new Set();
+  const output = [];
+  (Array.isArray(tokens) ? tokens : []).forEach((token) => {
+    const clean = normalizeText(token).toLowerCase();
+    if (!clean || seen.has(clean) || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
+      return;
+    }
+    if (/^[a-z0-9_-]{4,}$/i.test(clean)) {
+      seen.add(clean);
+      output.push(clean);
+      return;
+    }
+    if (/^[\u4e00-\u9fff]{4,}$/.test(clean)) {
+      seen.add(clean);
+      output.push(clean);
+    }
+  });
+  return output;
 }
 
 function uniqueTokens(tokens = []) {

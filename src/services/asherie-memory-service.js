@@ -2361,8 +2361,8 @@ function resolveContextCacheLimit({ requested, recallMode = "", config = {} } = 
 }
 
 function resolveResidentWarmLimit({ requested, recallMode = "", config = {} } = {}) {
-  const explicit = resolveOptionalPositiveInt(requested);
-  if (explicit > 0) {
+  const explicit = resolveOptionalNonNegativeInt(requested);
+  if (explicit !== null) {
     return explicit;
   }
   if (normalizeText(recallMode) === "proactive") {
@@ -2372,6 +2372,14 @@ function resolveResidentWarmLimit({ requested, recallMode = "", config = {} } = 
     );
   }
   return resolvePositiveInt(config.asheriePreludeResidentWarmLimit, 4);
+}
+
+function resolveOptionalNonNegativeInt(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function resolveOptionalPositiveInt(value) {
