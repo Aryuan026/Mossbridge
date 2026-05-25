@@ -714,7 +714,7 @@ test("tool host exposes solitude journal tools for wakeup self-review", async ()
 
   assert.ok(writeTool);
   assert.ok(searchTool);
-  assert.match(writeTool.description, /Do not store raw hidden chain-of-thought/i);
+  assert.match(writeTool.description, /Persist shareable outcomes and visible evidence/i);
 
   const written = await host.invokeTool("mossbridge_solitude_journal_write", {
     summary: "Checkin should leave a useful internal note when silence is chosen.",
@@ -742,7 +742,7 @@ test("tool host exposes wakeup agenda tools for heartbeat continuity", async () 
   assert.ok(readTool);
   assert.ok(writeTool);
   assert.match(writeTool.description, /final outcome/i);
-  assert.match(writeTool.description, /never raw hidden chain-of-thought/i);
+  assert.match(writeTool.description, /keeping raw hidden chain-of-thought out/i);
 
   const read = await host.invokeTool("mossbridge_wakeup_agenda_read", {
     limit: 3,
@@ -1006,13 +1006,13 @@ test("tool host exposes quiet work-provenance case tools", async () => {
   const upsertTool = tools.find((tool) => tool.name === "mossbridge_memory_case_upsert");
   const artifactTool = tools.find((tool) => tool.name === "mossbridge_memory_case_artifact");
   const closeTool = tools.find((tool) => tool.name === "mossbridge_memory_case_close");
-  assert.match(upsertTool.description, /Do not use it for ordinary intimate chat/i);
+  assert.match(upsertTool.description, /Ordinary intimate chat and life episodes belong in notebook/i);
   assert.match(artifactTool.description, /human-approved final/i);
-  assert.match(artifactTool.description, /cloud services/i);
+  assert.match(artifactTool.description, /cloud sync/i);
   assert.ok(artifactTool.inputSchema.properties.status);
   assert.ok(artifactTool.inputSchema.properties.final_artifact_id);
   assert.ok(artifactTool.inputSchema.properties.storage_id);
-  assert.match(closeTool.description, /Closing does not make any artifact final/i);
+  assert.match(closeTool.description, /Closing keeps artifact status separate from final approval/i);
   assert.match(closeTool.description, /cleanup confirmation/i);
 
   const saved = await host.invokeTool("mossbridge_memory_case_upsert", {
@@ -1070,7 +1070,7 @@ test("tool host exposes revisable observation journal tools", async () => {
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_observation_update"));
   const appendTool = tools.find((tool) => tool.name === "mossbridge_memory_observation_append");
   assert.match(appendTool.description, /write it proactively and silently/i);
-  assert.match(appendTool.description, /do not wait for an explicit user request/i);
+  assert.match(appendTool.description, /observations are revisable notes/i);
 
   const appended = await host.invokeTool("mossbridge_memory_observation_append", {
     observation: "User often needs gentler morning prompts.",

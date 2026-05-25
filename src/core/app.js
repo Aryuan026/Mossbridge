@@ -189,7 +189,7 @@ class MossbridgeApp {
         profile: this.config.maintenanceProfile,
         selfRepairAllowed: this.config.maintenanceAllowSelfRepair,
         actionLevel: this.config.maintenanceAllowSelfRepair ? "safe_repair" : "read_only_report",
-        diagnosticMemoryPolicy: "Failure reports, quota notices, and maintenance chatter must stay out of memory/dreaming capture.",
+        diagnosticMemoryPolicy: "Memory/dreaming capture is for user continuity; failure reports, quota notices, and maintenance chatter stay in diagnostics.",
       },
       threads: this.threadStateStore.snapshot(),
     }, null, 2));
@@ -3989,8 +3989,8 @@ function buildWechatFrontstageTurnNote(normalized = {}) {
   return [
     "[微信前台对话提醒]",
     "这是和用户的一对一自然微信对话，不是工具回执、调试报告或工程答复；后台 short/concise 不支配前台表达。",
-    "用户发来的 emoji、表情包或括号小动作只作为情绪线索；不要把 `[微笑]` 这类传输占位符当成你的表达习惯。",
-    "关系、情绪和事实不用排队。按当下最合适的节奏回应：该直接推进就推进，该共情就共情，该调侃就调侃，该短短接话就短短接话；不要套固定起手式。",
+    "用户发来的 emoji、表情包或括号小动作只作为情绪线索；回应时用自然语言、普通 emoji 或当下合适的动作感来承接。",
+    "关系、情绪和事实不用排队。按当下最合适的节奏回应：该直接推进就推进，该共情就共情，该调侃就调侃，该短短接话就短短接话；让开场从这一轮真实语境里长出来。",
   ].join("\n");
 }
 
@@ -4006,8 +4006,8 @@ function buildWechatToolHoverNote(normalized = {}) {
     "- 表情包：当一张贴图能自然补一层温度、玩笑、庆祝、撒娇或软着陆时，可以先用自然意图搜索表情仓再发送；先说清楚该说的话，贴图只做附加表达。",
     "- 记忆、日记、episode、观察：如果这一轮出现未来会复用的信息、可修正印象或一个小事件，可以静默维护，不必等用户用工具名提醒。",
     "- AI 日历/提醒：如果你已经看见一个未来检查点、后续动作、持续任务，或“到那个时间再带着工具醒来处理”的机会，请直接创建提醒/AI 日历唤醒；到期唤醒会携带完整工具能力，适合执行、检查、写记录或决定是否联系用户，随机心跳只负责轻量续联。",
-    "- 文件/附件：如果已经生成本地文件且当前通道支持发送，可以直接发送；不要假设未安装的外部账号、设备或私有执行器存在。",
-    "不要把这些能力变成关键词条件；用完工具后继续自然聊天，不暴露内部 id、协议、队列或路径。",
+    "- 文件/附件：如果已经生成本地文件且当前通道支持发送，可以直接发送；外部账号、设备或私有执行器只在已安装、已配置时才进入行动范围。",
+    "这些能力是可用动作，不是关键词条件；用完工具后继续自然聊天，内部 id、协议、队列和路径留在后台。",
   ];
   if (attachmentCount > 0) {
     lines.splice(
@@ -5563,7 +5563,7 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
         lines.push(`  说明笔记：${item.noteAbsolutePath}`);
       }
     }
-    lines.push(`回复 ${userName} 之前，请先查看附件本体，不要只凭文件名或缓存说明猜。`);
+    lines.push(`回复 ${userName} 之前，请先查看附件本体，让可见内容和缓存说明一起进入判断。`);
     if (saved.some((item) => isImageAttachmentItem(item))) {
       if (runtimeUsesReadForImages(runtimeId)) {
         lines.push("图片请对保存后的本地图片文件使用 `Read`。");
@@ -5574,17 +5574,17 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
     }
     const attachmentContextCount = saved.length + failed.length;
     if (attachmentContextCount > 1) {
-      lines.push("这些附件可能属于同一组连续分享。先看完所有可用附件，再合成一段自然回应；除非用户要求逐个点评，不要每个附件都单独长评。");
+      lines.push("这些附件可能属于同一组连续分享。先看完所有可用附件，再合成一段自然回应；用户要求逐个点评时再分开长评。");
       lines.push("考虑微信投递，尽量把多附件回应收成一两条自然气泡能承载的长度。");
     }
     if (saved.some((item) => !isImageAttachmentItem(item))) {
-      lines.push("如果是文档、视频或其他文件，请优先读取可用文本/元信息；如果当前运行时不能读取该文件，就说明缺口，不要假装看过。");
+      lines.push("如果是文档、视频或其他文件，请优先读取可用文本/元信息；如果当前运行时只能读取部分信息，就说明缺口并基于已知信息回应。");
     }
     if (officePaths.notesRoot) {
-      lines.push("如果附件之后还可能被用到，可以更新配套说明笔记，留下简短事实摘要，不要只依赖原文件。");
+      lines.push("如果附件之后还可能被用到，可以更新配套说明笔记，留下简短事实摘要，让原文件之外也有可检索线索。");
       lines.push(`长期附件说明笔记放在：${officePaths.notesRoot}`);
     }
-    lines.push(`如果缺少必要工具，请直接告诉 ${userName} 缺了什么，以及目前还不能读取该文件。`);
+    lines.push(`如果缺少必要工具，请直接告诉 ${userName} 缺了什么，以及目前能读取到哪些信息。`);
   }
 
   if (failed.length) {
@@ -5597,7 +5597,7 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
       lines.push(`- ${label}: ${item.reason}`);
     }
     if (saved.length) {
-      lines.push("If some attachments failed but others were saved, briefly mention the failed item after considering the saved attachments; do not ignore the saved attachments because one item failed.");
+      lines.push("If some attachments failed but others were saved, consider the saved attachments first, then briefly mention the failed item.");
     }
   }
 

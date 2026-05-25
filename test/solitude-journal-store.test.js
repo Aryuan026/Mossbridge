@@ -26,7 +26,7 @@ test("solitude journal stores shareable wakeup reflections without raw chain-of-
 
   assert.equal(written.ok, true);
   assert.equal(written.record.entry_type, "experience");
-  assert.match(written.record.chain_of_thought_policy, /do not store raw hidden chain-of-thought/i);
+  assert.match(written.record.chain_of_thought_policy, /keep raw hidden chain-of-thought out/i);
   assert.ok(fs.existsSync(path.join(root, "2026-05.jsonl")));
 
   const found = store.search("owner", { query: "productive interrupting", limit: 5 });
@@ -77,5 +77,5 @@ test("solitude journal builds a backstage digest from recent notes and repeated 
   assert.equal(digest.recurring_patterns.tags[0].value, "maintenance");
   assert.equal(digest.recurring_patterns.lessons[0].count, 2);
   assert.equal(digest.promotion_candidates[0].entry_type, "capability_request");
-  assert.match(digest.policy, /not a front-stage voice rule/i);
+  assert.match(digest.policy, /front-stage voice still comes from the current relationship and context/i);
 });

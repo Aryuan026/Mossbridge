@@ -48,7 +48,7 @@ class SolitudeJournalStore {
       tags: normalizeStringList(args.tags).slice(0, 12),
       confidence: normalizeConfidence(args.confidence, 0.45),
       visibility: normalizeText(args.visibility || "backstage") || "backstage",
-      chain_of_thought_policy: "Store concise, shareable reasoning summaries only; do not store raw hidden chain-of-thought.",
+      chain_of_thought_policy: "Store concise, shareable reasoning summaries; keep raw hidden chain-of-thought out of persisted records.",
     };
     const filePath = this.filePathForTimestamp(tsUtc);
     appendJsonLine(filePath, record);
@@ -161,7 +161,7 @@ class SolitudeJournalStore {
         recurringLessons.length ? `lessons=${recurringLessons.length}` : "",
         promotionCandidates.length ? `candidates=${promotionCandidates.length}` : "",
       ].filter(Boolean).join(" | "),
-      policy: "Use this as backstage operating experience only; it is not a front-stage voice rule.",
+      policy: "Use this as backstage operating experience; front-stage voice still comes from the current relationship and context.",
     };
   }
 

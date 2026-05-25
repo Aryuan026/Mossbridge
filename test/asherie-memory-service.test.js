@@ -353,7 +353,7 @@ test("asherie memory service carries solitude digest only for wakeup or explicit
   assert.match(proactive.retrieval.route.join(","), /solitude_journal/);
   assert.match(proactive.runtime_prelude, /solitude-digest/);
   assert.match(proactive.runtime_prelude, /pre-sleep/);
-  assert.match(proactive.runtime_prelude, /不是前台语气模板/);
+  assert.match(proactive.runtime_prelude, /前台语气仍由当前对话决定/);
 
   const explicit = await service.captureContextPacket({
     query: "独处笔记里最近有什么唤醒经验",
@@ -981,7 +981,7 @@ test("asherie memory service expands short daily lines with recent context so re
     userId: "demo-user",
     title: "Late-night recovery",
     summary: "熬夜之后第二天通常恢复很慢，早上会钝。",
-    body_markdown: "如果她说还没缓过来，常常和前一晚熬夜、第二天脑子发钝连在一起。",
+    body_markdown: "如果用户说还没缓过来，常常和前一晚熬夜、第二天脑子发钝连在一起。",
     tags: ["habit", "sleep", "熬夜"],
   });
 
@@ -1043,7 +1043,7 @@ test("asherie memory service keeps broad-basis taste questions focused on their 
   await service.writeWarmMaterial({
     userId: "demo-user",
     title: "General impression",
-    summary: "她在长期关系里更在意连续判断和被看见。",
+    summary: "用户在长期关系里更在意连续判断和被看见。",
     body_markdown: "这张卡只写关系印象，不涉及审美落点。",
     tags: ["relationship", "印象"],
   });
@@ -1052,7 +1052,7 @@ test("asherie memory service keeps broad-basis taste questions focused on their 
     payload: {
       persona_memos: [{
         id: "identity-impression",
-        content: "她在长期关系里更在意连续判断和被看见。",
+        content: "用户在长期关系里更在意连续判断和被看见。",
       }],
     },
   });
@@ -1237,7 +1237,7 @@ test("asherie memory service surfaces sticky calendar and recent wakeup context 
     wakeupRecord: {
       decision: "hold",
       wake_motive: "checkin",
-      intent_summary: "刚确认过她在忙，先不打扰。",
+      intent_summary: "刚确认过用户在忙，先不打扰。",
     },
   });
 
@@ -1250,7 +1250,7 @@ test("asherie memory service surfaces sticky calendar and recent wakeup context 
   assert.equal(packet.calendar_packet.counts.upcoming, 1);
   assert.equal(packet.wakeup_packet.latest.decision, "hold");
   assert.match(packet.runtime_prelude, /sticky-calendar: upcoming \| 洗头 @/);
-  assert.match(packet.runtime_prelude, /recent-wakeup: hold \| checkin \| 刚确认过她在忙/);
+  assert.match(packet.runtime_prelude, /recent-wakeup: hold \| checkin \| 刚确认过用户在忙/);
 });
 
 test("asherie memory service gives proactive turns resident anchors and a recent-thread snapshot", async () => {
@@ -1281,7 +1281,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
   await service.writeWarmMaterial({
     userId: "demo-user",
     title: "Call me baby",
-    summary: "她会叫阿霁宝宝，这属于关系里的常驻口癖。",
+    summary: "用户会叫阿霁宝宝，这属于关系里的常驻口癖。",
     body_markdown: "这是关系和称呼习惯的一部分。",
     tags: ["relationship", "称呼", "宝宝"],
     storage_strength: 1.6,
@@ -1520,7 +1520,7 @@ test("resident anchor recall still surfaces multiple old pinned anchors after ma
     },
     {
       title: "Who A-Yuan is",
-      summary: "她是谁，是关系里长期不会变的识别锚点。",
+      summary: "用户是谁，是关系里长期不会变的识别锚点。",
       body_markdown: "这是身份层的常驻锚点。",
       tags: ["identity", "owner", "阿鸢"],
     },

@@ -25,7 +25,7 @@ function readConfig() {
     workspaceAttachmentNotesDir: readBridgeTextEnv("WORKSPACE_ATTACHMENT_NOTES_DIR") || path.join("context", "attachment-notes"),
     workspaceAttachmentJournalFile: readBridgeTextEnv("WORKSPACE_ATTACHMENT_JOURNAL_FILE") || path.join("context", "attachment-journal.jsonl"),
     userName: readBridgeTextEnv("USER_NAME") || "User",
-    userGender: readBridgeTextEnv("USER_GENDER") || "female",
+    userGender: readBridgeTextEnv("USER_GENDER") || "neutral",
     allowedUserIds: readBridgeListEnv("ALLOWED_USER_IDS"),
     channel: readBridgeTextEnv("CHANNEL") || "weixin",
     runtime: readBridgeTextEnv("RUNTIME") || "codex",

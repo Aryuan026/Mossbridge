@@ -57,26 +57,26 @@ function buildSystemInboundText(text, createdAt = "") {
   const toolProfile = normalizeText(metadata.systemToolProfile || metadata.toolProfile);
   const liteCheckin = kind === "checkin_opportunity" && toolProfile === "checkin_lite";
   const sections = [
-    ...(localTime ? [`[${localTime}]`, "Use this timestamp as the current local time for this wake; do not infer the weekday or part of day from older memory.", ""] : []),
-    "SYSTEM ACTION MODE: internal trigger, not user-authored chat.",
+    ...(localTime ? [`[${localTime}]`, "Use this timestamp as the current local time for this wake. Let weekday and daypart come from this timestamp; older memory provides history only.", ""] : []),
+    "SYSTEM ACTION MODE: internal bridge trigger.",
     ...buildSystemTriggerHeader({ kind, priority, title }),
     ...buildSystemTriggerGuidance({ kind, priority, toolProfile }),
     ...buildSystemTriggerDetails(metadata),
     ...(liteCheckin
       ? [
-          "This random check-in runs with a lightweight tool profile: do not attempt backstage maintenance, file work, memory edits, email, stickers, device control, or searches.",
+          "This random check-in runs with a lightweight tool profile: keep the turn to injected context plus the final JSON action.",
           "Use only the injected memory/status context and decide whether to stay silent or send one natural WeChat message.",
         ]
       : [
-          "Use tools as affordances, not a checklist; read/write only when this trigger needs it.",
-          "Safe scope: memory, reminders, diary/notebook, episode/case/observation, timeline/status reads, stickers/files, capability requests. Do not restart services, rebind accounts, change credentials, delete memory, or perform account/device/OAuth work unless the human explicitly asked.",
+          "Use tools as affordances; read/write when this trigger needs it.",
+          "Safe scope: memory, reminders, diary/notebook, episode/case/observation, timeline/status reads, stickers/files, capability requests. Service restarts, account rebinding, credential changes, memory deletion, and account/device/OAuth work belong to explicit human requests.",
         ]),
-    "Visible send_message is natural WeChat/front-stage continuity, not bridge status. Keep emotional continuity from memory/recent context; no tone template.",
+    "Visible send_message is natural WeChat/front-stage continuity. Bridge status stays in Mossbridge notices. Keep emotional continuity from memory/recent context; tone stays contextual.",
     "Bridge status reports come from [Mossbridge]; if only status remains, return silent.",
     "Return one JSON object after tools:",
     "{\"action\":\"silent\"}",
     "{\"action\":\"send_message\",\"message\":\"<one natural WeChat message>\"}",
-    "No text outside JSON.",
+    "Final output is JSON only.",
   ];
   if (body) {
     sections.push("", "Trigger:", body);
@@ -133,33 +133,33 @@ function buildSystemTriggerGuidance({ kind = "", priority = "", toolProfile = ""
   const normalizedToolProfile = normalizeText(toolProfile);
   if (normalizedKind === "reminder_due" || normalizedKind === "calendar_due") {
     return [
-      "This is a due obligation, not a random thought. Do not re-judge whether it matters.",
+      "This is a due obligation. Treat the reminder as already accepted and carry it forward.",
       "Choose the most useful action now: a short message, a timeline/notebook update, a follow-up reminder, or another backstage action if that is genuinely better.",
     ];
   }
   if (normalizedKind === "checkin_opportunity") {
     if (normalizedToolProfile === "checkin_lite") {
       return [
-        "This is a lightweight reconnection window, not a task execution window.",
-        "Do not reduce the choice to 'send a greeting' versus 'do nothing': use the already-injected recent context to decide whether a small WeChat message would genuinely help.",
-        "If it is not the right moment to message, return {\"action\":\"silent\"}; silence should mean intentional quiet, not forgetting.",
+        "This is a lightweight reconnection window.",
+        "Use the already-injected recent context to choose among a small WeChat message, intentional quiet, or a later full-tool reminder.",
+        "If this is a quiet moment, return {\"action\":\"silent\"}; silence means intentional quiet with context preserved.",
       ];
     }
     return [
-      "This is a lightweight maintenance and reconnection window, not a mandatory interruption.",
-      "Do not reduce the choice to 'send a greeting' versus 'do nothing'. You may do a small, low-risk maintenance pass first: bridge status, wakeup agenda, pending reminders, memory/ongoing/episode/observation state, today's timeline/notebook, whereabouts/context signals, or other bridge-provided status surfaces when relevant.",
-      "Prefer read-only checks first. Safe writes are small continuity handles: reminder, diary/timeline note, observation, ongoing-track update, solitude journal entry, or concrete capability request if the bridge lacks the status surface you need. Do not store raw hidden chain-of-thought.",
+      "This is a lightweight maintenance and reconnection window.",
+      "Use context to choose among a small message, a backstage continuity update, or intentional quiet. You may do a small, low-risk maintenance pass first: bridge status, wakeup agenda, pending reminders, memory/ongoing/episode/observation state, today's timeline/notebook, whereabouts/context signals, or other bridge-provided status surfaces when relevant.",
+      "Prefer read-only checks first. Safe writes are small continuity handles: reminder, diary/timeline note, observation, ongoing-track update, solitude journal entry, or concrete capability request if the bridge lacks the status surface you need. Store shareable outcomes instead of raw hidden chain-of-thought.",
       "Write a concise wakeup decision record if the tool exists. Keep it factual and shareable: decision, wake motive, actions taken, next actions, contact channel, and budget posture.",
-      "If the user appears awake and there is no protected quiet-state signal, you are allowed to gently interrupt with a small low-stakes message. Do not wait only for meal times, reminders, or obviously important events.",
-      "If not messaging, leave a usable backstage handle when one exists. Choose silence only when you have a concrete reason to protect attention, or when the actual outcome is 'maintenance done or intentionally skipped'; silence must not mean 'the system forgot to act'.",
+      "If the user appears awake and there is no protected quiet-state signal, you may gently interrupt with a small low-stakes message. Meal times, reminders, and obviously important events are examples of valid reasons to reconnect; ordinary continuity can matter too.",
+      "When staying quiet, leave a usable backstage handle when one exists. Silence is useful when it protects attention, or when the actual outcome is 'maintenance done or intentionally skipped'.",
     ];
   }
   if (normalizedKind === "dreaming_opportunity" || normalizedKind === "memory_metabolism") {
     return [
-      "This is a quiet memory-metabolism/dreaming pass, not a user conversation and not a generic check-in.",
+      "This is a quiet memory-metabolism/dreaming pass for backstage continuity.",
       "Review the source digest and the attached memory context. Promote only grounded, reusable material into Mossbridge's local brain: warm cards, ongoing tracks, observation journal, episode journal, case index, cold-root patches, or a solitude note.",
       "Keep the mutation small and auditable. Prefer updating an existing memory object over duplicating it when the source clearly continues the same thread.",
-      "Do not store raw hidden chain-of-thought, credentials, operational quota/failure noise, or vague guesses. Do not turn memory整理 into front-stage voice rules.",
+      "Store shareable memory outcomes and evidence. Keep raw hidden chain-of-thought, credentials, operational quota/failure noise, vague guesses, and front-stage voice rules outside memory mutations.",
       "After successful mutations, call mossbridge_memory_metabolism_receipt_write with the attempt id, source record ids, mutation_count, mutation summaries, and a concise shareable summary. If no durable memory belongs here, call that receipt tool with status=no_op and mutation_count=0.",
       "The bridge treats a final JSON without a metabolism receipt as incomplete and will retry this same attempt later.",
       "Usually return {\"action\":\"silent\"}. Send a WeChat message only for a timely obligation that cannot safely wait.",

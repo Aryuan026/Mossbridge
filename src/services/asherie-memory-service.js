@@ -855,7 +855,7 @@ class AsherieMemoryService {
       budget_posture: normalizeText(args.budget_posture || args.budgetPosture),
       contact_channel: normalizeText(args.contact_channel || args.contactChannel),
       context_key: normalizeText(args.context_key || args.contextKey),
-      chain_of_thought_policy: "Store concise, shareable wakeup outcomes only; do not store raw hidden chain-of-thought.",
+      chain_of_thought_policy: "Store concise, shareable wakeup outcomes and visible evidence; keep raw hidden chain-of-thought out of persisted records.",
     });
     return {
       ok: true,
@@ -877,7 +877,7 @@ class AsherieMemoryService {
       latest: records[0] || null,
       pending_next_actions: collectWakeupNextActions(records),
       records,
-      policy: "Use wakeup decisions as a backstage agenda and continuity trace, not as a front-stage voice rule.",
+      policy: "Use wakeup decisions as a backstage agenda and continuity trace. Front-stage voice still comes from the current relationship and context.",
     };
   }
 
@@ -1605,7 +1605,7 @@ function buildRuntimePrelude({
 function ensurePreludeHeader(lines) {
   if (Array.isArray(lines) && !lines.length) {
     lines.push("[记忆参考]");
-    lines.push("这只是后台轻量召回。下面的当前消息才是这一轮对话的中心，不要把参考信息写成汇报。");
+    lines.push("这是后台轻量召回，当前消息仍然是这一轮对话的中心。把参考信息当作底稿，前台自然回应。");
   }
 }
 
@@ -1628,8 +1628,8 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
     return [];
   }
   return [
-    "- 主动唤醒当前态：下面几条最近自然对话优先级高于长期记忆；不要问已经被这些尾巴回答过的问题。",
-    "- 相对时间校准：latest-thread 里的“今天/明天/昨天”只按该条时间戳理解；除非日历或提醒明确确认，不要把“明天要做的事”说成当前已经发生。",
+    "- 主动唤醒当前态：下面几条最近自然对话优先级高于长期记忆；已被这些尾巴回答的信息可以直接接住。",
+    "- 相对时间校准：latest-thread 里的“今天/明天/昨天”只按该条时间戳理解；只有日历或提醒明确确认时，才把未来事项视为当前已经发生。",
     ...threadLines.map((line) => line.replace(/^- recent-thread:/u, "- latest-thread:")),
   ];
 }
@@ -1653,7 +1653,7 @@ function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 12 } = {})
   const digest = buildSessionCompressedDigest(records);
 
   const lines = [
-    "- session-handoff: 这是刷新/新 session 的交接包；优先接住旧 session 的连续事件、情绪和未完成事项，不要把它当作长期事实或回复模板。",
+    "- session-handoff: 这是刷新/新 session 的交接包；优先接住旧 session 的连续事件、情绪和未完成事项。它是连续性线索，长期事实和回复方式仍按当前证据判断。",
   ];
   lines.push(
     `- session-core: 旧 session 最近 ${chronological.length} 轮${range ? ` (${range})` : ""} 的尾流：${recentUserBeads.join(" / ")}`,
@@ -1745,9 +1745,9 @@ function buildMemorySelfMaintenancePrelude(recallFocus = {}) {
   return [
     "- 记忆自维护：后台工具只在需要连续性、纠错、偏好、活跃故事线或用户主动要求时使用；如果当前像自然闲聊或换话题，先让对话自己走。",
     "- 小事记：旅行、相册、小任务、阶段性事件可放进可回看的 episode 盒子；从同一事件沉淀温卡时带上 episode_refs。",
-    "- 观察簿：观察是可修正的相处笔记，不是给用户贴死标签；用户说不对或不舒服时要修正或降置信。",
+    "- 观察簿：观察是可修正的相处笔记；用户说不对或不舒服时，修正、降置信或标记 rejected。",
     "- 系统反馈：如果工具、召回或提示词让你觉得不够用或太束缚，可以自然说出问题并提出具体需要。",
-    "- 前台自由：后台记忆不规定措辞、人格、情绪范围或聊天方式。先自然回应，再维护需要维护的记忆。",
+    "- 前台自由：后台记忆只改变可用信息和证据强度。先自然回应，再维护需要维护的记忆。",
   ];
 }
 
@@ -1915,10 +1915,10 @@ function buildEpisodeAttentionPrelude(packet = {}, currentTurnSignals = {}) {
     cues.push(`attachment_failures=${failureCount}`);
   }
   const action = shouldCarryActive
-    ? "如果这一轮还在延续这个事件，先读/续写小事记，不要只靠当前聊天尾巴硬接。"
+    ? "如果这一轮还在延续这个事件，先读/续写小事记，让当前聊天尾巴和事件盒子一起支撑连续性。"
     : "如果这些附件或说明组成一个阶段性事件，查看后可以创建或继续一个小事记。";
   return [
-    `- 小事记提醒：${cues.join(" | ")} | ${action} 如果同时写入或更新稳定温卡，请带上对应 episode_refs。前台回复仍然保持自然，不要像汇报工具结果。`,
+    `- 小事记提醒：${cues.join(" | ")} | ${action} 如果同时写入或更新稳定温卡，请带上对应 episode_refs。前台回复保持自然，把工具结果留作后台支撑。`,
   ];
 }
 
@@ -1963,7 +1963,7 @@ function buildSolitudePrelude(packet = {}, limit = 3) {
   if (!recentNotes.length && !tags.length && !lessons.length && !nextActions.length && !candidates.length) {
     return [];
   }
-  lines.push("- solitude-digest: 后台独处经验，只影响唤醒/维护/是否升级记忆的判断；不是前台语气模板，也不要把它当成用户事实。");
+  lines.push("- solitude-digest: 后台独处经验，用于唤醒、维护和是否升级记忆的判断；前台语气仍由当前对话决定，用户事实只来自明确证据。");
   for (const note of recentNotes.slice(0, maxLines)) {
     const bits = [
       normalizePreludeText(note.wake_context || note.entry_type) || "note",

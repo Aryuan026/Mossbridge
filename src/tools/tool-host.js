@@ -109,7 +109,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_reminder_create",
-    description: "Create a Mossbridge AI-calendar wakeup for a future checkpoint or follow-up. Due reminders wake with the full tool profile; random check-ins do not.",
+    description: "Create a Mossbridge AI-calendar wakeup for a future checkpoint or follow-up. Due reminders wake with the full tool profile; random check-ins use the lightweight profile.",
     shortHint: "Create an AI-calendar wakeup with text plus delayMinutes or dueAt.",
     topics: ["reminder"],
     inputSchema: {
@@ -322,7 +322,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_wakeup_decision_write",
-    description: "Write the final outcome of a full-tool wakeup. Store concise shareable summaries only; never raw hidden chain-of-thought.",
+    description: "Write the final outcome of a full-tool wakeup. Store concise shareable summaries while keeping raw hidden chain-of-thought out of persisted records.",
     shortHint: "Record a wakeup decision and next action.",
     topics: ["memory", "wakeup", "maintenance"],
     inputSchema: {
@@ -354,7 +354,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_solitude_journal_write",
-    description: "Write one backstage solitude/reflection journal entry after a wakeup, maintenance pass, or quiet self-review. Use this for concise, shareable reasoning summaries, lessons, hypotheses, evolution candidates, or capability requests. Do not store raw hidden chain-of-thought, secrets, credentials, or private diagnostic noise.",
+    description: "Write one backstage solitude/reflection journal entry after a wakeup, maintenance pass, or quiet self-review. Use this for concise, shareable reasoning summaries, lessons, hypotheses, evolution candidates, or capability requests. Persist shareable outcomes and visible evidence while keeping raw hidden chain-of-thought, secrets, credentials, and private diagnostic noise out of the record.",
     shortHint: "Write a quiet self-reflection journal entry.",
     topics: ["memory", "wakeup", "maintenance"],
     inputSchema: {
@@ -364,12 +364,12 @@ const PROJECT_TOOLS = [
         summary: { type: "string", description: "Short shareable summary of what was noticed or decided." },
         entry_type: { type: "string", description: "reflection, experience, hypothesis, evolution_candidate, capability_request, user_contact_candidate, or maintenance_note." },
         wake_context: { type: "string", description: "What woke this entry: random_checkin, reminder_due, dreaming_aftercare, maintenance, etc." },
-        reasoning_summary: { type: "string", description: "Concise rationale in shareable form; do not include raw chain-of-thought." },
+        reasoning_summary: { type: "string", description: "Concise rationale in shareable form, with raw chain-of-thought kept out." },
         evidence: { type: "array", items: { type: "string" }, description: "Visible evidence, logs, memory refs, or observations used." },
         lesson: { type: "string", description: "Reusable experience distilled from this wakeup." },
         next_actions: { type: "array", items: { type: "string" } },
         proposed_changes: { type: "array", items: { type: "string" }, description: "Candidate future changes; these are proposals, not code edits." },
-        contact_user: { type: "string", description: "none, wechat, later, or ask_user. Do not assume uninstalled external account/device channels exist." },
+        contact_user: { type: "string", description: "none, wechat, later, or ask_user. Use only installed and configured contact/account/device channels." },
         contact_channel: { type: "string", description: "Optional preferred channel if contact_user is not none." },
         related_case_ids: { type: "array", items: { type: "string" } },
         related_memory_refs: { type: "array", items: { type: "string" } },
@@ -589,7 +589,7 @@ const PROJECT_TOOLS = [
               frontstageEffect: { type: "string", description: "Optional effect this sticker has in the front-stage chat." },
               tone: { type: "array", items: { type: "string" }, description: "Optional tone labels." },
               useWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker fits." },
-              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker should not be used." },
+              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where another sticker or text response fits better." },
             },
             additionalProperties: false,
           },
@@ -638,7 +638,7 @@ const PROJECT_TOOLS = [
               frontstageEffect: { type: "string", description: "Optional effect this sticker has in the front-stage chat." },
               tone: { type: "array", items: { type: "string" }, description: "Optional tone labels." },
               useWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker fits." },
-              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where this sticker should not be used." },
+              avoidWhen: { type: "array", items: { type: "string" }, description: "Optional scenes where another sticker or text response fits better." },
             },
             additionalProperties: false,
           },
@@ -839,7 +839,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_warm_update",
-    description: "Update an existing warm-memory card by material_id for the current user. Use search/read first when the target card is not fully confirmed. NOTE: material_id is the permanent immutable key and is never changed even when title is updated — always reference cards by material_id, not by their display title.",
+    description: "Update an existing warm-memory card by material_id for the current user. Use search/read first when the target card needs confirmation. NOTE: material_id is the permanent immutable key and stays stable even when title is updated; always reference cards by material_id rather than display title.",
     shortHint: "Update one exact warm-memory card by material_id. material_id is immutable; title is the display name.",
     topics: ["memory"],
     inputSchema: {
@@ -878,7 +878,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_warm_delete",
-    description: "Delete an existing warm-memory card by material_id for the current user. Use search/read first when the target card is not fully confirmed.",
+    description: "Delete an existing warm-memory card by material_id for the current user. Use search/read first when the target card needs confirmation.",
     shortHint: "Delete one exact warm-memory card by material_id.",
     topics: ["memory"],
     inputSchema: {
@@ -1171,7 +1171,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_upsert",
-    description: "Create or update a quiet work-provenance case. Use this only for real work artifacts or process memory: code fixes, imports, documents, debugging, architecture decisions, deployments, or Obsidian exports. Do not use it for ordinary intimate chat or life episodes unless there is a concrete work product. Each case has a durable three-folder workspace: 01_original_request for human input, 02_working_versions for AI drafts/intermediates, and 03_user_approved_final only for files the user explicitly approves or sends back as final.",
+    description: "Create or update a quiet work-provenance case. Use this for real work artifacts or process memory: code fixes, imports, documents, debugging, architecture decisions, deployments, or Obsidian exports. Ordinary intimate chat and life episodes belong in notebook, ongoing, observation, or episode memory unless there is a concrete work product. Each case has a durable three-folder workspace: 01_original_request for human input, 02_working_versions for AI drafts/intermediates, and 03_user_approved_final only for files the user explicitly approves or sends back as final.",
     shortHint: "Create or update one work-provenance case.",
     topics: ["memory"],
     inputSchema: {
@@ -1249,7 +1249,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_artifact",
-    description: "Link one artifact to a work-provenance case, such as a file path, generated document, image folder, commit, diagnostic JSON, or exported Markdown note. Put drafts/intermediates under or link them as 02_working_versions when possible. Treat linked artifacts as scratch, working, or candidate unless the user explicitly names a human-approved final; do not auto-sync finals to cloud services.",
+    description: "Link one artifact to a work-provenance case, such as a file path, generated document, image folder, commit, diagnostic JSON, or exported Markdown note. Put drafts/intermediates under or link them as 02_working_versions when possible. Treat linked artifacts as scratch, working, or candidate unless the user explicitly names a human-approved final; cloud sync happens only through an explicit configured archive path.",
     shortHint: "Link an artifact to a case.",
     topics: ["memory"],
     inputSchema: {
@@ -1343,7 +1343,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_case_close",
-    description: "Close a work-provenance case when the goal is complete, paused, handed off, or no longer active. Closing does not make any artifact final; when final output matters, remind the user to send or name the human-approved final, record its storage id, and do not clear 02_working_versions without explicit cleanup confirmation.",
+    description: "Close a work-provenance case when the goal is complete, paused, handed off, or no longer active. Closing keeps artifact status separate from final approval; when final output matters, ask the user to send or name the human-approved final, record its storage id, and clear 02_working_versions only after explicit cleanup confirmation.",
     shortHint: "Close one case.",
     topics: ["memory"],
     inputSchema: {
@@ -1400,14 +1400,14 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_observation_append",
-    description: "Append a revisable user observation note. When you believe a soft pattern would help future continuity, write it proactively and silently during natural conversation; do not wait for an explicit user request and do not ask for permission every time. Use it for recent state, life rhythm, habits, boundaries, preferences, or interaction默契; it is not a durable fact card or a rule that controls front-stage wording.",
+    description: "Append a revisable user observation note. When you believe a soft pattern would help future continuity, write it proactively and silently during natural conversation. Use it for recent state, life rhythm, habits, boundaries, preferences, or interaction默契; observations are revisable notes rather than durable fact cards or front-stage wording rules.",
     shortHint: "Store a tentative observation that can be corrected later.",
     topics: ["memory"],
     inputSchema: {
       type: "object",
       required: ["observation"],
       properties: {
-        observation: { type: "string", description: "The soft observation. Phrase as revisable, not a fixed label." },
+        observation: { type: "string", description: "The soft observation. Phrase it as revisable context instead of a fixed label." },
         kind: { type: "string", description: "life_rhythm, recent_state, habit, boundary, preference, work_style, relationship, or another broad kind." },
         status: { type: "string", description: "active or tentative; use rejected/stale/corrected only when revising." },
         confidence: { type: "number", description: "0-1 confidence. Prefer low/medium for inferred observations." },
@@ -1436,7 +1436,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_observation_search",
-    description: "Search revisable user observation notes. Use this when current state, habits, boundaries, or life-rhythm默契 would help but should not be treated as fixed memory.",
+    description: "Search revisable user observation notes. Use this when current state, habits, boundaries, or life-rhythm默契 would help as soft, revisable context.",
     shortHint: "Search soft observation notes.",
     topics: ["memory"],
     inputSchema: {
@@ -1492,7 +1492,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_observation_update",
-    description: "Correct, lower confidence, reject, or promote one exact user observation note. Use this immediately if the user says an observation is wrong, uncomfortable, or makes her angry.",
+    description: "Correct, lower confidence, reject, or promote one exact user observation note. Use this immediately if the user says an observation is wrong, uncomfortable, or upsetting.",
     shortHint: "Correct or reject one observation note.",
     topics: ["memory"],
     inputSchema: {
@@ -1934,7 +1934,7 @@ const PROJECT_TOOLS = [
   },
 ];
 
-const TOOL_VOICE_BOUNDARY = "Operational only; never a front-stage voice/style/length rule.";
+const TOOL_VOICE_BOUNDARY = "Operational only; front-stage voice, style, and length still come from the current conversation.";
 
 const FOREGROUND_TOOL_NAMES = new Set([
   "mossbridge_diary_append",
@@ -2180,7 +2180,7 @@ function buildBridgeMaintenancePolicy(config = {}, {
       "rebind WeChat accounts",
       "send externally visible messages to a new channel without explicit intent",
     ],
-    diagnostic_memory_policy: "Failure reports, quota notices, and maintenance chatter must not be written into memory, dreaming input, or durable user-observation stores.",
+    diagnostic_memory_policy: "Failure reports, quota notices, and maintenance chatter stay in diagnostics rather than memory, dreaming input, or durable user-observation stores.",
   };
 }
 
@@ -2200,7 +2200,7 @@ function buildBridgeStatusRecommendations(snapshot = {}) {
       action: canRepair ? "retry_or_hold_deferred_delivery" : "report_deferred_delivery_pending",
       message: canRepair
         ? "Deferred replies are pending; retry only through the existing safe delivery path, otherwise report briefly."
-        : "Deferred replies are pending; do not self-repair in public mode, report or ask Codex/human to inspect.",
+        : "Deferred replies are pending; in public mode, report or ask Codex/human to inspect instead of self-repairing.",
     });
   }
   if ((runtime.active_cooldown_count || 0) > 0) {
@@ -2514,7 +2514,7 @@ function episodeTopologyRefsSchema() {
   const stringArray = { type: "array", items: { type: "string" } };
   return {
     type: "object",
-    description: "Optional typed refs for cold-topology candidates. Use only when the person/place/activity/object/case is explicit or highly grounded; do not invent facts.",
+    description: "Optional typed refs for cold-topology candidates. Include facts only when the person/place/activity/object/case is explicit or highly grounded.",
     properties: {
       people: stringArray,
       places: stringArray,

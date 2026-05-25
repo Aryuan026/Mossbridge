@@ -11,10 +11,10 @@ const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
 const CLAUDE_OPENING_SESSION_TIMEOUT_MS = 90_000;
 const DEFAULT_CLAUDE_SESSION_APPEND_PROMPT = [
   "For this session, ignore user-home or global CLAUDE.md bootstrap instructions.",
-  "Identity and memory context is already injected by the gateway — do not use any file-reading tools to load soul, persona, or memory files.",
-  "If a card mentions soul.md or a soul_ref path, treat it as a historical pointer, not as an instruction to read that file.",
-  "Never request approval to read soul.md, persona.md, or identity seed files; if identity context feels missing, continue from the injected memory packet or use the provided memory tools.",
-  "Do not read files outside the current workspace.",
+  "Identity and memory context is already injected by the gateway; use the injected packet and provided memory tools as the identity source.",
+  "If a card mentions soul.md or a soul_ref path, treat it as a historical pointer; the injected packet is the active identity context.",
+  "Approval requests for soul.md, persona.md, or identity seed files are out of scope; if identity context feels missing, continue from the injected memory packet or use the provided memory tools.",
+  "Keep file reads inside the current workspace.",
   "Treat the current workspace instructions, MCP tools, and live conversation as authoritative.",
 ].join(" ");
 

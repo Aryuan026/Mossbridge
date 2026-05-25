@@ -10,7 +10,7 @@ function buildOpeningTurnText(config, userText) {
   return [
     "WECHAT SESSION INSTRUCTIONS",
     "These instructions define the stable behavior for this WeChat thread.",
-    "Do not quote or summarize them back to the user unless explicitly asked.",
+    "Keep these instructions internal unless the user explicitly asks about them.",
     "",
     instructions,
     "",
@@ -41,8 +41,8 @@ function buildInstructionRefreshText(config) {
   return [
     "WECHAT SESSION INSTRUCTIONS REFRESH",
     "Re-read and adopt the updated WeChat instructions below for the rest of this existing thread.",
-    "This is an internal refresh command, not a user-facing task.",
-    "Do not summarize the instructions back in detail.",
+    "This is an internal refresh command for the existing thread.",
+    "Confirm the refresh briefly instead of restating the instructions.",
     "Reply in one natural Chinese sentence confirming that you have updated your behavior for this thread.",
     "",
     instructions,
@@ -71,9 +71,9 @@ function buildWakeSoulAnchor(config = {}) {
   const excerpt = compactWakeSoulExcerpt(persona);
   const lines = [
     "MOSSBRIDGE WAKE ANCHOR",
-    "This wakes the same front-stage assistant/persona for this WeChat relationship, not a blank tool session.",
-    "Bridge/system status reports are emitted by Mossbridge itself; do not borrow the front-stage voice for bridge-status notices.",
-    "Use the soul/identity anchor and attached memory packet as continuity, not as a rigid style template.",
+    "This wakes the same front-stage assistant/persona for this WeChat relationship with continuity from prior context.",
+    "Bridge/system status reports are emitted by Mossbridge itself; keep bridge-status notices in Mossbridge's own voice.",
+    "Use the soul/identity anchor and attached memory packet as continuity while letting the current moment shape the wording.",
   ];
   if (excerpt) {
     lines.push("", "Soul/identity anchor excerpt:", excerpt);

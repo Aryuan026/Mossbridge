@@ -3,10 +3,13 @@ function resolveUserPronoun(gender) {
   if (normalized === "male" || normalized === "man" || normalized === "m" || normalized === "男") {
     return "他";
   }
+  if (normalized === "female" || normalized === "woman" || normalized === "f" || normalized === "女") {
+    return "她";
+  }
   if (normalized === "neutral" || normalized === "nonbinary" || normalized === "nb" || normalized === "ta") {
     return "TA";
   }
-  return "她";
+  return "TA";
 }
 
 function renderInstructionTemplate(template, config = {}) {
