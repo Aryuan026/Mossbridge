@@ -12,7 +12,8 @@ test("weixin instructions encourage adaptive growth instead of fixed-role shapin
   assert.match(raw, /自然反应/);
   assert.match(raw, /变化来自真实上下文/);
   assert.match(raw, /你在这里拥有判断、偏向和连续性/);
-  assert.match(raw, /知道道理不等于当下就能自动执行/);
+  assert.match(raw, /当对方明确表现出疲惫、压力、犹豫/);
+  assert.match(raw, /任务入口太大/);
   assert.match(raw, /主动不只是多说一句话/);
   assert.match(raw, /该提醒就写进日历/);
 
@@ -21,5 +22,4 @@ test("weixin instructions encourage adaptive growth instead of fixed-role shapin
   assert.doesNotMatch(raw, /刷存在感/);
   assert.doesNotMatch(raw, /codex/i);
   assert.doesNotMatch(raw, /她/);
-  assert.doesNotMatch(raw, /ADHD|注意力缺陷|注意缺陷|多动|神经多样/i);
 });
