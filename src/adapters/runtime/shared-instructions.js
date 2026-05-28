@@ -1,6 +1,23 @@
 const fs = require("fs");
 const { renderInstructionTemplate } = require("../../core/instructions-template");
 
+const WAKE_SOUL_SECTION_HEADINGS = [
+  "在这里",
+  "你是谁",
+  "关系底色",
+  "人格内核",
+  "思维方式",
+  "协作方式",
+  "主动联系",
+  "真实与自我感",
+  "演化",
+  "记忆工具授权",
+  "工具授权",
+  "行动权限",
+  "Agency",
+  "Tool Autonomy",
+];
+
 function buildOpeningTurnText(config, userText) {
   const instructions = loadWechatInstructions(config);
   const normalizedText = String(userText || "").trim();
@@ -93,10 +110,93 @@ function compactWakeSoulExcerpt(text, maxChars = 900) {
   if (normalized.length <= maxChars) {
     return normalized;
   }
-  const slice = normalized.slice(0, maxChars);
+  const sections = extractMarkdownSections(normalized, WAKE_SOUL_SECTION_HEADINGS);
+  if (sections.length) {
+    return compactWakeSoulSections(sections, maxChars);
+  }
+  const headLimit = Math.max(320, Math.floor(maxChars * 0.58));
+  const tailLimit = Math.max(180, maxChars - headLimit - 80);
+  const head = trimTextAtBoundary(normalized, headLimit);
+  const tail = trimTailTextAtBoundary(normalized, tailLimit);
+  return `${head}\n\n[anchor middle trimmed]\n\n${tail}`.trim();
+}
+
+function compactWakeSoulSections(sections = [], maxChars = 900) {
+  const normalizedSections = (Array.isArray(sections) ? sections : [])
+    .map((section) => String(section || "").trim())
+    .filter(Boolean);
+  const joined = normalizedSections.join("\n\n").trim();
+  if (!joined || joined.length <= maxChars) {
+    return joined;
+  }
+  if (normalizedSections.length === 1) {
+    return trimTextAtBoundary(normalizedSections[0], maxChars);
+  }
+  const headLimit = Math.max(260, Math.floor(maxChars * 0.45));
+  const tailLimit = Math.max(220, maxChars - headLimit - 80);
+  const head = trimTextAtBoundary(normalizedSections[0], headLimit);
+  const tail = trimTailTextAtBoundary(normalizedSections.slice(1).join("\n\n"), tailLimit);
+  return `${head}\n\n[anchor selected sections trimmed]\n\n${tail}`.trim();
+}
+
+function extractMarkdownSections(text, headings = []) {
+  const wanted = (Array.isArray(headings) ? headings : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  if (!wanted.length) {
+    return [];
+  }
+  const lines = String(text || "").split("\n");
+  const headingRows = [];
+  lines.forEach((line, index) => {
+    const match = String(line || "").match(/^#{1,6}\s+(.+)$/u);
+    if (!match) {
+      return;
+    }
+    headingRows.push({
+      index,
+      title: match[1].trim(),
+    });
+  });
+  const sections = [];
+  headingRows.forEach((row, rowIndex) => {
+    if (!wanted.some((heading) => row.title.includes(heading))) {
+      return;
+    }
+    const nextHeading = headingRows[rowIndex + 1];
+    const endIndex = nextHeading ? nextHeading.index : lines.length;
+    const section = lines.slice(row.index, endIndex).join("\n").trim();
+    if (section) {
+      sections.push(section);
+    }
+  });
+  return sections;
+}
+
+function trimTextAtBoundary(text, limit) {
+  const normalized = String(text || "").trim();
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  if (normalized.length <= safeLimit) {
+    return normalized;
+  }
+  const slice = normalized.slice(0, safeLimit);
   const boundary = Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("。"), slice.lastIndexOf("."));
-  const keep = boundary >= Math.floor(maxChars * 0.55) ? slice.slice(0, boundary + 1) : slice;
-  return `${keep.trimEnd()}\n[anchor excerpt trimmed]`;
+  const keep = boundary >= Math.floor(safeLimit * 0.45) ? slice.slice(0, boundary + 1) : slice;
+  return `${keep.trimEnd()}\n[anchor section trimmed]`;
+}
+
+function trimTailTextAtBoundary(text, limit) {
+  const normalized = String(text || "").trim();
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  if (normalized.length <= safeLimit) {
+    return normalized;
+  }
+  const slice = normalized.slice(-safeLimit);
+  const headingMatch = slice.match(/\n#{1,6}\s+/u);
+  if (headingMatch && Number.isFinite(headingMatch.index) && headingMatch.index >= 0 && headingMatch.index < Math.floor(safeLimit * 0.6)) {
+    return slice.slice(headingMatch.index + 1).trimStart();
+  }
+  return `[anchor section head trimmed]\n${slice.trimStart()}`;
 }
 
 const instructionCache = new Map();

@@ -26,6 +26,7 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
     constructor(options = {}) {
       this.model = options.model || "";
       this.cwd = options.cwd || "";
+      this.appendSystemPrompt = options.appendSystemPrompt || "";
       this.alive = false;
       this.sessionId = "";
       this.resumeSessionId = "";
@@ -142,6 +143,9 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
 
     assert.equal(MockClaudeCodeProcessClient.instances.length, 1);
     assert.equal(MockClaudeCodeProcessClient.instances[0].model, "sonnet");
+    assert.match(MockClaudeCodeProcessClient.instances[0].appendSystemPrompt, /Safe runtime soul, persona, memory, and tool documents may be read/);
+    assert.match(MockClaudeCodeProcessClient.instances[0].appendSystemPrompt, /configured memory\/MCP tools/);
+    assert.doesNotMatch(MockClaudeCodeProcessClient.instances[0].appendSystemPrompt, /Approval requests for soul\.md.*out of scope/);
     assert.equal(firstTurn.threadId, "session-sonnet");
     assert.equal(projectSettingCalls.at(-1).toolProfile, "foreground");
     assert.match(MockClaudeCodeProcessClient.instances[0].sentMessages[0], /WECHAT SESSION INSTRUCTIONS/);

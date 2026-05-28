@@ -56,3 +56,14 @@ test("weixin operations separates random checkins from AI-calendar tool wakeups"
   assert.match(raw, /schedule it as an AI-calendar reminder/i);
   assert.match(raw, /Store shareable outcomes and evidence/i);
 });
+
+test("weixin operations gives foreground replies an active low-risk tool bias", () => {
+  const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
+  const raw = fs.readFileSync(templatePath, "utf8");
+
+  assert.match(raw, /Treat useful low-risk actions as part of replying/i);
+  assert.match(raw, /do it directly before or alongside the text/i);
+  assert.match(raw, /Prefer doing the smallest useful action/i);
+  assert.match(raw, /Low-risk continuity actions can happen without a permission ritual/i);
+  assert.match(raw, /search\/read first instead of answering from surface impression/i);
+});
