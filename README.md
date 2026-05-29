@@ -117,7 +117,7 @@ If you ask Codex to help deploy a fresh clone, have it read these in order:
 2. [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
 3. [docs/quickstart.md](./docs/quickstart.md)
 
-Those files explain the public service boundary, isolated state/data/workspace paths, the built-in brain, the control ledger, and the empty-memory smoke. Codex should not reuse a private state directory, connect an old personal memory warehouse, or restart/take over another bridge service while doing a public smoke.
+Those files explain the public service boundary, isolated state/data/workspace paths, the built-in brain, the control ledger, resident warm-anchor seeding, and the empty-memory smoke. Codex should not reuse a private state directory, connect an old personal memory warehouse, or restart/take over another bridge service while doing a public smoke.
 
 ## Minimal Configuration
 

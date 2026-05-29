@@ -923,6 +923,13 @@ test("tool host exposes structured warm-memory lookup and exact-card mutation to
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_read"));
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_update"));
   assert.ok(tools.find((tool) => tool.name === "mossbridge_memory_warm_delete"));
+  const writeTool = tools.find((tool) => tool.name === "mossbridge_memory_warm_write");
+  const updateTool = tools.find((tool) => tool.name === "mossbridge_memory_warm_update");
+  assert.equal(writeTool.inputSchema.properties.resident.type, "boolean");
+  assert.equal(updateTool.inputSchema.properties.resident.type, "boolean");
+  assert.match(writeTool.inputSchema.properties.pinned.description, /enter resident delivery/);
+  assert.match(writeTool.inputSchema.properties.resident.description, /Use false/);
+  assert.equal(updateTool.inputSchema.properties.resident_kind, undefined);
 
   const search = await host.invokeTool("mossbridge_memory_warm_search", {
     query: "coffee",

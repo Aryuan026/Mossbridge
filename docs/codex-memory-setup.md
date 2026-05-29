@@ -181,6 +181,25 @@ MossbridgeData/
 4. notebook / 小事记能落在 data root，而不是运行态或 git 仓库。
 5. memory_tree 能保存少量明确关系边。
 
+还有一件新部署的起手小事：不要让前台模型从空白里醒来。Mossbridge 依赖 runtime 自己维持一定的自我连贯性，所以部署 Codex 要确认至少有几张 resident warm anchors。做法是先问用户愿意提供哪些“起手锚点”，例如称呼偏好、长期协作关系、稳定表达偏好、重要象征物、明确不希望被反复提醒的边界。不要替用户推断疾病、性别、家庭关系或隐私事实。
+
+写起手锚点时，`pinned: true` 或 `certainty_state: "anchor"` 会默认进入 resident delivery，不需要新人先知道 `resident: true`。如果某张卡只是重要备忘、工具策略或阶段性工程规则，写 `resident: false`，让它可以被搜索或按需召回，但不要每轮常驻。
+
+最小 resident 种子可以长这样：
+
+```json
+{
+  "title": "User startup continuity",
+  "summary": "用户希望 Mossbridge 起手时先保留称呼和协作连续性，不从空白系统声道开始。",
+  "body_markdown": "这是新部署的起手 resident anchor。只保存用户确认过的稳定偏好，不推断诊断或隐私身份。",
+  "tags": ["relationship", "continuity", "startup"],
+  "pinned": true,
+  "certainty_state": "anchor"
+}
+```
+
+Codex 部署时的检查句：温记忆目录不只是存在，还应该至少能写入一张起手 anchor；随后跑一次普通问候或 memory-chain smoke，确认 prelude 里能看到 `resident-anchor:`，再继续 QR 登录和 `/bind`。
+
 一条轻量树边可以长这样：
 
 ```json
@@ -271,7 +290,7 @@ Mossbridge 的 heartbeat 不是“固定时间给用户发一句问候”。它�
 
 Mossbridge 的 memory prelude 不是完整聊天记录，也不是人格锁。它是一小包让前台模型落地当前回复的材料：
 
-- resident warm anchors：长期应该常驻的关系/偏好锚点。
+- resident warm anchors：长期应该常驻的关系/偏好锚点；`pinned` 或 `anchor` 默认会升入这一层，`resident:false` 是退出开关。
 - relevant warm cards：和当前问题相关的温卡。
 - active ongoing tracks：这阵子还活着的事。
 - observation / episode attention：可修正默契和有边界的事件盒子。

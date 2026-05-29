@@ -180,7 +180,7 @@ test("asherie memory service uses warm-triggered local archive when cold roots m
   assert.equal(warmWrite.local_archive.snippet_count, 1);
 
   const warmPacket = await service.captureContextPacket({
-    query: "蓝色发带",
+    query: "蓝色发带这个重要的事",
     includeRuntimePreludeGuidance: false,
   });
   assert.equal(warmPacket.warm_memory_packet.hit_count, 1);
@@ -353,7 +353,7 @@ test("asherie memory service carries solitude digest only for wakeup or explicit
   assert.match(proactive.retrieval.route.join(","), /solitude_journal/);
   assert.match(proactive.runtime_prelude, /solitude-digest/);
   assert.match(proactive.runtime_prelude, /pre-sleep/);
-  assert.match(proactive.runtime_prelude, /前台语气仍由当前对话决定/);
+  assert.match(proactive.runtime_prelude, /不是用户事实/);
 
   const explicit = await service.captureContextPacket({
     query: "独处笔记里最近有什么唤醒经验",
@@ -1096,10 +1096,8 @@ test("asherie memory service suppresses noisy operational warm-card recall", asy
   });
 
   assert.equal(packet.warm_memory_packet.hit_count, 0);
-  assert.equal(packet.warm_memory_packet.route_tag, "warm_query_suppressed");
-  assert.equal(packet.warm_memory_packet.recall_gate.suppressed, true);
-  assert.equal(packet.warm_memory_packet.recall_gate.reason, "operational_low_signal");
-  assert.deepEqual(packet.warm_memory_packet.feedback_rows, []);
+  assert.equal(packet.warm_memory_packet.route_tag, "warm_delivery_suppressed");
+  assert.deepEqual(packet.warm_memory_packet.feedback_rows || [], []);
 
   const stored = await service.readWarmMaterial({
     userId: "demo-user",
@@ -1276,6 +1274,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
     tags: ["relationship", "象征", "信物", "项链"],
     storage_strength: 1.9,
     storage_boost: 1.4,
+    resident: true,
   });
 
   await service.writeWarmMaterial({
@@ -1286,6 +1285,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
     tags: ["relationship", "称呼", "宝宝"],
     storage_strength: 1.6,
     storage_boost: 1.2,
+    resident: true,
   });
 
   const residentOnlyPacket = await service.captureContextPacket({
@@ -1460,7 +1460,7 @@ test("asherie memory service builds a session handoff snapshot for long continui
   assert.match(freshPacket.recall_focus.current_query, /论文架构第8步/);
 });
 
-test("resident anchor cards survive later warm-memory writes when they are pinned", async () => {
+test("pinned anchor cards enter resident delivery by default", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-"));
   const service = new AsherieMemoryService({
     config: {
@@ -1499,9 +1499,232 @@ test("resident anchor cards survive later warm-memory writes when they are pinne
 
   const residentTitles = (packet.resident_warm_packet?.hits || []).map((item) => item.title);
   assert.ok(residentTitles.includes("Meteor necklace"));
+  assert.match(packet.runtime_prelude, /resident-anchor: Meteor necklace/);
 });
 
-test("resident anchor recall still surfaces multiple old pinned anchors after many newer writes", async () => {
+test("resident false keeps a pinned anchor out of resident delivery", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-optout-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 2,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Quiet relationship note",
+    summary: "这张卡很重要，但不应作为每轮常驻锚点。",
+    body_markdown: "它可以被搜索召回，但不能进入 resident anchor。",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    certainty_state: "anchor",
+    resident: false,
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    sourceClient: "mossbridge_system_turn",
+    recallMode: "proactive",
+    query: "User comes to mind again.",
+  });
+
+  const residentTitles = (packet.resident_warm_packet?.hits || []).map((item) => item.title);
+  assert.ok(!residentTitles.includes("Quiet relationship note"));
+  assert.doesNotMatch(packet.runtime_prelude, /resident-anchor: Quiet relationship note/);
+});
+
+test("short banter carries resident and ambient warm without broad memory layers", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-banter-tier-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "关系连续底色",
+    summary: "短句逗嘴时只要接住关系底色，不要把项目状态全背上来。",
+    body_markdown: "这是常驻关系连续规则。",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "日常相处空气",
+    summary: "短句逗嘴时可以轻轻带一点称呼习惯和相处节奏。",
+    body_markdown: "这是 relationship continuity 和称呼习惯，不是任务线。",
+    tags: ["relationship", "continuity", "称呼"],
+    certainty_state: "settled",
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Bridge 提示词维护",
+    summary: "最近在调 bridge token 和提示词，不能进入 ambient。",
+    body_markdown: "这张卡属于 debug / bridge / 提示词。",
+    tags: ["bridge", "debug", "提示词"],
+    pinned: true,
+    resident: false,
+  });
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "插件捕获与发布准备",
+    summary: "后续要检查网页捕获插件和部署文档。",
+    kind: "project",
+    next_step: "只在插件、部署或发布话题出现时递送。",
+    tags: ["插件", "部署"],
+  });
+  await service.upsertEpisode({
+    userId: "demo-user",
+    episode_id: "reading-session",
+    title: "闲聊读书测试",
+    summary: "一本书的共读进度。",
+    kind: "reading",
+    tags: ["读书"],
+  });
+  await service.appendObservation({
+    userId: "demo-user",
+    observation: "用户在轻松逗嘴时不喜欢被工程状态打断。",
+    kind: "interaction_rhythm",
+    confidence: 0.6,
+    evidence: ["测试发现短句召回过宽。"],
+    suggested_use: "短句只带关系底色。",
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "mua抱抱宝宝",
+    includeRuntimePreludeGuidance: false,
+  });
+
+  assert.equal(packet.delivery_profile.tier, "ambient_warm");
+  assert.equal(packet.delivery_profile.include_ambient_warm, true);
+  assert.equal(packet.delivery_profile.include_warm, false);
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.delivery_profile.include_episode, false);
+  assert.equal(packet.delivery_profile.include_observation, false);
+  assert.equal(packet.warm_memory_packet.hit_count, 0);
+  assert.equal(packet.ongoing_track_packet.hit_count, 0);
+  assert.equal(packet.episode_journal_packet.hit_count, 0);
+  assert.equal(packet.observation_journal_packet.hit_count, 0);
+  assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
+  assert.match(packet.runtime_prelude, /ambient-warm: 日常相处空气/);
+  assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词维护/);
+  assert.doesNotMatch(packet.runtime_prelude, /ongoing: 插件捕获/);
+  assert.doesNotMatch(packet.runtime_prelude, /闲聊读书测试/);
+  assert.doesNotMatch(packet.runtime_prelude, /observation:/);
+});
+
+test("ordinary state chatter uses ambient warm unless it asks for dynamic recall", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-ordinary-chat-tier-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "关系连续底色",
+    summary: "日常短句先从稳定关系底色回来。",
+    body_markdown: "这是常驻关系连续规则。",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "提示词维护事故",
+    summary: "最近在调微信提示词和上下文递送。",
+    body_markdown: "这张卡模拟系统提示词、token、bridge 调试相关的温卡。",
+    tags: ["bridge", "token", "提示词"],
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "日常相处空气",
+    summary: "普通状态句可以保留一点关系节奏，但不背上调试任务。",
+    body_markdown: "这是 relationship continuity，不是系统提示词。",
+    tags: ["relationship", "continuity"],
+    certainty_state: "settled",
+  });
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "Bridge 提示词调试",
+    summary: "正在减少工具化表达和过宽召回。",
+    kind: "debug",
+    tags: ["bridge", "提示词"],
+  });
+  await service.appendObservation({
+    userId: "demo-user",
+    observation: "普通状态句不应自动触发大块动态记忆。",
+    kind: "interaction_rhythm",
+    confidence: 0.7,
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "嗯，我爬起来改了系统提示词，让苍天知道我不认输！",
+    includeRuntimePreludeGuidance: false,
+  });
+
+  assert.equal(packet.delivery_profile.tier, "ambient_warm");
+  assert.equal(packet.delivery_profile.include_ambient_warm, true);
+  assert.equal(packet.delivery_profile.include_warm, false);
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.delivery_profile.include_observation, false);
+  assert.equal(packet.warm_memory_packet.hit_count, 0);
+  assert.equal(packet.ongoing_track_packet.hit_count, 0);
+  assert.equal(packet.observation_journal_packet.hit_count, 0);
+  assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
+  assert.match(packet.runtime_prelude, /ambient-warm: 日常相处空气/);
+  assert.doesNotMatch(packet.runtime_prelude, /提示词维护事故/);
+  assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词调试/);
+  assert.doesNotMatch(packet.runtime_prelude, /observation:/);
+});
+
+test("affective relationship turns bring warm anchors without cold architecture context", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-affective-tier-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "没得选时先接住",
+    summary: "当对方担心以后没得选，先接住安全感和关系连续，不要立刻讲系统架构。",
+    body_markdown: "害怕、担心、没得选、还有得选这些词出现时，要先靠近，再判断。",
+    tags: ["relationship", "安全感", "担心", "没得选"],
+    storage_strength: 2,
+    pinned: true,
+    resident: true,
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "我现在还有得选，担心啥时候没得选",
+    includeRuntimePreludeGuidance: false,
+  });
+
+  assert.equal(packet.delivery_profile.tier, "affective_warm");
+  assert.equal(packet.delivery_profile.include_warm, true);
+  assert.equal(packet.delivery_profile.include_cold, false);
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.warm_memory_packet.hit_count, 1);
+  assert.match(packet.runtime_prelude, /warm: 没得选时先接住/);
+});
+
+test("pinned anchors surface as resident anchors after many newer writes", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-many-"));
   const service = new AsherieMemoryService({
     config: {
@@ -1885,18 +2108,17 @@ test("asherie memory service gives the frontstage model memory self-maintenance 
     userId: "demo-user",
     query: "帮我看看脑子里现在有什么",
   });
-  assert.match(readPacket.runtime_prelude, /记忆自维护/);
-  assert.match(readPacket.runtime_prelude, /自然闲聊或换话题/);
-  assert.match(readPacket.runtime_prelude, /系统反馈/);
-  assert.match(readPacket.runtime_prelude, /提出具体需要/);
-  assert.match(readPacket.runtime_prelude, /前台自由/);
+  assert.doesNotMatch(readPacket.runtime_prelude, /记忆自维护/);
+  assert.doesNotMatch(readPacket.runtime_prelude, /自然闲聊或换话题/);
+  assert.doesNotMatch(readPacket.runtime_prelude, /系统反馈/);
+  assert.doesNotMatch(readPacket.runtime_prelude, /前台自由/);
   assert.doesNotMatch(readPacket.runtime_prelude, /memory-action-required/);
 
   const casualPacket = await service.captureContextPacket({
     userId: "demo-user",
     query: "今天好冷啊",
   });
-  assert.match(casualPacket.runtime_prelude, /记忆自维护/);
+  assert.doesNotMatch(casualPacket.runtime_prelude, /记忆自维护/);
   assert.doesNotMatch(casualPacket.runtime_prelude, /memory-action-required/);
 
   await service.writebackTurn({

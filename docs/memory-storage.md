@@ -86,12 +86,20 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 - 已经稳定下来的自我印象、伴侣印象、协作风格
 - 从旧冷层迁入、但本质上是陪伴型记忆卡的材料
 
-长期必须常驻的卡应显式标记：
+长期必须常驻的卡用 `pinned` 或 `certainty_state: "anchor"` 标记即可。Mossbridge 会把它们递送成 resident warm anchors，这样新部署不会因为还没人写过 `resident: true` 而从空白里醒来：
 
 ```json
 {
   "pinned": true,
   "certainty_state": "anchor"
+}
+```
+
+如果一张卡很重要但不该每轮常驻，例如工具提示、阶段性工程规则或只在特定任务里出现的备忘，保留温卡本体，但加上：
+
+```json
+{
+  "resident": false
 }
 ```
 

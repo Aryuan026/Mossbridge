@@ -86,6 +86,9 @@ const QUERY_STOP_TOKENS = new Set([
 const QUERY_SIGNAL_TERMS = new Set([
   "选择", "决策", "决定", "模式", "方式", "风格", "偏好", "喜欢", "喜好",
   "倾向", "性格", "特质", "习惯", "忌口", "饮食", "吃面", "加蛋", "清淡", "面条", "过敏", "药物", "项目",
+  "人格", "身份", "自我", "立场", "连续性",
+  "担心", "害怕", "焦虑", "不安", "难过", "委屈", "安全感", "没得选",
+  "冷淡", "生硬", "工具化", "公事公办", "生疏", "疏远", "分离", "陪我",
   "健康", "身体", "健身", "运动", "训练", "减脂", "减肥", "体重", "睡眠",
   "作息", "压力", "加班", "疲劳", "能量", "恢复",
   "装修", "关系", "家人", "父亲", "妈妈", "生日", "约定",
@@ -135,6 +138,12 @@ const WARM_TOPIC_INTENT_PATTERNS = [
   /关系|家人|妈妈|父亲|生日|约定|象征|信物|纪念|重要|有意义/i,
   /家族|家庭|亲属|亲戚|八卦|吃瓜|连续剧/i,
   /作息|睡眠|压力|恢复|健康|饮食|吃面|加蛋|清淡|面条|运动|训练|减脂|体重/i,
+];
+
+const AFFECTIVE_WARM_INTENT_PATTERNS = [
+  /担心|害怕|焦虑|不安|难过|委屈|破防|想哭|哭了|安全感|没得选/i,
+  /冷冷|冷淡|生硬|工具化|公事公办|生疏|不熟|不对劲|不像|疏远/i,
+  /失去|丢掉|离开|分离|陪我/i,
 ];
 
 const OPERATIONAL_WARM_SUPPRESSION_PATTERNS = [
@@ -354,6 +363,7 @@ function buildWarmRecallGate({
   const answerTypeList = Array.isArray(answerTypes) ? answerTypes : [];
   const contentChars = countQueryContentChars(normalized);
   const explicit = hasExplicitWarmRecallIntent(normalized);
+  const affectiveIntent = hasAffectiveWarmIntent(normalized);
   const topicIntent = hasWarmTopicIntent(normalized, tokenList, answerTypeList);
   const operational = looksLikeOperationalWarmSuppression(normalized);
   const phatic = looksLikePhaticOrReaction(normalized, contentChars);
@@ -363,6 +373,7 @@ function buildWarmRecallGate({
     reason: "",
     explicit_intent: explicit,
     topic_intent: topicIntent,
+    affective_intent: affectiveIntent,
     operational,
     phatic,
     content_chars: contentChars,
@@ -381,10 +392,10 @@ function buildWarmRecallGate({
   if (!normalized) {
     return suppressWarmRecall(base, "empty_query");
   }
-  if (explicit || topicIntent) {
+  if (explicit || topicIntent || affectiveIntent) {
     return {
       ...base,
-      reason: explicit ? "explicit_warm_recall" : "warm_topic_intent",
+      reason: explicit ? "explicit_warm_recall" : (affectiveIntent ? "affective_warm_intent" : "warm_topic_intent"),
     };
   }
   if (phatic) {
@@ -430,6 +441,10 @@ function hasWarmTopicIntent(text = "", retrievalTokens = [], answerTypes = []) {
   const strongTokenCount = (Array.isArray(retrievalTokens) ? retrievalTokens : [])
     .filter((token) => isStrongRecallKeyword(token)).length;
   return strongTokenCount >= 2 && !looksLikeOperationalWarmSuppression(text);
+}
+
+function hasAffectiveWarmIntent(text = "") {
+  return AFFECTIVE_WARM_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function looksLikeOperationalWarmSuppression(text = "") {

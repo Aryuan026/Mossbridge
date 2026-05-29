@@ -154,6 +154,7 @@ function readConfig() {
     asherieRecallRecentRecordLimit: readBridgeIntEnv("ASHERIE_RECALL_RECENT_RECORD_LIMIT") || 8,
     asheriePreludeWarmLimit: readBridgeIntEnv("ASHERIE_PRELUDE_WARM_LIMIT") || 6,
     asheriePreludeResidentWarmLimit: readBridgeIntEnv("ASHERIE_PRELUDE_RESIDENT_WARM_LIMIT") || 5,
+    asheriePreludeAmbientWarmLimit: readBridgeIntEnv("ASHERIE_PRELUDE_AMBIENT_WARM_LIMIT") || 2,
     asheriePreludeOngoingLimit: readBridgeIntEnv("ASHERIE_PRELUDE_ONGOING_LIMIT") || 5,
     asheriePreludeOngoingShadowLimit: readBridgeIntEnv("ASHERIE_PRELUDE_ONGOING_SHADOW_LIMIT") || 6,
     asheriePreludeObservationLimit: readBridgeIntEnv("ASHERIE_PRELUDE_OBSERVATION_LIMIT") || 4,

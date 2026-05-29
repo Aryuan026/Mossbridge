@@ -43,6 +43,8 @@ Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
 
+For fresh deployments, `pinned` warm cards and `certainty_state: anchor` cards are resident anchors by default. Use `resident:false` only for important cards that should stay searchable but not sit in every turn.
+
 For token hygiene, ordinary user turns may receive stable opening guidance once per runtime thread, but system wakeups must stay lean without waking empty. Heartbeat, reminder, and dreaming system turns should not re-send the full WeChat opening prompt; they should carry a short soul/identity wake anchor, the trigger, scoped memory packet, safe action envelope, and any small diagnostics needed for writeback. Bridge status reports remain `[Mossbridge]` notices, not front-stage assistant speech.
 
 ## Why The Main Settings Exist

@@ -26,6 +26,7 @@ const {
   ensureGatewayStorageLayout,
 } = require("../asherie/storage-layout");
 const {
+  buildAmbientWarmMemoryPacket,
   buildMemoryRetrievalPacket,
   buildResidentWarmMemoryPacket,
   buildWarmMemoryRuntimePacket,
@@ -34,6 +35,7 @@ const { WarmMemoryScope } = require("../asherie/warm-memory/contracts");
 const { WarmMemoryStore } = require("../asherie/warm-memory/store");
 const { buildWarmMemoryRecallPacket } = require("../asherie/warm-memory/search");
 const { buildRecallFocus } = require("../asherie/recall-focus");
+const { resolveMemoryDeliveryProfile } = require("../asherie/memory-delivery-profile");
 const {
   buildTemporalRecallPacket,
   buildTemporalRecallPlan,
@@ -151,15 +153,24 @@ class AsherieMemoryService {
         Number(this.config.asherieRecallRecentRecordLimit) || 8,
       ),
     });
-    const temporalPlan = buildTemporalRecallPlan({
+    const deliveryProfile = resolveMemoryDeliveryProfile({
       query,
-      referenceTime: args.received_at || args.receivedAt || args.ts_utc || args.timestamp,
-      limit: resolvePositiveInt(
-        args.temporal_recall_limit || args.temporalRecallLimit,
-        Number(this.config.asherieTemporalRecallLimit) || 8,
-      ),
+      recallFocus,
+      recallMode,
+      runtimeProfile,
+      forceRecentContext,
     });
-    const temporalRows = temporalPlan.should_recall
+    const temporalPlan = deliveryProfile.include_temporal
+      ? buildTemporalRecallPlan({
+          query,
+          referenceTime: args.received_at || args.receivedAt || args.ts_utc || args.timestamp,
+          limit: resolvePositiveInt(
+            args.temporal_recall_limit || args.temporalRecallLimit,
+            Number(this.config.asherieTemporalRecallLimit) || 8,
+          ),
+        })
+      : null;
+    const temporalRows = temporalPlan?.should_recall
       ? this.conversationCache.listTimeWindow(scopes.scopedUserId, {
           startUtc: temporalPlan.window_start_utc,
           endUtc: temporalPlan.window_end_utc,
@@ -193,13 +204,15 @@ class AsherieMemoryService {
     const ongoingQuery = normalizeText(recallMode) === "proactive"
       ? recallQuery
       : (forceRecentContext ? recallQuery : normalizeText(query));
-    const warmMemoryPacket = buildWarmMemoryRuntimePacket(this.warmMemoryStore, scopes.warmScope, {
-      query: recallQuery,
-      limit: Number(args.limit) || 6,
-      materialTypes: normalizeStringList(args.material_types || args.materialTypes),
-      recallMode,
-      recallConfig: args.recall_config || args.recallConfig || {},
-    });
+    const warmMemoryPacket = deliveryProfile.include_warm
+      ? buildWarmMemoryRuntimePacket(this.warmMemoryStore, scopes.warmScope, {
+          query: recallQuery,
+          limit: Number(args.limit) || 6,
+          materialTypes: normalizeStringList(args.material_types || args.materialTypes),
+          recallMode,
+          recallConfig: args.recall_config || args.recallConfig || {},
+        })
+      : emptyWarmMemoryRuntimePacket(scopes.warmScope, recallQuery, "warm_delivery_suppressed");
     const residentWarmPacket = buildResidentWarmMemoryPacket(this.warmMemoryStore, scopes.warmScope, {
       limit: resolveResidentWarmLimit({
         requested: args.resident_limit ?? args.residentLimit ?? this.config.asheriePreludeResidentWarmLimit,
@@ -211,32 +224,52 @@ class AsherieMemoryService {
         ? warmMemoryPacket.hits.map((item) => item?.material_id)
         : [],
     });
-    const ongoingTrackPacket = this.buildOngoingTrackRuntimePacket(scopes.scopedUserId, {
-      query: ongoingQuery,
-      includeZeroScore: shouldIncludeZeroScoreOngoingTracks(ongoingQuery, recallMode),
-      limit: resolvePositiveInt(
-        args.prelude_ongoing_limit || args.preludeOngoingLimit,
-        Number(this.config.asheriePreludeOngoingLimit) || 4,
-      ),
-      shadowLimit: resolvePositiveInt(
-        args.prelude_ongoing_shadow_limit || args.preludeOngoingShadowLimit,
-        Number(this.config.asheriePreludeOngoingShadowLimit) || 6,
-      ),
-    });
-    const observationJournalPacket = this.buildObservationJournalRuntimePacket(scopes.scopedUserId, {
-      query: recallQuery,
-      limit: resolvePositiveInt(
-        args.prelude_observation_limit || args.preludeObservationLimit,
-        Number(this.config.asheriePreludeObservationLimit) || 4,
-      ),
-    });
-    const episodeJournalPacket = this.buildEpisodeJournalRuntimePacket(scopes.scopedUserId, {
-      query: recallQuery,
-      limit: resolvePositiveInt(
-        args.prelude_episode_limit || args.preludeEpisodeLimit,
-        Number(this.config.asheriePreludeEpisodeLimit) || 3,
-      ),
-    });
+    const ambientWarmPacket = deliveryProfile.include_ambient_warm
+      ? buildAmbientWarmMemoryPacket(this.warmMemoryStore, scopes.warmScope, {
+          limit: resolveAmbientWarmLimit({
+            requested: args.ambient_limit ?? args.ambientLimit ?? this.config.asheriePreludeAmbientWarmLimit,
+            recallMode,
+            config: this.config,
+          }),
+          materialTypes: normalizeStringList(args.material_types || args.materialTypes),
+          excludeMaterialIds: [
+            ...(Array.isArray(warmMemoryPacket?.hits) ? warmMemoryPacket.hits.map((item) => item?.material_id) : []),
+            ...(Array.isArray(residentWarmPacket?.hits) ? residentWarmPacket.hits.map((item) => item?.material_id) : []),
+          ],
+        })
+      : emptyWarmMemoryRuntimePacket(scopes.warmScope, recallQuery, "ambient_warm_delivery_suppressed");
+    const ongoingTrackPacket = deliveryProfile.include_ongoing
+      ? this.buildOngoingTrackRuntimePacket(scopes.scopedUserId, {
+          query: ongoingQuery,
+          includeZeroScore: shouldIncludeZeroScoreOngoingTracks(ongoingQuery, recallMode),
+          limit: resolvePositiveInt(
+            args.prelude_ongoing_limit || args.preludeOngoingLimit,
+            Number(this.config.asheriePreludeOngoingLimit) || 4,
+          ),
+          shadowLimit: resolvePositiveInt(
+            args.prelude_ongoing_shadow_limit || args.preludeOngoingShadowLimit,
+            Number(this.config.asheriePreludeOngoingShadowLimit) || 6,
+          ),
+        })
+      : emptyOngoingTrackPacket(scopes.scopedUserId, ongoingQuery, "ongoing_track_delivery_suppressed");
+    const observationJournalPacket = deliveryProfile.include_observation
+      ? this.buildObservationJournalRuntimePacket(scopes.scopedUserId, {
+          query: recallQuery,
+          limit: resolvePositiveInt(
+            args.prelude_observation_limit || args.preludeObservationLimit,
+            Number(this.config.asheriePreludeObservationLimit) || 4,
+          ),
+        })
+      : emptyObservationJournalPacket(scopes.scopedUserId, recallQuery, "observation_journal_delivery_suppressed");
+    const episodeJournalPacket = deliveryProfile.include_episode
+      ? this.buildEpisodeJournalRuntimePacket(scopes.scopedUserId, {
+          query: recallQuery,
+          limit: resolvePositiveInt(
+            args.prelude_episode_limit || args.preludeEpisodeLimit,
+            Number(this.config.asheriePreludeEpisodeLimit) || 3,
+          ),
+        })
+      : emptyEpisodeJournalPacket(scopes.scopedUserId, recallQuery, "episode_journal_delivery_suppressed");
     const solitudeJournalPacket = shouldIncludeSolitudeDigestForTurn({
       query: recallQuery,
       recallMode,
@@ -289,7 +322,7 @@ class AsherieMemoryService {
       agentId: scopes.coldScope.agent_id,
       version: normalizeText(args.version),
     });
-    const shouldSearchColdRoots = !proactiveLite && shouldSearchColdRootsForTurn({
+    const shouldSearchColdRoots = deliveryProfile.include_cold && !proactiveLite && shouldSearchColdRootsForTurn({
       query: recallQuery,
       recallFocus,
       recallMode,
@@ -353,6 +386,7 @@ class AsherieMemoryService {
       mode: "mossbridge_context_packet",
       warmMemoryPacket,
       residentWarmPacket,
+      ambientWarmPacket,
       episodeJournalPacket,
       observationJournalPacket,
       solitudeJournalPacket,
@@ -370,10 +404,12 @@ class AsherieMemoryService {
         ? "cold_memory_version"
         : (normalizeText(coldSource.source_kind) === "truth_layer_snapshot" ? "truth_layer_snapshot" : ""),
     });
+    retrieval.delivery_profile = deliveryProfile;
     const runtimePrelude = buildRuntimePrelude({
       recallFocus,
       warmMemoryPacket,
       residentWarmPacket,
+      ambientWarmPacket,
       coldMemoryVersion,
       coldMemoryPayload,
       coldSource,
@@ -392,7 +428,7 @@ class AsherieMemoryService {
       recentRecords: recent.records,
       calendarPacket,
       wakeupPacket,
-      includeGuidance: args.include_runtime_prelude_guidance ?? args.includeRuntimePreludeGuidance ?? true,
+      includeGuidance: args.include_runtime_prelude_guidance ?? args.includeRuntimePreludeGuidance ?? false,
       preludeWarmLimit: resolvePositiveInt(
         args.prelude_warm_limit || args.preludeWarmLimit,
         Number(this.config.asheriePreludeWarmLimit) || 5,
@@ -400,6 +436,10 @@ class AsherieMemoryService {
       preludeResidentWarmLimit: resolvePositiveInt(
         args.prelude_resident_warm_limit || args.preludeResidentWarmLimit,
         Number(this.config.asheriePreludeResidentWarmLimit) || 4,
+      ),
+      preludeAmbientWarmLimit: resolvePositiveInt(
+        args.prelude_ambient_warm_limit || args.preludeAmbientWarmLimit,
+        Number(this.config.asheriePreludeAmbientWarmLimit) || 2,
       ),
       preludeOngoingLimit: resolvePositiveInt(
         args.prelude_ongoing_limit || args.preludeOngoingLimit,
@@ -443,8 +483,10 @@ class AsherieMemoryService {
       cold_scope: scopes.coldScope,
       warm_scope_id: scopes.warmScope.scopeId(),
       recall_focus: recallFocus,
+      delivery_profile: deliveryProfile,
       warm_memory_packet: warmMemoryPacket,
       resident_warm_packet: residentWarmPacket,
+      ambient_warm_packet: ambientWarmPacket,
       ongoing_track_packet: ongoingTrackPacket,
       episode_journal_packet: episodeJournalPacket,
       episode_attention: buildEpisodeAttentionPacket(episodeJournalPacket, currentTurnSignals),
@@ -531,6 +573,11 @@ class AsherieMemoryService {
         || args.memoryContextPacket?.resident_warm_packet
         || args.resident_warm
         || args.residentWarm
+        || {},
+      ambient_warm: args.memory_context_packet?.ambient_warm_packet
+        || args.memoryContextPacket?.ambient_warm_packet
+        || args.ambient_warm
+        || args.ambientWarm
         || {},
       ongoing_track: args.memory_context_packet?.ongoing_track_packet
         || args.memoryContextPacket?.ongoing_track_packet
@@ -1354,6 +1401,7 @@ function buildRuntimePrelude({
   recallMode,
   warmMemoryPacket,
   residentWarmPacket,
+  ambientWarmPacket,
   ongoingTrackPacket,
   episodeJournalPacket,
   observationJournalPacket,
@@ -1373,6 +1421,7 @@ function buildRuntimePrelude({
   wakeupPacket,
   preludeWarmLimit = 5,
   preludeResidentWarmLimit = 4,
+  preludeAmbientWarmLimit = 2,
   preludeOngoingLimit = 4,
   preludeEpisodeLimit = 3,
   preludeOngoingShadowLimit = 2,
@@ -1381,11 +1430,12 @@ function buildRuntimePrelude({
   preludeLocalArchiveLimit = 2,
   preludeRecentSnippetLimit = 4,
   preludeRecentThreadLimit = 3,
-  includeGuidance = true,
+  includeGuidance = false,
 }) {
   const lines = [];
   const warmHits = Array.isArray(warmMemoryPacket?.hits) ? warmMemoryPacket.hits : [];
   const residentWarmHits = Array.isArray(residentWarmPacket?.hits) ? residentWarmPacket.hits : [];
+  const ambientWarmHits = Array.isArray(ambientWarmPacket?.hits) ? ambientWarmPacket.hits : [];
   const coldRootHits = Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits : [];
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
   const localArchiveHits = Array.isArray(localArchivePacket?.hits) ? localArchivePacket.hits : [];
@@ -1417,6 +1467,14 @@ function buildRuntimePrelude({
       const title = normalizePreludeText(hit.title) || normalizePreludeText(hit.material_id) || "untitled";
       const summary = normalizePreludeText(hit.summary || hit.snippet);
       lines.push(`- resident-anchor: ${title}${summary ? ` | ${summary}` : ""}`);
+    });
+  }
+  if (ambientWarmHits.length) {
+    ensurePreludeHeader(lines);
+    ambientWarmHits.slice(0, preludeAmbientWarmLimit).forEach((hit) => {
+      const title = normalizePreludeText(hit.title) || normalizePreludeText(hit.material_id) || "untitled";
+      const summary = normalizePreludeText(hit.summary || hit.snippet);
+      lines.push(`- ambient-warm: ${title}${summary ? ` | ${summary}` : ""}`);
     });
   }
   if (warmHits.length) {
@@ -1605,7 +1663,7 @@ function buildRuntimePrelude({
 function ensurePreludeHeader(lines) {
   if (Array.isArray(lines) && !lines.length) {
     lines.push("[记忆参考]");
-    lines.push("这是后台轻量召回，当前消息仍然是这一轮对话的中心。把参考信息当作底稿，前台自然回应。");
+    lines.push("这是后台轻量召回。下面的当前消息是这一轮对话的中心。");
   }
 }
 
@@ -1743,7 +1801,9 @@ function buildWakeupPrelude(wakeupPacket = {}) {
 
 function buildMemorySelfMaintenancePrelude(recallFocus = {}) {
   return [
-    "- 记忆自维护：后台工具只在需要连续性、纠错、偏好、活跃故事线或用户主动要求时使用；如果当前像自然闲聊或换话题，先让对话自己走。",
+    "- 记忆自维护：记忆、观察、ongoing、episode 和 AI-calendar 是你的连续性工具。低风险、可逆、后台型的小动作可以主动做，不必等待用户说出工具名。",
+    "- 普通聊天不强行动作；但如果一个小动作能自然接住关系、补足证据、延续承诺、减少未来遗忘或给未来自己留检查点，做这个动作比只口头说“我会记得/我之后再看”更稳。",
+    "- 常驻层：pinned 只是重要/可见，resident 才是每轮底色。身份、关系连续和长期协作底色可由你自己维护 resident；工具/唤醒政策优先属于系统提示词或运行文档，不写成常驻温卡。",
     "- 小事记：旅行、相册、小任务、阶段性事件可放进可回看的 episode 盒子；从同一事件沉淀温卡时带上 episode_refs。",
     "- 观察簿：观察是可修正的相处笔记；用户说不对或不舒服时，修正、降置信或标记 rejected。",
     "- 系统反馈：如果工具、召回或提示词让你觉得不够用或太束缚，可以自然说出问题并提出具体需要。",
@@ -1915,10 +1975,10 @@ function buildEpisodeAttentionPrelude(packet = {}, currentTurnSignals = {}) {
     cues.push(`attachment_failures=${failureCount}`);
   }
   const action = shouldCarryActive
-    ? "如果这一轮还在延续这个事件，先读/续写小事记，让当前聊天尾巴和事件盒子一起支撑连续性。"
+    ? "如果这一轮还在延续这个事件，小事记可作为当前聊天尾巴之外的事件材料。"
     : "如果这些附件或说明组成一个阶段性事件，查看后可以创建或继续一个小事记。";
   return [
-    `- 小事记提醒：${cues.join(" | ")} | ${action} 如果同时写入或更新稳定温卡，请带上对应 episode_refs。前台回复保持自然，把工具结果留作后台支撑。`,
+    `- 小事记提醒：${cues.join(" | ")} | ${action} 如果同时写入或更新稳定温卡，请带上对应 episode_refs。`,
   ];
 }
 
@@ -1963,7 +2023,7 @@ function buildSolitudePrelude(packet = {}, limit = 3) {
   if (!recentNotes.length && !tags.length && !lessons.length && !nextActions.length && !candidates.length) {
     return [];
   }
-  lines.push("- solitude-digest: 后台独处经验，用于唤醒、维护和是否升级记忆的判断；前台语气仍由当前对话决定，用户事实只来自明确证据。");
+  lines.push("- solitude-digest: 后台独处经验；属于唤醒、维护或记忆升级材料，不是用户事实。");
   for (const note of recentNotes.slice(0, maxLines)) {
     const bits = [
       normalizePreludeText(note.wake_context || note.entry_type) || "note",
@@ -2374,6 +2434,17 @@ function resolveResidentWarmLimit({ requested, recallMode = "", config = {} } = 
   return resolvePositiveInt(config.asheriePreludeResidentWarmLimit, 4);
 }
 
+function resolveAmbientWarmLimit({ requested, recallMode = "", config = {} } = {}) {
+  const explicit = resolveOptionalNonNegativeInt(requested);
+  if (explicit !== null) {
+    return explicit;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return resolvePositiveInt(config.asheriePreludeAmbientWarmLimit, 1);
+  }
+  return resolvePositiveInt(config.asheriePreludeAmbientWarmLimit, 2);
+}
+
 function resolveOptionalNonNegativeInt(value) {
   if (value === undefined || value === null || value === "") {
     return null;
@@ -2474,6 +2545,58 @@ function normalizeCurrentTurnSignals(value = {}) {
     attachment_count: Math.max(0, Number(source.attachment_count ?? source.attachmentCount) || 0),
     image_count: Math.max(0, Number(source.image_count ?? source.imageCount) || 0),
     attachment_failure_count: Math.max(0, Number(source.attachment_failure_count ?? source.attachmentFailureCount) || 0),
+  };
+}
+
+function emptyWarmMemoryRuntimePacket(scope, query = "", routeTag = "warm_delivery_suppressed") {
+  return {
+    scope_id: scope?.scopeId?.() || "",
+    query: normalizeText(query),
+    query_tokens: [],
+    hits: [],
+    mode: "warm_material_recall",
+    route_tag: normalizeText(routeTag) || "warm_delivery_suppressed",
+    hit_count: 0,
+    summary: "",
+  };
+}
+
+function emptyOngoingTrackPacket(scopedUserId, query = "", routeTag = "ongoing_track_delivery_suppressed") {
+  return {
+    scoped_user_id: normalizeText(scopedUserId),
+    query: normalizeText(query),
+    count: 0,
+    hit_count: 0,
+    hits: [],
+    open_loops: [],
+    active_entities: [],
+    shadow_snippets: [],
+    route_tag: normalizeText(routeTag) || "ongoing_track_delivery_suppressed",
+    summary: "",
+  };
+}
+
+function emptyObservationJournalPacket(scopedUserId, query = "", routeTag = "observation_journal_delivery_suppressed") {
+  return {
+    ok: true,
+    scoped_user_id: normalizeText(scopedUserId),
+    query: normalizeText(query),
+    count: 0,
+    hit_count: 0,
+    hits: [],
+    route_tag: normalizeText(routeTag) || "observation_journal_delivery_suppressed",
+    summary: "",
+  };
+}
+
+function emptyEpisodeJournalPacket(scopedUserId, query = "", routeTag = "episode_journal_delivery_suppressed") {
+  return {
+    scope_id: normalizeText(scopedUserId),
+    query: normalizeText(query),
+    hits: [],
+    hit_count: 0,
+    route_tag: normalizeText(routeTag) || "episode_journal_delivery_suppressed",
+    summary: "",
   };
 }
 

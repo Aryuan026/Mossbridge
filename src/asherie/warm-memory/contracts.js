@@ -107,6 +107,15 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
   ) || 1;
   const certaintyState = parseCertaintyHint(tags) || normalizeCertaintyState(payload.certainty_state || payload.certaintyState);
   const pinned = parsePinnedHint(tags, payload);
+  const resident = parseResidentHint(tags, payload);
+  const residentKind = trimText(
+    payload.resident_kind
+      || payload.residentKind
+      || payload.resident_category
+      || payload.residentCategory
+      || "",
+    80,
+  );
   const storageBoost = floatOrNull(payload.storage_boost ?? payload.storageBoost) || 1;
   const desirableDifficultyHits = intOrZero(payload.desirable_difficulty_hits ?? payload.desirableDifficultyHits);
   const recallCount = intOrZero(payload.recall_count ?? payload.recallCount);
@@ -136,6 +145,8 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
     storage_boost: storageBoost,
     certainty_state: certaintyState,
     pinned,
+    resident,
+    resident_kind: residentKind,
     desirable_difficulty_hits: desirableDifficultyHits,
     recall_count: recallCount,
     write_count: writeCount,
@@ -168,6 +179,12 @@ function buildMaterialMarkdown(record = {}) {
   lines.push(`certainty_state: ${normalizeText(record.certainty_state) || "unknown"}`);
   if (record.pinned === true) {
     lines.push("pinned: true");
+  }
+  if (typeof record.resident === "boolean") {
+    lines.push(`resident: ${record.resident ? "true" : "false"}`);
+  }
+  if (normalizeText(record.resident_kind)) {
+    lines.push(`resident_kind: ${normalizeText(record.resident_kind)}`);
   }
   lines.push(`storage_strength: ${Number(record.storage_strength) || 1}`);
   lines.push(`storage_boost: ${Number(record.storage_boost) || 1}`);
@@ -409,15 +426,65 @@ function parsePinnedHint(tags, payload = {}) {
     if (!text) {
       continue;
     }
-    if (["pinned", "pin", "resident_anchor", "resident", "常驻", "常驻锚点"].includes(text)) {
+    if (["pinned", "pin", "resident_anchor", "常驻锚点"].includes(text)) {
       return true;
     }
-    const match = text.match(/(?:pinned|pin|resident[_\s-]*anchor|常驻)\s*[:=：]?\s*(true|1|yes|on)/iu);
+    const match = text.match(/(?:pinned|pin)\s*[:=：]?\s*(true|1|yes|on|false|0|no|off)/iu);
     if (match) {
-      return true;
+      const parsed = booleanOrNull(match[1]);
+      if (typeof parsed === "boolean") {
+        return parsed;
+      }
     }
   }
   return false;
+}
+
+function parseResidentHint(tags, payload = {}) {
+  const explicitKeys = ["resident", "residentMemory", "resident_memory", "residentWarm", "resident_warm"];
+  for (const key of explicitKeys) {
+    if (Object.prototype.hasOwnProperty.call(payload || {}, key)) {
+      const parsed = booleanOrNull(payload[key]);
+      if (typeof parsed === "boolean") {
+        return parsed;
+      }
+    }
+  }
+  const source = Array.isArray(tags) ? tags : [];
+  for (const raw of source) {
+    const text = normalizeText(raw).toLowerCase();
+    if (!text) {
+      continue;
+    }
+    if (["resident", "resident_anchor", "常驻", "常驻锚点"].includes(text)) {
+      return true;
+    }
+    const match = text.match(/(?:resident|resident[_\s-]*warm|常驻)\s*[:=：]?\s*(true|1|yes|on|false|0|no|off)/iu);
+    if (match) {
+      const parsed = booleanOrNull(match[1]);
+      if (typeof parsed === "boolean") {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+function booleanOrNull(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const normalized = normalizeText(String(value)).toLowerCase();
+  if (["true", "1", "yes", "on", "y", "常驻", "是"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "off", "n", "否", "不要", "不常驻"].includes(normalized)) {
+    return false;
+  }
+  return null;
 }
 
 function normalizeIso(value) {
