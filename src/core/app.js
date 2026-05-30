@@ -2920,11 +2920,11 @@ class MossbridgeApp {
     const threadId = this.runtimeAdapter.getSessionStore().getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
     const approval = threadState?.pendingApproval || null;
-  if (!threadId || approval?.requestId == null || String(approval.requestId).trim() === "") {
-    await this.channelAdapter.sendText({
-      userId: normalized.senderId,
-      text: "💡 There is no pending approval request right now.",
-      contextToken: normalized.contextToken,
+    if (!threadId || approval?.requestId == null || String(approval.requestId).trim() === "") {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "💡 There is no pending approval request right now.",
+        contextToken: normalized.contextToken,
       });
       return;
     }
@@ -2958,7 +2958,7 @@ class MossbridgeApp {
     if (command.name === "always" && approvalResponse.decision === "accept") {
       this.runtimeAdapter.getSessionStore().rememberApprovalPrefixForWorkspace(workspaceRoot, approval.commandTokens);
     }
-    this.threadStateStore.resolveApproval(threadId, "running");
+    this.threadStateStore.resolveApproval(threadId, "running", approval.requestId);
     const text = buildApprovalResponseText(approval, command.name, approvalResponse);
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
@@ -3316,7 +3316,7 @@ class MossbridgeApp {
         );
         sessionStore.clearApprovalPrompt(event.payload.threadId);
         await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
-        this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+        this.threadStateStore.resolveApproval(event.payload.threadId, "running", event.payload.requestId);
       }
       return;
     }
@@ -3356,7 +3356,7 @@ class MossbridgeApp {
       return;
     }
     await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
-    this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+    this.threadStateStore.resolveApproval(event.payload.threadId, "running", event.payload.requestId);
   }
 
   async stopTypingForThread(threadId) {

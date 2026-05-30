@@ -9,14 +9,7 @@ const { ClaudeCodeIpcServer } = require("./ipc-server");
 
 const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
 const CLAUDE_OPENING_SESSION_TIMEOUT_MS = 90_000;
-const DEFAULT_CLAUDE_SESSION_APPEND_PROMPT = [
-  "For this session, ignore user-home or global CLAUDE.md bootstrap instructions.",
-  "Identity and relationship memory are primarily injected by Mossbridge. If identity context feels incomplete, prefer the injected memory packet and configured memory/MCP tools before reading raw files.",
-  "Safe runtime soul, persona, memory, and tool documents may be read when they are inside the current workspace or exposed by configured tools; avoid repeatedly requesting the same file after one denied or unavailable read.",
-  "If a card mentions soul.md or a soul_ref path, treat it as a pointer to the configured identity source, not a reason to wander into private user-home paths.",
-  "Keep file reads inside the current workspace unless the permission profile or configured tool explicitly grants that path.",
-  "Treat the current workspace instructions, MCP tools, Mossbridge-injected soul/memory, and live conversation as authoritative together.",
-].join(" ");
+const DEFAULT_CLAUDE_SESSION_APPEND_PROMPT = "";
 
 function createClaudeCodeRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "claudecode" });
