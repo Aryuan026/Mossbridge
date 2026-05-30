@@ -11,12 +11,15 @@ class StreamDelivery {
     onDeferredSystemReply,
     onRuntimeNotice,
     onOutboundDelivery,
+    runtimeId = "",
     systemReplyRetryScheduleMs,
     transientDeliveryRetryScheduleMs,
     sameTokenRetryDelayMs,
   }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
+    this.runtimeId = normalizeRuntimeId(runtimeId);
+    this.systemReplyPolicy = createSystemReplyPolicy(this.runtimeId);
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
     this.onRuntimeNotice = typeof onRuntimeNotice === "function" ? onRuntimeNotice : null;
     this.onOutboundDelivery = typeof onOutboundDelivery === "function" ? onOutboundDelivery : null;
@@ -381,7 +384,7 @@ class StreamDelivery {
     }
 
     const replyText = buildReplyText(state, { completedOnly: false });
-    const resolved = resolveSystemReplyAction(replyText);
+    const resolved = resolveSystemReplyDelivery(replyText, this.systemReplyPolicy);
     if (resolved.kind === "silent") {
       this.notifyRuntimeNotice(state, resolved.runtimeNotice, replyText);
       this.markAllItemsSent(state);
@@ -909,13 +912,7 @@ function resolveSystemReplyAction(replyText) {
   if (!normalized) {
     return { kind: "invalid", reason: "final reply is empty" };
   }
-  const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, { provider: "system" });
-  if (runtimeNotice.shielded) {
-    return { kind: "silent", reason: "runtime capacity notice", runtimeNotice };
-  }
-
-  const candidate = extractSystemActionJsonCandidate(normalized) || normalized;
-  const parsed = tryParseJson(candidate);
+  const parsed = tryParseJson(normalized);
   if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
     return { kind: "invalid", reason: "final reply is not a JSON object" };
   }
@@ -934,6 +931,103 @@ function resolveSystemReplyAction(replyText) {
   }
 
   return { kind: "send_message", message };
+}
+
+function resolveSystemReplyDelivery(replyText, policy = createSystemReplyPolicy("")) {
+  const normalized = normalizeLineEndings(String(replyText || "")).trim();
+  if (!normalized) {
+    return { kind: "invalid", reason: "final reply is empty" };
+  }
+  const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, { provider: "system" });
+  if (runtimeNotice.shielded) {
+    return { kind: "silent", reason: "runtime capacity notice", runtimeNotice };
+  }
+
+  const source = normalizeSystemReplySource(normalized);
+  const candidate = resolveSystemActionCandidate(source);
+  if (candidate) {
+    return resolveSystemReplyAction(candidate);
+  }
+
+  if (!policy.allowPlainTextSendMessage) {
+    return { kind: "invalid", reason: "final reply is not a JSON object" };
+  }
+
+  return resolvePlainTextSystemReply(source.text, policy);
+}
+
+function normalizeSystemReplySource(replyText) {
+  const normalized = normalizeLineEndings(String(replyText || "")).trim();
+  const unfenced = unwrapJsonCodeFence(normalized);
+  if (unfenced) {
+    return {
+      text: unfenced.replace(/^json\s*:\s*/i, "").trim(),
+      requiresStructuredAction: true,
+    };
+  }
+  const strippedJsonPrefix = normalized.replace(/^json\s*:\s*/i, "").trim();
+  return {
+    text: strippedJsonPrefix,
+    requiresStructuredAction: strippedJsonPrefix !== normalized,
+  };
+}
+
+function resolveSystemActionCandidate(source) {
+  const text = normalizeLineEndings(String(source?.text || "")).trim();
+  if (!text) {
+    return "";
+  }
+  if (source?.requiresStructuredAction || text.startsWith("{")) {
+    return text;
+  }
+  return extractSystemActionJsonCandidate(text);
+}
+
+function resolvePlainTextSystemReply(replyText, policy) {
+  const message = sanitizePlainTextSystemReply(replyText, policy);
+  if (!message) {
+    return { kind: "invalid", reason: "plain text system reply is unsafe" };
+  }
+  return { kind: "send_message", message };
+}
+
+function sanitizePlainTextSystemReply(replyText, policy) {
+  const normalized = trimOuterBlankLines(normalizeLineEndings(replyText));
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length > policy.maxPlainTextLength) {
+    return "";
+  }
+  if (normalized.split("\n").length > policy.maxPlainTextLines) {
+    return "";
+  }
+  if (containsPlainTextSystemHazard(normalized)) {
+    return "";
+  }
+  return sanitizeReplyText(normalized);
+}
+
+function containsPlainTextSystemHazard(text) {
+  const normalized = normalizeLineEndings(String(text || "")).trim();
+  if (!normalized) {
+    return true;
+  }
+  return /```/.test(normalized)
+    || /^\s*[\[{]/.test(normalized)
+    || /(?:^|\n)\s*(?:analysis|commentary|final)\s+to=/i.test(normalized)
+    || /\b(?:tool_use|tool_result|function_call|mcp__|exec_command|apply_patch|read_mcp_resource)\b/i.test(normalized)
+    || /(?:^|\n)\s*(?:\{|\[).*"(?:action|tool|toolName|tool_name)"\s*:/i.test(normalized);
+}
+
+function createSystemReplyPolicy(runtimeId) {
+  const normalizedRuntimeId = normalizeRuntimeId(runtimeId);
+  return {
+    runtimeId: normalizedRuntimeId,
+    allowPlainTextSendMessage: normalizedRuntimeId === "claudecode",
+    maxPlainTextLength: 280,
+    maxPlainTextLines: 3,
+  };
 }
 
 function classifyReplyItemSourceText(replyText) {
@@ -1002,6 +1096,10 @@ function normalizeSystemActionName(value) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
+}
+
+function normalizeRuntimeId(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function tryParseJson(value) {

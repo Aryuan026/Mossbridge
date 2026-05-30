@@ -76,7 +76,7 @@ function buildSystemInboundText(text, createdAt = "") {
     "Return one JSON object after tools:",
     "{\"action\":\"silent\"}",
     "{\"action\":\"send_message\",\"message\":\"<one natural WeChat message>\"}",
-    "Final output is JSON only.",
+    "Final output is JSON only. No markdown fences. No text outside the JSON.",
   ];
   if (body) {
     sections.push("", "Trigger:", body);

@@ -165,6 +165,9 @@ function handleIpcMessage(msg) {
         console.log(`\n${c.cyan}[Claude Code -> WeChat]${c.reset}\n${event.text}\n`);
         break;
       case "turn.completed":
+        if (event.text) {
+          console.log(`\n${c.cyan}[Claude Code -> WeChat]${c.reset}\n${event.text}\n`);
+        }
         console.log(`${c.gray}─────────────────────────${c.reset}`);
         break;
       case "tool.use": {
