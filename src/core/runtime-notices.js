@@ -51,9 +51,11 @@ function buildRuntimeCapacityNotice(text, { runtimeId = "" } = {}) {
   const reset = extractResetTime(text);
   const runtimeLabel = resolveRuntimeLabel(runtimeId, text);
   const lines = [
-    `${runtimeLabel} 已触发额度/速率限制。`,
-    "这是一条桥状态提示，不是助手回复。",
-    "当前轮次没有生成正文；请在限制解除后重试。",
+    "source: bridge",
+    `runtime: ${runtimeLabel}`,
+    "status: rate_or_quota_limited",
+    "result: no_runtime_reply",
+    "action: retry_after_reset",
   ];
   if (reset) {
     lines.push(`reset: ${reset}`);

@@ -243,7 +243,7 @@ test("user first-event failures still send a visible diagnostic after local turn
 
     const visible = calls.find((call) => call[0] === "text");
     assert.ok(visible);
-    assert.match(visible[1], /超时未返回首个事件/);
+    assert.match(visible[1], /status: first_event_timeout/);
   } finally {
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;

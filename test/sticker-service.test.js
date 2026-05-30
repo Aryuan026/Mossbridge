@@ -213,7 +213,9 @@ test("StickerService records sticker delivery audit with WeChat media fallback d
   assert.equal(audit.lastDelivery.stickerId, "stk_012");
   assert.equal(audit.lastDelivery.sourceFileName, "stk_012.png");
   assert.equal(audit.lastDelivery.sourceMimeType, "image/png");
+  assert.equal(audit.lastDelivery.sourceActualMimeType, "");
   assert.equal(audit.lastDelivery.deliveryMimeType, "image/png");
+  assert.equal(audit.lastDelivery.deliveryActualMimeType, "");
   assert.equal(audit.lastDelivery.deliveryTransform, "none");
   assert.equal(audit.lastDelivery.channelDeliveryKind, "file");
   assert.equal(audit.lastDelivery.fallbackFrom, "image");
@@ -270,11 +272,13 @@ test("StickerService sends gif stickers as static png previews first for WeChat 
   index.stk_012 = {
     tags: ["挥手"],
     desc: "一张会动的挥手测试表情。",
+    asset_file: "stk_012.gif",
+    mime_type: "image/gif",
     status: "active",
   };
   fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
   fs.writeFileSync(
-    resolveStickerFilePath(config, "stk_012"),
+    path.join(config.stickerAssetsDir, "stk_012.gif"),
     Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICRAEAOw==", "base64")
   );
   const sentFiles = [];
@@ -308,11 +312,13 @@ test("StickerService falls back to animated gif only if static png preview deliv
   index.stk_012 = {
     tags: ["挥手"],
     desc: "一张会动的挥手测试表情。",
+    asset_file: "stk_012.gif",
+    mime_type: "image/gif",
     status: "active",
   };
   fs.writeFileSync(config.stickersIndexFile, `${JSON.stringify(index, null, 2)}\n`, "utf8");
   fs.writeFileSync(
-    resolveStickerFilePath(config, "stk_012"),
+    path.join(config.stickerAssetsDir, "stk_012.gif"),
     Buffer.from("R0lGODlhAQABAIABAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICRAEAOw==", "base64")
   );
   const sentFiles = [];
@@ -339,7 +345,7 @@ test("StickerService falls back to animated gif only if static png preview deliv
   assert.equal(delivery.attemptedDeliveries.length, 1);
   assert.match(sentFiles[0].args.filePath, /send-cache\/stk_012-\d+-\d+\.png$/);
   assert.ok(fs.existsSync(sentFiles[0].args.filePath));
-  assert.equal(sentFiles[1].args.filePath, resolveStickerFilePath(config, "stk_012"));
+  assert.equal(sentFiles[1].args.filePath, path.join(config.stickerAssetsDir, "stk_012.gif"));
 });
 
 test("ensureStickerCatalogFilesSync merges presets without overwriting custom ids", () => {

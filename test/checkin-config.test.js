@@ -695,8 +695,9 @@ test("user turns return a bridge notice instead of calling runtime during cooldo
   assert.equal(sent.length, 1);
   assert.equal(sent[0].userId, "user-1");
   assert.match(sent[0].text, /^\[Mossbridge] runtime_limit/);
-  assert.match(sent[0].text, /ClaudeCode 已触发额度\/速率限制/);
-  assert.match(sent[0].text, /不是助手回复/);
+  assert.match(sent[0].text, /runtime: ClaudeCode/);
+  assert.match(sent[0].text, /status: rate_or_quota_limited/);
+  assert.match(sent[0].text, /result: no_runtime_reply/);
   assert.match(sent[0].text, /May 14, 2099 at 12pm/);
   assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
 });

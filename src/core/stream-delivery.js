@@ -2,7 +2,7 @@ const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol
 const { recordAiReply } = require("./activity-tracker");
 const { RUNTIME_NOTICE_KIND, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
-const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
+const CURRENT_REPLY_HEADER = "===== [Mossbridge] current_runtime_reply =====";
 
 class StreamDelivery {
   constructor({

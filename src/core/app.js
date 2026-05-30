@@ -927,8 +927,9 @@ class MossbridgeApp {
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
         text: formatBridgeNotice("request_failed", [
-          "消息在进入 runtime 前失败。",
-          messageText,
+          "source: bridge",
+          "status: request_failed_before_runtime",
+          `error: ${messageText}`,
         ]),
         contextToken: prepared.contextToken,
       }).catch(() => {});
@@ -1438,11 +1439,13 @@ class MossbridgeApp {
         }
         watchdog.noticeSent = true;
         const noticeLines = [
-          `消息已到达桥，但 ${formatRuntimeLabel(runtimeName)} 尚未返回首个事件。`,
+          "source: bridge",
+          `runtime: ${formatRuntimeLabel(runtimeName)}`,
+          "status: waiting_first_event",
           isCodex
-            ? "可能仍在 shared-thread 启动或重连阶段。"
-            : "可能仍在启动、重连或处理本轮输入。",
-          "这是一条桥状态提示，不是助手回复。",
+            ? "detail: shared thread has not emitted a runtime event"
+            : "detail: runtime has not emitted a runtime event",
+          "action: wait",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
         ];
@@ -1479,16 +1482,17 @@ class MossbridgeApp {
         contextToken: normalized.contextToken,
       }).catch(() => {});
       const failureLines = [
-        `消息已到达桥，但 ${formatRuntimeLabel(runtimeName)} 超时未返回首个事件。`,
+        "source: bridge",
+        `runtime: ${formatRuntimeLabel(runtimeName)}`,
+        "status: first_event_timeout",
         openingTurn
-          ? "新线程首轮可能启动失败。"
-          : "runtime 进程可能卡住、退出，或没有接入当前 shared thread。",
+          ? "detail: opening turn did not start"
+          : "detail: runtime process did not emit a first event",
         `workspace: ${workspaceRoot}`,
         `thread: ${normalizedThreadId}`,
-        "建议检查：",
-        isCodex ? "1. npm run shared:status" : "1. npm run shared:status:claudecode",
-        isCodex ? "2. npm run shared:start" : "2. npm run shared:start:claudecode",
-        isCodex ? "3. npm run shared:open" : "3. npm run shared:open:claudecode",
+        isCodex ? "check_1: npm run shared:status" : "check_1: npm run shared:status:claudecode",
+        isCodex ? "check_2: npm run shared:start" : "check_2: npm run shared:start:claudecode",
+        isCodex ? "check_3: npm run shared:open" : "check_3: npm run shared:open:claudecode",
       ];
       this.recordControlEvent?.({
         type: "runtime.first_event.timeout",
@@ -1806,8 +1810,10 @@ class MossbridgeApp {
         contextToken: normalized.contextToken,
         preserveBlock: true,
         text: formatBridgeNotice("runtime_slow_reply", [
-          `${formatRuntimeLabel(runtimeName)} 已开始处理本轮输入，但尚未产生助手正文。`,
-          "这是一条桥状态提示，不是助手回复。",
+          "source: bridge",
+          `runtime: ${formatRuntimeLabel(runtimeName)}`,
+          "status: running_without_reply",
+          "action: wait",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
         ]),
@@ -1848,8 +1854,12 @@ class MossbridgeApp {
         contextToken: normalized.contextToken,
         preserveBlock: true,
         text: formatBridgeNotice("runtime_stalled_released", [
-          `${formatRuntimeLabel(runtimeName)} 超过 ${Math.round(recoveryTimeoutMs / 60_000)} 分钟未完成本轮输入。`,
-          "Mossbridge 已释放这次运行；如仍需要结果，请重新发送请求。",
+          "source: bridge",
+          `runtime: ${formatRuntimeLabel(runtimeName)}`,
+          "status: stalled_released",
+          `timeout_minutes: ${Math.round(recoveryTimeoutMs / 60_000)}`,
+          "result: run_released",
+          "action: resend_if_needed",
           `workspace: ${workspaceRoot}`,
           `thread: ${normalizedThreadId}`,
         ]),
@@ -1985,8 +1995,9 @@ class MossbridgeApp {
           await this.channelAdapter.sendText({
             userId: normalized.senderId,
             text: formatBridgeNotice("attachment_intake_failed", [
-              "图片或附件接收失败。",
-              ...persisted.failed.map((item) => item.reason),
+              "source: bridge",
+              "status: attachment_intake_failed",
+              ...persisted.failed.map((item) => `error: ${item.reason}`),
             ]),
             contextToken: normalized.contextToken,
             preserveBlock: true,
@@ -2076,7 +2087,9 @@ class MossbridgeApp {
         await this.channelAdapter.sendText({
           userId: job.senderId,
           text: formatBridgeNotice("timeline_screenshot_failed", [
-            messageText,
+            "source: bridge",
+            "status: timeline_screenshot_failed",
+            `error: ${messageText}`,
           ]),
           preserveBlock: true,
         }).catch(() => {});
@@ -2696,7 +2709,9 @@ class MossbridgeApp {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         text: formatBridgeNotice("reread_failed", [
-          error instanceof Error ? error.message : String(error || "unknown error"),
+          "source: bridge",
+          "status: reread_failed",
+          `error: ${error instanceof Error ? error.message : String(error || "unknown error")}`,
         ]),
         contextToken: normalized.contextToken,
       }).catch(() => {});
@@ -2757,7 +2772,9 @@ class MossbridgeApp {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         text: formatBridgeNotice("compact_failed", [
-          error instanceof Error ? error.message : String(error || "unknown error"),
+          "source: bridge",
+          "status: compact_failed",
+          `error: ${error instanceof Error ? error.message : String(error || "unknown error")}`,
         ]),
         contextToken: normalized.contextToken,
       }).catch(() => {});
@@ -4932,23 +4949,32 @@ function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
   const kind = classifyRuntimeFailureKind(normalized);
   if (kind === "prompt_too_long") {
     return formatBridgeNotice("runtime_prompt_too_long", [
-      "ClaudeCode prompt 超过上下文限制，Mossbridge 已释放本轮运行。",
+      "source: bridge",
+      "runtime: ClaudeCode",
+      "status: prompt_too_long",
+      "result: run_released",
       provider === "system"
-        ? "这是后台唤醒失败提示，不会作为助手正文发送。"
-        : "当前轮次没有生成助手正文；请缩短请求或 compact 后重试。",
+        ? "action: suppress_system_reply"
+        : "action: shorten_or_compact_then_retry",
     ]);
   }
   if (kind === "bad_json") {
     return formatBridgeNotice("runtime_bad_json", [
-      "ClaudeCode 拒绝了本轮请求体，Mossbridge 已隔离这次运行。",
-      "常见原因是特殊字符或内部 JSON 被 runtime 判定为非法；请重新发送请求。",
+      "source: bridge",
+      "runtime: ClaudeCode",
+      "status: request_body_rejected",
+      "result: run_isolated",
+      "action: resend_request",
     ]);
   }
   if (kind === "api_error") {
     return formatBridgeNotice("runtime_api_error", [
-      "ClaudeCode 返回 API 错误，Mossbridge 已释放本轮运行。",
-      "这是一条桥状态提示，不是助手回复；不会写入记忆。",
-      "如仍需要结果，请在 provider 恢复后重新发送请求。",
+      "source: bridge",
+      "runtime: ClaudeCode",
+      "status: api_error",
+      "result: run_released",
+      "memory: not_recorded",
+      "action: retry_after_provider_recovers",
       `detail: ${truncateForStatus(normalized, 260)}`,
     ]);
   }
@@ -6001,11 +6027,14 @@ function parseNumericOrderValue(value) {
 }
 
 const DEFERRED_REPLY_NOTICE = formatBridgeNotice("deferred_delivery", [
-  "上一轮有内容因 WeChat context_token 失效未能发送；本次 token 刷新后补发。",
-  "若频繁出现，可发送 /chunk <数字> 调大最小合并字符数。",
+  "source: bridge",
+  "status: previous_delivery_failed",
+  "reason: wechat_context_token_expired_or_send_failed",
+  "result: replaying_with_current_context_token",
+  "tuning: /chunk <number>",
 ]);
-const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
+const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] pending_plain_reply =====";
+const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] pending_system_message =====";
 
 function formatDeferredSystemReplyText(text) {
   const normalized = String(text || "").trim();

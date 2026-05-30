@@ -7,10 +7,10 @@ const path = require("node:path");
 const { StreamDelivery } = require("../src/core/stream-delivery");
 const { DeferredSystemReplyStore } = require("../src/core/deferred-system-reply-store");
 
-const DEFERRED_REPLY_NOTICE = "[Mossbridge] deferred_delivery\n上一轮有内容因 WeChat context_token 失效未能发送；本次 token 刷新后补发。\n若频繁出现，可发送 /chunk <数字> 调大最小合并字符数。";
-const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] 上轮未送达内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] 期间主动消息 =====";
-const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
+const DEFERRED_REPLY_NOTICE = "[Mossbridge] deferred_delivery\nsource: bridge\nstatus: previous_delivery_failed\nreason: wechat_context_token_expired_or_send_failed\nresult: replaying_with_current_context_token\ntuning: /chunk <number>";
+const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] pending_plain_reply =====";
+const DEFERRED_SYSTEM_REPLY_HEADER = "===== [Mossbridge] pending_system_message =====";
+const CURRENT_REPLY_HEADER = "===== [Mossbridge] current_runtime_reply =====";
 
 function createHarness({
   sendText,
@@ -368,7 +368,9 @@ test("user runtime capacity notices are rewritten into bridge notices", async ()
 
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /^\[Mossbridge] runtime_limit/);
-  assert.match(sent[0].text, /不是助手回复/);
+  assert.match(sent[0].text, /source: bridge/);
+  assert.match(sent[0].text, /status: rate_or_quota_limited/);
+  assert.match(sent[0].text, /result: no_runtime_reply/);
   assert.match(sent[0].text, /10:40pm \(Asia\/Shanghai\)/);
   assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
 });
