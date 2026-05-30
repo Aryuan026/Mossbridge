@@ -1556,7 +1556,10 @@ class MossbridgeApp {
       config: this.config,
     });
     this.runtimeContextUsageStore?.recordContext?.(usage);
-    this.maybeQueueAutoSessionRefreshForPressure?.({ usage, linked });
+    const sessionRefresh = this.maybeQueueAutoSessionRefreshForPressure?.({ usage, linked });
+    if (sessionRefresh?.id) {
+      return;
+    }
     const decision = evaluateClaudeAutoCompact(usage, this.config);
     if (!decision.shouldCompact || !threadId) {
       return;
@@ -1582,13 +1585,6 @@ class MossbridgeApp {
       return null;
     }
     const runtimeId = normalizeText(usage.runtimeId) || normalizeText(this.runtimeAdapter?.describe?.().id) || "codex";
-    if (
-      runtimeId === "claudecode"
-      && this.config.claudeAutoCompactEnabled !== false
-      && (readNonNegativeNumber(usage.compactThresholdTokens) ?? 0) > 0
-    ) {
-      return null;
-    }
     const sessionStore = this.runtimeAdapter?.getSessionStore?.();
     const binding = sessionStore?.getBinding?.(linked.bindingKey) || {};
     if (binding?.systemRuntimeBinding) {

@@ -243,3 +243,76 @@ test("context pressure queues one session refresh for the next normal user turn"
   }).oldThreadId, "thread-1");
   assert.equal(controlEvents.length, 1);
 });
+
+test("claudecode severe context pressure queues session refresh instead of auto compact", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const recorded = [];
+  const controlEvents = [];
+  const appLike = {
+    config: {
+      runtime: "claudecode",
+      claudeContextWindow: 100_000,
+      claudeAutoCompactEnabled: true,
+      claudeAutoCompactThresholdPercent: 80,
+      sessionRefreshPressurePercent: 92,
+      sessionRefreshMinIntervalMs: 60_000,
+    },
+    sessionRefreshRequests: store,
+    lastAutoSessionRefreshAtByScope: new Map(),
+    pendingAutoCompactByThreadId: new Map(),
+    lastAutoCompactAtByThreadId: new Map(),
+    runtimeContextUsageStore: {
+      recordContext(snapshot) {
+        recorded.push(snapshot);
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          findBindingForThreadId(threadId) {
+            assert.equal(threadId, "thread-claude");
+            return {
+              bindingKey: "binding-claude",
+              workspaceRoot: "/workspace",
+            };
+          },
+          getBinding(bindingKey) {
+            assert.equal(bindingKey, "binding-claude");
+            return { systemRuntimeBinding: false };
+          },
+        };
+      },
+    },
+    recordControlEvent(event) {
+      controlEvents.push(event);
+    },
+    maybeQueueAutoSessionRefreshForPressure: MossbridgeApp.prototype.maybeQueueAutoSessionRefreshForPressure,
+  };
+
+  MossbridgeApp.prototype.recordRuntimeContextUsage.call(appLike, {
+    type: "runtime.context.updated",
+    payload: {
+      runtimeId: "claudecode",
+      threadId: "thread-claude",
+      currentTokens: 93_000,
+    },
+  });
+
+  const pending = store.getPendingRequest({
+    bindingKey: "binding-claude",
+    workspaceRoot: "/workspace",
+    runtimeId: "claudecode",
+  });
+  assert.equal(recorded[0].contextWindow, 100_000);
+  assert.equal(recorded[0].compactThresholdTokens, 80_000);
+  assert.equal(pending.oldThreadId, "thread-claude");
+  assert.equal(pending.reason, "context_pressure_session_refresh");
+  assert.equal(appLike.pendingAutoCompactByThreadId.has("thread-claude"), false);
+  assert.equal(controlEvents[0].type, "runtime.context.session_refresh_queued");
+});
