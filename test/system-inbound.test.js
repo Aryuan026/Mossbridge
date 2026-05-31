@@ -180,6 +180,99 @@ test("stable WeChat guidance is delivered once per runtime thread and pressure t
   assert.equal(second.packet.delivery.policy.includes("not injected"), true);
 });
 
+test("random checkin first-event failures recover backstage without bridge text", async () => {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const originalWarn = console.warn;
+  const timers = [];
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  global.clearTimeout = () => {};
+  console.warn = () => {};
+
+  try {
+    const calls = [];
+    const appLike = {
+      pendingRuntimeEventWatchdogs: new Map(),
+      pendingTurnWritebackByThreadId: new Map([["thread-checkin", { pending: true }]]),
+      clearRuntimeEventWatchdog: MossbridgeApp.prototype.clearRuntimeEventWatchdog,
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        getSessionStore() {
+          return {
+            getThreadIdForWorkspace() {
+              return "thread-checkin";
+            },
+            clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot) {
+              calls.push(["clearPending", bindingKey, workspaceRoot]);
+            },
+            clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
+              calls.push(["clearThread", bindingKey, workspaceRoot]);
+            },
+          };
+        },
+        async cancelTurn(payload) {
+          calls.push(["cancel", payload.threadId, payload.workspaceRoot]);
+        },
+      },
+      channelAdapter: {
+        async sendTyping(payload) {
+          calls.push(["typing", payload.status]);
+        },
+        async sendText(payload) {
+          calls.push(["text", payload.text]);
+        },
+      },
+      turnGateStore: {
+        releaseThread(threadId) {
+          calls.push(["release", threadId]);
+        },
+      },
+      async flushPendingInboundMessages(payload) {
+        calls.push(["flush", payload.bindingKey, payload.workspaceRoot, payload.ignoreBoundary]);
+      },
+    };
+
+    MossbridgeApp.prototype.scheduleRuntimeEventWatchdog.call(appLike, {
+      bindingKey: "binding-system",
+      workspaceRoot: "/workspace",
+      normalized: {
+        provider: "system",
+        senderId: "user-1",
+        contextToken: "ctx-1",
+        systemTurn: {
+          trigger_kind: "checkin_opportunity",
+        },
+      },
+      threadId: "thread-checkin",
+      openingTurn: true,
+    });
+
+    assert.deepEqual(timers.map((timer) => timer.delayMs), [180_000]);
+    await timers[0].callback();
+
+    assert.equal(calls.some((call) => call[0] === "text"), false);
+    assert.equal(appLike.pendingTurnWritebackByThreadId.has("thread-checkin"), false);
+    assert.deepEqual(calls, [
+      ["typing", 0],
+      ["clearPending", "binding-system", "/workspace"],
+      ["clearThread", "binding-system", "/workspace"],
+      ["cancel", "thread-checkin", "/workspace"],
+      ["release", "thread-checkin"],
+      ["flush", "binding-system", "/workspace", true],
+    ]);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    console.warn = originalWarn;
+  }
+});
+
 test("user first-event failures still send a visible diagnostic after local turn.started", async () => {
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -299,6 +392,92 @@ test("claudecode warm turns get a slower first-event watchdog", () => {
   } finally {
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("random checkin running-turn watchdog recovers backstage without slow text", async () => {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const originalWarn = console.warn;
+  const timers = [];
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  global.clearTimeout = () => {};
+  console.warn = () => {};
+
+  try {
+    const calls = [];
+    const appLike = {
+      runningTurnWatchdogs: new Map(),
+      watchdogCancelledRunKeys: new Set(),
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        async cancelTurn(payload) {
+          calls.push(["cancel", payload.threadId, payload.turnId, payload.workspaceRoot]);
+        },
+      },
+      threadStateStore: {
+        getThreadState() {
+          return {
+            status: "running",
+            turnId: "turn-checkin",
+          };
+        },
+      },
+      channelAdapter: {
+        async sendTyping(payload) {
+          calls.push(["typing", payload.status]);
+        },
+        async sendText(payload) {
+          calls.push(["text", payload.text]);
+        },
+      },
+      turnGateStore: {
+        releaseThread(threadId) {
+          calls.push(["release", threadId]);
+        },
+      },
+      async flushPendingInboundMessages(payload) {
+        calls.push(["flush", payload.bindingKey, payload.workspaceRoot, payload.ignoreBoundary]);
+      },
+      isSameRunningTurn: MossbridgeApp.prototype.isSameRunningTurn,
+    };
+
+    MossbridgeApp.prototype.scheduleRunningTurnWatchdog.call(appLike, {
+      bindingKey: "binding-system",
+      workspaceRoot: "/workspace",
+      normalized: {
+        provider: "system",
+        senderId: "user-1",
+        contextToken: "ctx-1",
+        systemTurn: {
+          trigger_kind: "checkin_opportunity",
+        },
+      },
+      threadId: "thread-checkin",
+      turnId: "turn-checkin",
+    });
+
+    assert.deepEqual(timers.map((timer) => timer.delayMs), [360_000]);
+    await timers[0].callback();
+
+    assert.equal(calls.some((call) => call[0] === "text"), false);
+    assert.equal(appLike.watchdogCancelledRunKeys.has("thread-checkin:turn-checkin"), true);
+    assert.deepEqual(calls, [
+      ["typing", 0],
+      ["cancel", "thread-checkin", "turn-checkin", "/workspace"],
+      ["release", "thread-checkin"],
+      ["flush", "binding-system", "/workspace", true],
+    ]);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+    console.warn = originalWarn;
   }
 });
 

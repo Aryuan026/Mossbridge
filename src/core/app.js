@@ -1419,7 +1419,8 @@ class MossbridgeApp {
     const runtimeName = this.runtimeAdapter.describe().id || "runtime";
     const isCodex = runtimeName === "codex";
     const isClaudeCode = runtimeName === "claudecode";
-    const suppressNotice = openingTurn && isClaudeCode;
+    const suppressVisibleStatus = shouldSuppressVisibleRuntimeStatus(normalized);
+    const suppressNotice = suppressVisibleStatus || (openingTurn && isClaudeCode);
     const noticeTimeoutMs = suppressNotice
       ? 0
       : isClaudeCode
@@ -1481,6 +1482,47 @@ class MossbridgeApp {
         status: 0,
         contextToken: normalized.contextToken,
       }).catch(() => {});
+      if (suppressVisibleStatus) {
+        const triggerKind = describeSystemTriggerKind(normalized) || "system";
+        console.warn(
+          `[mossbridge] suppressed background runtime first-event failure trigger=${triggerKind} thread=${normalizedThreadId}`
+        );
+        sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+        sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+        this.pendingTurnWritebackByThreadId?.delete?.(normalizedThreadId);
+        this.recordControlEvent?.({
+          type: "runtime.first_event.timeout",
+          layer: CONTROL_LAYER.EXECUTIVE,
+          scope: CONTROL_SCOPE.RUNTIME,
+          source: "app.scheduleRuntimeEventWatchdog",
+          subject: normalizedThreadId,
+          severity: CONTROL_SEVERITY.WARN,
+          reason: "background_first_runtime_event_timeout",
+          outcome: "silent_recovery_requested",
+          correlationId: normalizedThreadId,
+          payload: {
+            runtimeName,
+            workspaceRoot,
+            openingTurn,
+            failureTimeoutMs,
+            triggerKind,
+          },
+        });
+        if (typeof this.runtimeAdapter.cancelTurn === "function") {
+          await this.runtimeAdapter.cancelTurn({
+            threadId: normalizedThreadId,
+            workspaceRoot,
+            bindingKey,
+          }).catch((error) => {
+            console.error(`[mossbridge] background first-event recovery failed thread=${normalizedThreadId}: ${error.message}`);
+          });
+        }
+        this.turnGateStore.releaseThread?.(normalizedThreadId);
+        if (typeof this.flushPendingInboundMessages === "function") {
+          await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true }).catch(() => {});
+        }
+        return;
+      }
       const failureLines = [
         "source: bridge",
         `runtime: ${formatRuntimeLabel(runtimeName)}`,
@@ -1767,6 +1809,7 @@ class MossbridgeApp {
     }
     const runtimeName = this.runtimeAdapter.describe().id || "runtime";
     const isClaudeCode = runtimeName === "claudecode";
+    const suppressVisibleStatus = shouldSuppressVisibleRuntimeStatus(normalized);
     const noticeTimeoutMs = isClaudeCode
       ? CLAUDECODE_RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS
       : RUNNING_TURN_STALL_NOTICE_TIMEOUT_MS;
@@ -1774,7 +1817,7 @@ class MossbridgeApp {
       ? CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS
       : RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS;
 
-    const noticeTimer = setTimeout(async () => {
+    const noticeTimer = suppressVisibleStatus ? null : setTimeout(async () => {
       const watchdog = this.runningTurnWatchdogs.get(runKey);
       if (!watchdog || !this.isSameRunningTurn(normalizedThreadId, normalizedTurnId)) {
         return;
@@ -1823,21 +1866,23 @@ class MossbridgeApp {
       }
       this.runningTurnWatchdogs.delete(runKey);
       this.watchdogCancelledRunKeys.add(runKey);
+      const triggerKind = describeSystemTriggerKind(normalized) || "system";
       this.recordControlEvent?.({
         type: "runtime.turn.stalled_released",
         layer: CONTROL_LAYER.EXECUTIVE,
         scope: CONTROL_SCOPE.RUNTIME,
         source: "app.scheduleRunningTurnWatchdog",
         subject: normalizedThreadId,
-        severity: CONTROL_SEVERITY.ERROR,
-        reason: "runtime_turn_stalled",
-        outcome: "cancel_requested",
+        severity: suppressVisibleStatus ? CONTROL_SEVERITY.WARN : CONTROL_SEVERITY.ERROR,
+        reason: suppressVisibleStatus ? "background_runtime_turn_stalled" : "runtime_turn_stalled",
+        outcome: suppressVisibleStatus ? "silent_recovery_requested" : "cancel_requested",
         correlationId: runKey,
         payload: {
           runtimeName,
           workspaceRoot,
           turnId: normalizedTurnId,
           recoveryTimeoutMs,
+          triggerKind,
         },
       });
       await this.channelAdapter.sendTyping({
@@ -1845,6 +1890,22 @@ class MossbridgeApp {
         status: 0,
         contextToken: normalized.contextToken,
       }).catch(() => {});
+      if (suppressVisibleStatus) {
+        console.warn(
+          `[mossbridge] suppressed background stalled-turn recovery trigger=${triggerKind} thread=${normalizedThreadId}`
+        );
+        await this.runtimeAdapter.cancelTurn({
+          threadId: normalizedThreadId,
+          turnId: normalizedTurnId,
+          workspaceRoot,
+          bindingKey,
+        }).catch((error) => {
+          console.error(`[mossbridge] background stalled-turn recovery failed thread=${normalizedThreadId}: ${error.message}`);
+        });
+        this.turnGateStore.releaseThread(normalizedThreadId);
+        await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true }).catch(() => {});
+        return;
+      }
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
         contextToken: normalized.contextToken,
@@ -4083,17 +4144,26 @@ function isDirectVisibleReplySystemMessage(message = {}) {
   return kind === "reply" || kind === "direct_reply";
 }
 
+function shouldSuppressVisibleRuntimeStatus(normalized = {}) {
+  return isBackgroundCheckinOpportunity(normalized);
+}
+
 function isBackgroundCheckinOpportunity(normalized = {}) {
   if (normalizeText(normalized?.provider) !== "system") {
     return false;
   }
-  const triggerKind = normalizeText(
+  return describeSystemTriggerKind(normalized) === "checkin_opportunity";
+}
+
+function describeSystemTriggerKind(normalized = {}) {
+  return normalizeText(
     normalized?.systemTurn?.trigger_kind
       || normalized?.systemTurn?.triggerKind
+      || normalized?.system_turn?.trigger_kind
+      || normalized?.system_turn?.triggerKind
       || normalized?.kind
       || normalized?.metadata?.checkinKind,
   );
-  return triggerKind === "checkin_opportunity";
 }
 
 function isCheckinOpportunityMessage(message = {}) {
