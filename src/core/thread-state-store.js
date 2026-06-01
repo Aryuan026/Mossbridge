@@ -97,6 +97,26 @@ class ThreadStateStore {
     return this.stateByThreadId.get(threadId) || null;
   }
 
+  markStaleTurnRecovered(threadId, { turnId = "", reason = "" } = {}) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const current = this.stateByThreadId.get(normalizedThreadId) || createEmptyThreadState(normalizedThreadId);
+    const normalizedTurnId = normalizeThreadId(turnId) || current.turnId || "";
+    const next = {
+      ...current,
+      status: "failed",
+      turnId: normalizedTurnId,
+      lastError: reason || "stale claudecode running state recovered",
+      pendingApproval: null,
+      pendingApprovals: [],
+      updatedAt: new Date().toISOString(),
+    };
+    this.stateByThreadId.set(normalizedThreadId, next);
+    return next;
+  }
+
   resolveApproval(threadId, status = "running", requestId = "") {
     const current = this.stateByThreadId.get(threadId);
     if (!current) {

@@ -527,6 +527,84 @@ test("handleRuntimeEvent reports compact completion back to WeChat", async () =>
   assert.deepEqual(sent, ["✅ Compact finished\nthread: thread-1"]);
   assert.equal(appLike.pendingOperationByRunKey.size, 0);
 });
+
+test("maybeCloseIdleSystemRuntimeClient closes completed claudecode system clients only", async () => {
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const cleanupCalls = [];
+    const appLike = {
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        getSessionStore() {
+          return {
+            getBinding(bindingKey) {
+              if (bindingKey === "system-binding") {
+                return {
+                  systemRuntimeBinding: true,
+                  systemToolProfile: "checkin_lite",
+                  activeWorkspaceRoot: "/workspace",
+                };
+              }
+              return {
+                systemRuntimeBinding: false,
+                activeWorkspaceRoot: "/workspace",
+              };
+            },
+          };
+        },
+        async closeIdleSystemClient(payload) {
+          cleanupCalls.push(payload);
+          return { closed: true };
+        },
+      },
+    };
+
+    await MossbridgeApp.prototype.maybeCloseIdleSystemRuntimeClient.call(appLike, {
+      event: {
+        type: "runtime.turn.completed",
+        payload: {
+          threadId: "system-thread",
+          turnId: "turn-1",
+        },
+      },
+      linked: {
+        bindingKey: "system-binding",
+        workspaceRoot: "/workspace",
+      },
+    });
+
+    assert.equal(cleanupCalls.length, 1);
+    assert.deepEqual(cleanupCalls[0], {
+      threadId: "system-thread",
+      workspaceRoot: "/workspace",
+      bindingKey: "system-binding",
+      systemRuntimeBinding: true,
+      systemToolProfile: "checkin_lite",
+    });
+
+    await MossbridgeApp.prototype.maybeCloseIdleSystemRuntimeClient.call(appLike, {
+      event: {
+        type: "runtime.turn.completed",
+        payload: {
+          threadId: "user-thread",
+          turnId: "turn-2",
+        },
+      },
+      linked: {
+        bindingKey: "user-binding",
+        workspaceRoot: "/workspace",
+      },
+    });
+
+    assert.equal(cleanupCalls.length, 1);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("handleRuntimeEvent auto-approves built-in view_image approvals without prompting", async () => {
   const responses = [];
   const appLike = {

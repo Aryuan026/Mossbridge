@@ -287,6 +287,60 @@ function createClaudeCodeRuntimeAdapter(config) {
     }
   }
 
+  async function closeIdleSystemClient({
+    threadId = "",
+    workspaceRoot = "",
+    bindingKey = "",
+    systemRuntimeBinding = false,
+    systemToolProfile = "",
+    toolProfile = "",
+  } = {}) {
+    const scope = resolveRuntimeCallScope({
+      bindingKey,
+      threadId,
+      metadata: {
+        systemRuntimeBinding,
+        systemToolProfile: systemToolProfile || toolProfile,
+        toolProfile,
+      },
+      systemRuntimeBinding,
+    });
+    if (!scope.systemRuntimeBinding) {
+      return { closed: false, reason: "not_system_runtime" };
+    }
+
+    let entry = findClientEntryByThreadId(threadId);
+    const normalizedWorkspaceRoot = normalizeText(workspaceRoot);
+    if (!entry && normalizedWorkspaceRoot) {
+      const clientKey = buildClientKey(normalizedWorkspaceRoot, scope);
+      const client = clientsByKey.get(clientKey);
+      if (client) {
+        entry = [clientKey, client];
+      }
+    }
+    if (!entry) {
+      return { closed: false, reason: "not_found" };
+    }
+
+    const [clientKey, client] = entry;
+    if (!clientKey.includes("::system:")) {
+      return { closed: false, reason: "not_system_client", clientKey };
+    }
+    if (normalizeText(client?.pendingTurnId)) {
+      return { closed: false, reason: "active_turn", clientKey };
+    }
+    if (!client?.alive) {
+      if (clientsByKey.get(clientKey) === client) {
+        clientsByKey.delete(clientKey);
+      }
+      clearApprovalsForClientKey(clientKey);
+      return { closed: false, reason: "not_alive", clientKey };
+    }
+
+    await closeClientByKey(clientKey);
+    return { closed: true, clientKey };
+  }
+
   function clearApprovalsForClientKey(clientKey) {
     for (const [requestId, candidateClientKey] of pendingApprovals.entries()) {
       if (candidateClientKey === clientKey) {
@@ -331,6 +385,9 @@ function createClaudeCodeRuntimeAdapter(config) {
         return Boolean(threadClient?.alive && normalizeText(threadClient.pendingTurnId));
       }
       return false;
+    },
+    async closeIdleSystemClient(options = {}) {
+      return closeIdleSystemClient(options);
     },
     async initialize() {
       ipcServer.start();

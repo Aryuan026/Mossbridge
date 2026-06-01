@@ -776,12 +776,50 @@ class MossbridgeApp {
       && normalizeText(this.runtimeAdapter?.describe?.().id) === "claudecode"
       && !isRuntimeTurnActuallyActiveForApp(this, { bindingKey, workspaceRoot, threadId })
     ) {
-      console.warn(
-        `[mossbridge] ignored stale claudecode running state binding=${bindingKey} workspace=${workspaceRoot} thread=${threadId}`
-      );
+      this.recoverStaleClaudeCodeRunningState({
+        bindingKey,
+        workspaceRoot,
+        threadId,
+        threadState,
+        reason: "stale_claudecode_running_state",
+      });
       return false;
     }
     return threadState?.status === "running" || hasRpcId(threadState?.pendingApproval?.requestId);
+  }
+
+  recoverStaleClaudeCodeRunningState({
+    bindingKey = "",
+    workspaceRoot = "",
+    threadId = "",
+    threadState = null,
+    reason = "stale_claudecode_running_state",
+  } = {}) {
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const activeTurnId = normalizeCommandArgument(threadState?.turnId);
+    const runKey = activeTurnId ? buildRunKey(normalizedThreadId, activeTurnId) : "";
+    if (runKey) {
+      this.watchdogCancelledRunKeys?.add?.(runKey);
+      this.streamDelivery?.disposeRunState?.(runKey);
+      this.turnWritebackContextByRunKey?.delete?.(runKey);
+      this.pendingOperationByRunKey?.delete?.(runKey);
+    }
+    this.clearRuntimeEventWatchdog(normalizedThreadId);
+    this.clearRunningTurnWatchdog(normalizedThreadId, activeTurnId);
+    this.pendingTurnWritebackByThreadId?.delete?.(normalizedThreadId);
+    this.turnGateStore?.releaseThread?.(normalizedThreadId);
+    this.turnGateStore?.releaseScope?.(bindingKey, workspaceRoot);
+    const nextState = this.threadStateStore?.markStaleTurnRecovered?.(normalizedThreadId, {
+      turnId: activeTurnId,
+      reason,
+    }) || null;
+    console.warn(
+      `[mossbridge] recovered stale claudecode running state binding=${bindingKey} workspace=${workspaceRoot} thread=${normalizedThreadId} turn=${activeTurnId || "(none)"} reason=${reason}`
+    );
+    return nextState;
   }
 
   isRuntimeTurnActuallyActive({ bindingKey = "", workspaceRoot = "", threadId = "" } = {}) {
@@ -3366,6 +3404,9 @@ class MossbridgeApp {
         if (typeof this.maybeAutoCompactAfterTurn === "function") {
           await this.maybeAutoCompactAfterTurn({ event, linked, pendingOperation });
         }
+        if (typeof this.maybeCloseIdleSystemRuntimeClient === "function") {
+          await this.maybeCloseIdleSystemRuntimeClient({ event, linked });
+        }
       } finally {
         if (scopeKey) {
           this.turnBoundaryScopeKeys.delete(scopeKey);
@@ -3431,6 +3472,54 @@ class MossbridgeApp {
     }
     await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
     this.threadStateStore.resolveApproval(event.payload.threadId, "running", event.payload.requestId);
+  }
+
+  async maybeCloseIdleSystemRuntimeClient({ event, linked } = {}) {
+    if (event?.type !== "runtime.turn.completed" && event?.type !== "runtime.turn.failed") {
+      return;
+    }
+    const runtimeId = normalizeCommandArgument(this.runtimeAdapter?.describe?.().id);
+    if (runtimeId !== "claudecode" || typeof this.runtimeAdapter?.closeIdleSystemClient !== "function") {
+      return;
+    }
+
+    const sessionStore = this.runtimeAdapter.getSessionStore?.();
+    const bindingKey = normalizeCommandArgument(linked?.bindingKey);
+    const binding = bindingKey && typeof sessionStore?.getBinding === "function"
+      ? sessionStore.getBinding(bindingKey)
+      : null;
+    const isSystemRuntimeBinding = Boolean(
+      linked?.systemRuntimeBinding
+      || binding?.systemRuntimeBinding
+      || bindingKey.includes("#mossbridge-system")
+    );
+    if (!isSystemRuntimeBinding) {
+      return;
+    }
+
+    const threadId = normalizeCommandArgument(event?.payload?.threadId);
+    const workspaceRoot = normalizeCommandArgument(linked?.workspaceRoot || binding?.activeWorkspaceRoot);
+    if (!threadId && !workspaceRoot) {
+      return;
+    }
+
+    const result = await this.runtimeAdapter.closeIdleSystemClient({
+      threadId,
+      workspaceRoot,
+      bindingKey,
+      systemRuntimeBinding: true,
+      systemToolProfile: normalizeCommandArgument(binding?.systemToolProfile || linked?.systemToolProfile || linked?.toolProfile),
+    }).catch((error) => {
+      console.warn(
+        `[mossbridge] idle system claudecode cleanup skipped thread=${threadId || "(none)"} binding=${bindingKey || "(none)"} ${formatErrorMessage(error)}`
+      );
+      return null;
+    });
+    if (result?.closed) {
+      console.log(
+        `[mossbridge] closed idle system claudecode client thread=${threadId || "(none)"} binding=${bindingKey || "(none)"}`
+      );
+    }
   }
 
   async stopTypingForThread(threadId) {

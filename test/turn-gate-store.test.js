@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { MossbridgeApp } = require("../src/core/app");
+const { ThreadStateStore } = require("../src/core/thread-state-store");
 const { TurnGateStore } = require("../src/core/turn-gate-store");
 
 test("turn gate tracks pending scopes until the turn is released", () => {
@@ -186,6 +187,97 @@ test("isTurnDispatchBlocked releases a stale claudecode turn gate when no runtim
 
   assert.equal(blocked, false);
   assert.equal(released, true);
+});
+
+test("isTurnDispatchBlocked recovers stale claudecode running state side effects", () => {
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const calls = [];
+    const runKey = "thread-stale:turn-1";
+    const threadStateStore = new ThreadStateStore();
+    threadStateStore.applyRuntimeEvent({
+      type: "runtime.turn.started",
+      payload: {
+        threadId: "thread-stale",
+        turnId: "turn-1",
+      },
+    });
+    const appLike = {
+      runtimeAdapter: {
+        describe() {
+          return { id: "claudecode" };
+        },
+        getSessionStore() {
+          return {
+            getThreadIdForWorkspace() {
+              return "thread-stale";
+            },
+          };
+        },
+        hasActiveTurn() {
+          return false;
+        },
+      },
+      threadStateStore,
+      turnGateStore: {
+        isPending() {
+          return false;
+        },
+        releaseThread(threadId) {
+          calls.push(["releaseThread", threadId]);
+        },
+        releaseScope(bindingKey, workspaceRoot) {
+          calls.push(["releaseScope", bindingKey, workspaceRoot]);
+        },
+      },
+      turnBoundaryScopeKeys: new Set(),
+      pendingRuntimeEventWatchdogs: new Map([[
+        "thread-stale",
+        { noticeTimer: null, failureTimer: null },
+      ]]),
+      runningTurnWatchdogs: new Map([[
+        runKey,
+        { threadId: "thread-stale", turnId: "turn-1", noticeTimer: null, recoveryTimer: null },
+      ]]),
+      watchdogCancelledRunKeys: new Set(),
+      turnWritebackContextByRunKey: new Map([[runKey, { pending: true }]]),
+      pendingTurnWritebackByThreadId: new Map([["thread-stale", { pending: true }]]),
+      pendingOperationByRunKey: new Map([[runKey, { kind: "compact" }]]),
+      streamDelivery: {
+        disposeRunState(value) {
+          calls.push(["dispose", value]);
+        },
+      },
+      clearRuntimeEventWatchdog: MossbridgeApp.prototype.clearRuntimeEventWatchdog,
+      clearRunningTurnWatchdog: MossbridgeApp.prototype.clearRunningTurnWatchdog,
+      recoverStaleClaudeCodeRunningState: MossbridgeApp.prototype.recoverStaleClaudeCodeRunningState,
+      isRuntimeTurnActuallyActive: MossbridgeApp.prototype.isRuntimeTurnActuallyActive,
+    };
+
+    const blocked = MossbridgeApp.prototype.isTurnDispatchBlocked.call(appLike, "binding-1", "/workspace");
+
+    assert.equal(blocked, false);
+    assert.equal(appLike.pendingRuntimeEventWatchdogs.has("thread-stale"), false);
+    assert.equal(appLike.runningTurnWatchdogs.has(runKey), false);
+    assert.equal(appLike.turnWritebackContextByRunKey.has(runKey), false);
+    assert.equal(appLike.pendingTurnWritebackByThreadId.has("thread-stale"), false);
+    assert.equal(appLike.pendingOperationByRunKey.has(runKey), false);
+    assert.equal(appLike.watchdogCancelledRunKeys.has(runKey), true);
+    assert.deepEqual(calls, [
+      ["dispose", runKey],
+      ["releaseThread", "thread-stale"],
+      ["releaseScope", "binding-1", "/workspace"],
+    ]);
+    const recoveredState = threadStateStore.getThreadState("thread-stale");
+    assert.equal(recoveredState.status, "failed");
+    assert.equal(recoveredState.turnId, "turn-1");
+    assert.equal(recoveredState.lastError, "stale_claudecode_running_state");
+    assert.equal(recoveredState.pendingApproval, null);
+    assert.deepEqual(recoveredState.pendingApprovals, []);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("handlePreparedMessage queues while the scope is in a turn-boundary handoff", async () => {

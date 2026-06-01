@@ -191,6 +191,27 @@ test("claudecode runtime adapter applies model overrides and recreates the clien
     assert.match(MockClaudeCodeProcessClient.instances[2].sentMessages[0], /WAKE INPUT\nbackground checkin/);
     assert.doesNotMatch(MockClaudeCodeProcessClient.instances[2].sentMessages[0], /WECHAT SESSION INSTRUCTIONS/);
 
+    const foregroundCleanup = await adapter.closeIdleSystemClient({
+      bindingKey,
+      workspaceRoot,
+      threadId: secondTurn.threadId,
+    });
+    assert.equal(foregroundCleanup.closed, false);
+    assert.equal(foregroundCleanup.reason, "not_system_runtime");
+    assert.equal(activeUserClient.alive, true);
+
+    MockClaudeCodeProcessClient.instances[2].pendingTurnId = "";
+    const systemCleanup = await adapter.closeIdleSystemClient({
+      bindingKey: systemBindingKey,
+      workspaceRoot,
+      threadId: systemTurn.threadId,
+      systemRuntimeBinding: true,
+      systemToolProfile: "checkin_lite",
+    });
+    assert.equal(systemCleanup.closed, true);
+    assert.equal(activeUserClient.alive, true);
+    assert.equal(MockClaudeCodeProcessClient.instances[2].alive, false);
+
     await adapter.close();
   } finally {
     if (originalProcessClient) {
