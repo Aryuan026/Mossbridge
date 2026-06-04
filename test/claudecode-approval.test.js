@@ -151,6 +151,28 @@ test("claudecode assistant events map usage into context snapshots", () => {
   assert.equal(event.payload.currentTokens, 27201);
 });
 
+test("claudecode synthetic zero-usage events do not overwrite context snapshots", () => {
+  const event = mapClaudeCodeMessageToRuntimeEvent(
+    {
+      type: "context.updated",
+      sessionId: "thread-1",
+    },
+    {
+      message: {
+        model: "<synthetic>",
+        usage: {
+          input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+    },
+  );
+
+  assert.equal(event, null);
+});
+
 test("claudecode turn.failed events map into runtime failures", () => {
   const event = mapClaudeCodeMessageToRuntimeEvent({
     type: "turn.failed",

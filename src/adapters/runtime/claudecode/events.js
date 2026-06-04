@@ -9,6 +9,9 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
   const type = message?.type;
   switch (type) {
     case "context.updated":
+      if (isSyntheticClaudeUsage(raw)) {
+        return null;
+      }
       return {
         type: "runtime.context.updated",
         payload: normalizeClaudeContextPayload(message, raw),
@@ -152,6 +155,21 @@ function normalizeClaudeContextPayload(message, raw) {
     outputTokens,
     currentTokens: inputTokens + cacheCreationInputTokens + cacheReadInputTokens + outputTokens,
   };
+}
+
+function isSyntheticClaudeUsage(raw) {
+  const model = normalizeString(raw?.message?.model);
+  if (model !== "<synthetic>") {
+    return false;
+  }
+  const usage = raw?.message?.usage;
+  if (!usage || typeof usage !== "object") {
+    return false;
+  }
+  return numberOrZero(usage.input_tokens) === 0
+    && numberOrZero(usage.cache_creation_input_tokens) === 0
+    && numberOrZero(usage.cache_read_input_tokens) === 0
+    && numberOrZero(usage.output_tokens) === 0;
 }
 
 function formatProcessFailureText(message) {

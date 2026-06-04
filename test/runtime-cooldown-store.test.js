@@ -25,6 +25,16 @@ test("runtime cooldown parses Claude reset clocks in Shanghai time", () => {
   assert.equal(new Date(resetAtMs).toISOString(), "2026-05-08T06:50:00.000Z");
 });
 
+test("runtime cooldown keeps near-future reset clocks on the same Shanghai day", () => {
+  const nowMs = Date.parse("2026-05-31T14:09:03.567Z"); // 22:09:03 Asia/Shanghai.
+  const resetAtMs = resolveCapacityResetAtMs("You've hit your limit · resets 10:10pm (Asia/Shanghai)", {
+    nowMs,
+    graceMs: 2 * 60_000,
+  });
+
+  assert.equal(new Date(resetAtMs).toISOString(), "2026-05-31T14:12:00.000Z");
+});
+
 test("runtime cooldown respects explicit Claude weekly reset dates", () => {
   const nowMs = Date.parse("2026-05-10T01:01:01.000Z"); // 09:01 Asia/Shanghai.
   const text = "You've hit your limit · resets May 14 at 12pm (Asia/Shanghai)";

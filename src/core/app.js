@@ -78,6 +78,9 @@ const CLAUDECODE_RUNNING_TURN_STALL_RECOVERY_TIMEOUT_MS = 360_000;
 const MAX_SYSTEM_RUNTIME_TEXT_CHARS = 24_000;
 const DEFAULT_CHECKIN_RUNTIME_TEXT_CHARS = 8_000;
 const SYSTEM_FAILURE_NOTICE_THROTTLE_MS = 30 * 60_000;
+const DEFAULT_BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD = 3;
+const DEFAULT_BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MS = 45 * 60_000;
+const BACKGROUND_RUNTIME_CIRCUIT_STORE_VERSION = 1;
 const MAX_INBOUND_ATTACHMENT_BATCH = 10;
 const INBOUND_ATTACHMENT_BATCH_IDLE_MS = 8_000;
 const INBOUND_ATTACHMENT_TEXT_BATCH_IDLE_MS = 6_000;
@@ -122,6 +125,7 @@ class MossbridgeApp {
     this.threadStateStore = new ThreadStateStore();
     this.runtimeCooldownStore = new RuntimeCooldownStore({ filePath: config.runtimeCooldownFile });
     this.runtimeContextUsageStore = new RuntimeContextUsageStore({ filePath: config.runtimeContextUsageFile });
+    this.backgroundRuntimeCircuit = loadBackgroundRuntimeCircuitState(config.backgroundRuntimeCircuitFile);
     this.sessionRefreshRequests = new SessionRefreshRequestStore({ filePath: config.sessionRefreshRequestsFile });
     this.weixinIngressAuditStore = new WeixinIngressAuditStore({ filePath: config.weixinIngressAuditFile });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
@@ -1525,6 +1529,14 @@ class MossbridgeApp {
         console.warn(
           `[mossbridge] suppressed background runtime first-event failure trigger=${triggerKind} thread=${normalizedThreadId}`
         );
+        if (typeof this.recordBackgroundRuntimeFirstEventFailure === "function") {
+          this.recordBackgroundRuntimeFirstEventFailure({
+            trigger: triggerKind,
+            threadId: normalizedThreadId,
+            bindingKey,
+            workspaceRoot,
+          });
+        }
         sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
         sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
         this.pendingTurnWritebackByThreadId?.delete?.(normalizedThreadId);
@@ -2256,6 +2268,38 @@ class MossbridgeApp {
       : 15 * 60_000;
     this.nextDreamingPollAtMs = nowMs + Math.max(60_000, pollIntervalMs);
 
+    const circuitStatus = typeof this.getBackgroundRuntimeCircuitStatus === "function"
+      ? this.getBackgroundRuntimeCircuitStatus({ kind: "dreaming_opportunity", nowMs })
+      : { open: false };
+    if (circuitStatus.open) {
+      const retryAtMs = Number(circuitStatus.openUntilMs) || nowMs + pollIntervalMs;
+      this.nextDreamingPollAtMs = Math.max(nowMs + 60_000, retryAtMs);
+      this.recordControlEvent?.({
+        type: "memory.dreaming.skipped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.MEMORY,
+        source: "app.maybeQueueDreaming",
+        subject: "background_runtime_circuit",
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "background_runtime_circuit",
+        outcome: "skipped",
+        payload: {
+          retryAtMs: this.nextDreamingPollAtMs,
+          openUntilMs: circuitStatus.openUntilMs,
+          remainingMs: circuitStatus.remainingMs,
+        },
+      });
+      console.log(
+        `[mossbridge] dreaming skipped: background runtime circuit open until ${formatWechatLocalTime(new Date(this.nextDreamingPollAtMs).toISOString())}`,
+      );
+      return {
+        queued: false,
+        reason: "background_runtime_circuit",
+        retryAtMs: this.nextDreamingPollAtMs,
+        circuitStatus,
+      };
+    }
+
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const senderId = resolvePreferredSenderId({
       config: this.config,
@@ -2374,6 +2418,34 @@ class MossbridgeApp {
       });
       console.log(
         `[mossbridge] ${normalizeText(message?.kind) || "system"} dropped: daily system budget reached`,
+      );
+      return true;
+    }
+
+    const circuitStatus = typeof this.getBackgroundRuntimeCircuitStatus === "function"
+      ? this.getBackgroundRuntimeCircuitStatus({ kind: message?.kind })
+      : { open: false };
+    if (circuitStatus.open && isBackgroundRuntimeCircuitSystemMessage(message)) {
+      if (isDreamingSystemMessage(message)) {
+        this.deferMemoryMetabolismAttemptForRuntimeCircuit(message, circuitStatus);
+        return true;
+      }
+      this.recordControlEvent?.({
+        type: "system.checkin.dropped",
+        layer: CONTROL_LAYER.TACTICAL,
+        scope: CONTROL_SCOPE.SYSTEM_TURN,
+        source: "app.dispatchSystemMessage",
+        subject: message.id,
+        severity: CONTROL_SEVERITY.WARN,
+        reason: "background_runtime_circuit",
+        outcome: "dropped",
+        payload: {
+          openUntilMs: circuitStatus.openUntilMs,
+          remainingMs: circuitStatus.remainingMs,
+        },
+      });
+      console.log(
+        `[mossbridge] checkin dropped: background runtime circuit open until ${formatWechatLocalTime(new Date(circuitStatus.openUntilMs).toISOString())}`,
       );
       return true;
     }
@@ -2530,6 +2602,173 @@ class MossbridgeApp {
     console.log(
       `[mossbridge] dreaming deferred: daily system budget retry at ${formatWechatLocalTime(new Date(budgetPolicy.retryAfterMs || Date.now()).toISOString())}`,
     );
+  }
+
+  deferMemoryMetabolismAttemptForRuntimeCircuit(message = {}, circuitStatus = {}) {
+    const attemptId = normalizeText(message?.metadata?.dreamingAttemptId || message?.metadata?.dreaming_attempt_id);
+    const retryAfterMs = Number(circuitStatus.openUntilMs) || Date.now() + resolveBackgroundRuntimeCircuitCooldownMs(this.config);
+    let deferred = null;
+    if (attemptId && typeof this.memoryMetabolismService?.deferAttempt === "function") {
+      deferred = this.memoryMetabolismService.deferAttempt(attemptId, {
+        reason: "background_runtime_circuit",
+        retryAfterMs,
+      });
+    }
+    this.recordControlEvent?.({
+      type: "memory.dreaming.deferred",
+      layer: CONTROL_LAYER.TACTICAL,
+      scope: CONTROL_SCOPE.MEMORY,
+      source: "app.dispatchSystemMessage",
+      subject: attemptId || message.id,
+      severity: CONTROL_SEVERITY.WARN,
+      reason: "background_runtime_circuit",
+      outcome: deferred?.ok === false ? "defer_record_failed" : "deferred",
+      payload: {
+        retryAfterMs,
+        openUntilMs: circuitStatus.openUntilMs,
+        remainingMs: circuitStatus.remainingMs,
+        deferResult: deferred,
+      },
+    });
+    console.log(
+      `[mossbridge] dreaming deferred: background runtime circuit retry at ${formatWechatLocalTime(new Date(retryAfterMs).toISOString())}`,
+    );
+  }
+
+  getBackgroundRuntimeCircuitStatus({ kind = "", nowMs = Date.now() } = {}) {
+    if (this.config?.backgroundRuntimeCircuitEnabled === false || !isBackgroundRuntimeCircuitKind(kind)) {
+      return { open: false, remainingMs: 0, openUntilMs: 0 };
+    }
+    const state = normalizeBackgroundRuntimeCircuitState(this.backgroundRuntimeCircuit);
+    if (state.openUntilMs && state.openUntilMs <= nowMs) {
+      const next = {
+        ...state,
+        openUntilMs: 0,
+        openUntil: "",
+        reason: "",
+      };
+      this.writeBackgroundRuntimeCircuitState(next);
+      return { ...next, open: false, remainingMs: 0 };
+    }
+    const remainingMs = state.openUntilMs > nowMs ? state.openUntilMs - nowMs : 0;
+    return {
+      ...state,
+      open: remainingMs > 0,
+      remainingMs,
+    };
+  }
+
+  recordBackgroundRuntimeFirstEventFailure({
+    trigger = "",
+    threadId = "",
+    bindingKey = "",
+    workspaceRoot = "",
+    nowMs = Date.now(),
+  } = {}) {
+    if (this.config?.backgroundRuntimeCircuitEnabled === false || !isBackgroundRuntimeCircuitKind(trigger)) {
+      return null;
+    }
+    const threshold = resolveBackgroundRuntimeCircuitFailureThreshold(this.config);
+    const cooldownMs = resolveBackgroundRuntimeCircuitCooldownMs(this.config);
+    const state = normalizeBackgroundRuntimeCircuitState(this.backgroundRuntimeCircuit);
+    const withinWindow = state.lastFailureAtMs && nowMs - state.lastFailureAtMs <= cooldownMs;
+    const consecutiveFirstEventFailures = (withinWindow ? state.consecutiveFirstEventFailures : 0) + 1;
+    const shouldOpen = consecutiveFirstEventFailures >= threshold;
+    const openUntilMs = shouldOpen
+      ? Math.max(Number(state.openUntilMs) || 0, nowMs + cooldownMs)
+      : Number(state.openUntilMs) || 0;
+    const next = {
+      ...state,
+      consecutiveFirstEventFailures,
+      lastFailureAt: new Date(nowMs).toISOString(),
+      lastFailureAtMs: nowMs,
+      lastTrigger: normalizeText(trigger),
+      lastThreadId: normalizeCommandArgument(threadId),
+      lastBindingKey: normalizeText(bindingKey),
+      lastWorkspaceRoot: normalizeText(workspaceRoot),
+      reason: shouldOpen ? "background_first_event_failure" : state.reason,
+      openUntilMs,
+      openUntil: openUntilMs ? new Date(openUntilMs).toISOString() : "",
+      updatedAt: new Date(nowMs).toISOString(),
+      updatedAtMs: nowMs,
+    };
+    this.writeBackgroundRuntimeCircuitState(next);
+    this.recordControlEvent?.({
+      type: shouldOpen ? "runtime.background_circuit.opened" : "runtime.background_circuit.failure_recorded",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.recordBackgroundRuntimeFirstEventFailure",
+      subject: normalizeCommandArgument(threadId),
+      severity: CONTROL_SEVERITY.WARN,
+      reason: "background_first_event_failure",
+      outcome: shouldOpen ? "circuit_opened" : "failure_recorded",
+      correlationId: normalizeCommandArgument(threadId),
+      payload: {
+        trigger: next.lastTrigger,
+        bindingKey: next.lastBindingKey,
+        workspaceRoot: next.lastWorkspaceRoot,
+        consecutiveFirstEventFailures,
+        threshold,
+        openUntilMs,
+      },
+    });
+    if (shouldOpen) {
+      console.warn(
+        `[mossbridge] background runtime circuit opened runtime=${this.config?.runtime || "runtime"} failures=${consecutiveFirstEventFailures}/${threshold} until=${next.openUntil} trigger=${next.lastTrigger} thread=${next.lastThreadId}`,
+      );
+    } else {
+      console.warn(
+        `[mossbridge] background runtime first-event failure recorded runtime=${this.config?.runtime || "runtime"} failures=${consecutiveFirstEventFailures}/${threshold} trigger=${next.lastTrigger} thread=${next.lastThreadId}`,
+      );
+    }
+    return this.getBackgroundRuntimeCircuitStatus({ kind: trigger, nowMs });
+  }
+
+  recordBackgroundRuntimeSuccess({ event = null, nowMs = Date.now() } = {}) {
+    if (this.config?.backgroundRuntimeCircuitEnabled === false || event?.type !== "runtime.turn.completed") {
+      return null;
+    }
+    const state = normalizeBackgroundRuntimeCircuitState(this.backgroundRuntimeCircuit);
+    if (!state.consecutiveFirstEventFailures && !state.openUntilMs) {
+      return state;
+    }
+    const next = {
+      ...state,
+      consecutiveFirstEventFailures: 0,
+      openUntilMs: 0,
+      openUntil: "",
+      reason: "",
+      lastSuccessAt: new Date(nowMs).toISOString(),
+      lastSuccessAtMs: nowMs,
+      lastSuccessThreadId: normalizeCommandArgument(event?.payload?.threadId),
+      updatedAt: new Date(nowMs).toISOString(),
+      updatedAtMs: nowMs,
+    };
+    this.writeBackgroundRuntimeCircuitState(next);
+    this.recordControlEvent?.({
+      type: "runtime.background_circuit.cleared",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.recordBackgroundRuntimeSuccess",
+      subject: next.lastSuccessThreadId,
+      reason: "runtime_turn_completed",
+      outcome: "circuit_cleared",
+      correlationId: next.lastSuccessThreadId,
+      payload: {
+        lastSuccessThreadId: next.lastSuccessThreadId,
+      },
+    });
+    console.log(
+      `[mossbridge] background runtime circuit cleared after runtime completion thread=${next.lastSuccessThreadId || "(unknown)"}`,
+    );
+    return next;
+  }
+
+  writeBackgroundRuntimeCircuitState(state = {}) {
+    const normalized = normalizeBackgroundRuntimeCircuitState(state);
+    this.backgroundRuntimeCircuit = normalized;
+    persistBackgroundRuntimeCircuitState(this.config?.backgroundRuntimeCircuitFile, normalized);
+    return normalized;
   }
 
   resolveSystemTurnBudgetPolicy({ kind = "", nowMs = Date.now() } = {}) {
@@ -3404,6 +3643,9 @@ class MossbridgeApp {
         if (typeof this.maybeAutoCompactAfterTurn === "function") {
           await this.maybeAutoCompactAfterTurn({ event, linked, pendingOperation });
         }
+        if (typeof this.recordBackgroundRuntimeSuccess === "function") {
+          this.recordBackgroundRuntimeSuccess({ event });
+        }
         if (typeof this.maybeCloseIdleSystemRuntimeClient === "function") {
           await this.maybeCloseIdleSystemRuntimeClient({ event, linked });
         }
@@ -4234,7 +4476,14 @@ function isDirectVisibleReplySystemMessage(message = {}) {
 }
 
 function shouldSuppressVisibleRuntimeStatus(normalized = {}) {
-  return isBackgroundCheckinOpportunity(normalized);
+  return isBackgroundRuntimeCircuitOpportunity(normalized);
+}
+
+function isBackgroundRuntimeCircuitOpportunity(normalized = {}) {
+  if (normalizeText(normalized?.provider) !== "system") {
+    return false;
+  }
+  return isBackgroundRuntimeCircuitKind(describeSystemTriggerKind(normalized));
 }
 
 function isBackgroundCheckinOpportunity(normalized = {}) {
@@ -4262,6 +4511,17 @@ function isCheckinOpportunityMessage(message = {}) {
 function isDreamingSystemMessage(message = {}) {
   const kind = normalizeText(message?.kind).toLowerCase();
   return kind === "dreaming_opportunity" || kind === "memory_metabolism";
+}
+
+function isBackgroundRuntimeCircuitSystemMessage(message = {}) {
+  return isCheckinOpportunityMessage(message) || isDreamingSystemMessage(message);
+}
+
+function isBackgroundRuntimeCircuitKind(kind = "") {
+  const normalized = normalizeText(kind).toLowerCase();
+  return normalized === "checkin_opportunity"
+    || normalized === "dreaming_opportunity"
+    || normalized === "memory_metabolism";
 }
 
 function applySystemBudgetPolicyToMessage(message = {}, budgetPolicy = {}) {
@@ -4849,6 +5109,95 @@ function pruneEmptyObject(value = {}) {
       return true;
     })
   );
+}
+
+function loadBackgroundRuntimeCircuitState(filePath = "") {
+  if (!filePath) {
+    return createEmptyBackgroundRuntimeCircuitState();
+  }
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return normalizeBackgroundRuntimeCircuitState(JSON.parse(raw));
+  } catch {
+    return createEmptyBackgroundRuntimeCircuitState();
+  }
+}
+
+function persistBackgroundRuntimeCircuitState(filePath = "", state = {}) {
+  if (!filePath) {
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmpFile = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpFile, `${JSON.stringify(normalizeBackgroundRuntimeCircuitState(state), null, 2)}\n`);
+    fs.renameSync(tmpFile, filePath);
+  } catch (error) {
+    console.warn(`[mossbridge] background runtime circuit state write skipped: ${formatErrorMessage(error)}`);
+  }
+}
+
+function createEmptyBackgroundRuntimeCircuitState() {
+  return {
+    version: BACKGROUND_RUNTIME_CIRCUIT_STORE_VERSION,
+    consecutiveFirstEventFailures: 0,
+    openUntil: "",
+    openUntilMs: 0,
+    reason: "",
+    lastTrigger: "",
+    lastThreadId: "",
+    lastBindingKey: "",
+    lastWorkspaceRoot: "",
+    lastFailureAt: "",
+    lastFailureAtMs: 0,
+    lastSuccessAt: "",
+    lastSuccessAtMs: 0,
+    lastSuccessThreadId: "",
+    updatedAt: "",
+    updatedAtMs: 0,
+  };
+}
+
+function normalizeBackgroundRuntimeCircuitState(value = {}) {
+  const base = createEmptyBackgroundRuntimeCircuitState();
+  const input = value && typeof value === "object" ? value : {};
+  const openUntilMs = Number(input.openUntilMs || Date.parse(input.openUntil || ""));
+  const lastFailureAtMs = Number(input.lastFailureAtMs || Date.parse(input.lastFailureAt || ""));
+  const lastSuccessAtMs = Number(input.lastSuccessAtMs || Date.parse(input.lastSuccessAt || ""));
+  const updatedAtMs = Number(input.updatedAtMs || Date.parse(input.updatedAt || ""));
+  return {
+    ...base,
+    version: BACKGROUND_RUNTIME_CIRCUIT_STORE_VERSION,
+    consecutiveFirstEventFailures: Math.max(0, Number(input.consecutiveFirstEventFailures) || 0),
+    openUntil: normalizeText(input.openUntil),
+    openUntilMs: Number.isFinite(openUntilMs) && openUntilMs > 0 ? openUntilMs : 0,
+    reason: normalizeText(input.reason),
+    lastTrigger: normalizeText(input.lastTrigger),
+    lastThreadId: normalizeCommandArgument(input.lastThreadId),
+    lastBindingKey: normalizeText(input.lastBindingKey),
+    lastWorkspaceRoot: normalizeText(input.lastWorkspaceRoot),
+    lastFailureAt: normalizeText(input.lastFailureAt),
+    lastFailureAtMs: Number.isFinite(lastFailureAtMs) && lastFailureAtMs > 0 ? lastFailureAtMs : 0,
+    lastSuccessAt: normalizeText(input.lastSuccessAt),
+    lastSuccessAtMs: Number.isFinite(lastSuccessAtMs) && lastSuccessAtMs > 0 ? lastSuccessAtMs : 0,
+    lastSuccessThreadId: normalizeCommandArgument(input.lastSuccessThreadId),
+    updatedAt: normalizeText(input.updatedAt),
+    updatedAtMs: Number.isFinite(updatedAtMs) && updatedAtMs > 0 ? updatedAtMs : 0,
+  };
+}
+
+function resolveBackgroundRuntimeCircuitFailureThreshold(config = {}) {
+  const parsed = Number(config?.backgroundRuntimeCircuitFailureThreshold);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.max(1, Math.floor(parsed))
+    : DEFAULT_BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD;
+}
+
+function resolveBackgroundRuntimeCircuitCooldownMs(config = {}) {
+  const minutes = Number(config?.backgroundRuntimeCircuitCooldownMinutes);
+  return Number.isFinite(minutes) && minutes > 0
+    ? Math.max(60_000, Math.floor(minutes * 60_000))
+    : DEFAULT_BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MS;
 }
 
 function sleep(ms) {

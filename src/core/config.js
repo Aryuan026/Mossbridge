@@ -64,6 +64,9 @@ function readConfig() {
     checkinMorningContextTokenMaxAgeMinutes: readBridgeIntEnv("CHECKIN_MORNING_CONTEXT_TOKEN_MAX_AGE_MINUTES"),
     systemBudgetDreamingDeferMinutes: readBridgeIntEnv("SYSTEM_BUDGET_DREAMING_DEFER_MINUTES"),
     systemBudgetCompactRuntimeTextMaxChars: readBridgeIntEnv("SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_MAX_CHARS"),
+    backgroundRuntimeCircuitEnabled: readBridgeOptionalBoolEnv("BACKGROUND_RUNTIME_CIRCUIT") ?? true,
+    backgroundRuntimeCircuitFailureThreshold: clampInt(readBridgeIntEnv("BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD"), 3, 1, 20),
+    backgroundRuntimeCircuitCooldownMinutes: clampInt(readBridgeIntEnv("BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MINUTES"), 45, 1, 24 * 60),
     checkinHotWindowMinutes: readBridgeIntEnv("CHECKIN_HOT_WINDOW_MINUTES"),
     checkinHotRecentMinutes: readBridgeIntEnv("CHECKIN_HOT_RECENT_MINUTES"),
     checkinHotMinEvents: readBridgeIntEnv("CHECKIN_HOT_MIN_EVENTS"),
@@ -72,6 +75,7 @@ function readConfig() {
     sessionRefreshPressurePercent: readBridgeIntEnv("SESSION_REFRESH_PRESSURE_PERCENT"),
     sessionRefreshMinIntervalMs: readBridgeIntEnv("SESSION_REFRESH_MIN_INTERVAL_MS"),
     runtimeCooldownFile: path.join(stateDir, "runtime-cooldowns.json"),
+    backgroundRuntimeCircuitFile: path.join(stateDir, "background-runtime-circuit.json"),
     weixinIngressAuditFile: path.join(stateDir, "weixin-ingress-audit.json"),
     timelineScreenshotQueueFile: path.join(stateDir, "timeline-screenshot-queue.json"),
     projectToolContextFile: path.join(stateDir, "project-tool-runtime-context.json"),
@@ -285,6 +289,14 @@ function readNumberEnv(name) {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
 function readIntEnvAny(names) {

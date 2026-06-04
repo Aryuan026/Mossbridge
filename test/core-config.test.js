@@ -25,6 +25,9 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_CHECKIN_MODEL_MIN_GAP_MINUTES",
   "MOSSBRIDGE_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES",
   "MOSSBRIDGE_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_MAX_CHARS",
+  "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT",
+  "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD",
+  "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MINUTES",
 ];
 
 function withBridgeEnv(values, fn) {
@@ -170,5 +173,21 @@ test("readConfig loads weighted checkin budget tuning", () => {
     assert.equal(config.checkinModelMinGapMinutes, 75);
     assert.equal(config.systemBudgetDreamingDeferMinutes, 20);
     assert.equal(config.systemBudgetCompactRuntimeTextMaxChars, 6000);
+  });
+});
+
+test("readConfig keeps background runtime circuit under bridge state with Mossbridge env", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT: "false",
+    MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD: "2",
+    MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MINUTES: "30",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.backgroundRuntimeCircuitEnabled, false);
+    assert.equal(config.backgroundRuntimeCircuitFailureThreshold, 2);
+    assert.equal(config.backgroundRuntimeCircuitCooldownMinutes, 30);
+    assert.equal(config.backgroundRuntimeCircuitFile, path.join("/tmp/bridge-state", "background-runtime-circuit.json"));
   });
 });

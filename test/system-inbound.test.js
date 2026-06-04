@@ -652,6 +652,148 @@ test("random checkins drop instead of blocking behind a busy foreground turn", a
   assert.deepEqual(reblocked, [["binding:user-1", "/workspace"]]);
 });
 
+test("background runtime circuit opens after repeated first-event failures", () => {
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-circuit-"));
+  const filePath = path.join(dir, "background-runtime-circuit.json");
+  const nowMs = Date.parse("2026-06-02T10:00:00.000Z");
+  const appLike = {
+    config: {
+      runtime: "claudecode",
+      backgroundRuntimeCircuitEnabled: true,
+      backgroundRuntimeCircuitFile: filePath,
+      backgroundRuntimeCircuitFailureThreshold: 2,
+      backgroundRuntimeCircuitCooldownMinutes: 30,
+    },
+    backgroundRuntimeCircuit: {},
+    writeBackgroundRuntimeCircuitState: MossbridgeApp.prototype.writeBackgroundRuntimeCircuitState,
+    getBackgroundRuntimeCircuitStatus: MossbridgeApp.prototype.getBackgroundRuntimeCircuitStatus,
+  };
+
+  console.warn = () => {};
+  console.log = () => {};
+  try {
+    MossbridgeApp.prototype.recordBackgroundRuntimeFirstEventFailure.call(appLike, {
+      trigger: "checkin_opportunity",
+      threadId: "thread-1",
+      bindingKey: "binding:user-1#mossbridge-system",
+      workspaceRoot: "/workspace",
+      nowMs,
+    });
+    assert.equal(
+      MossbridgeApp.prototype.getBackgroundRuntimeCircuitStatus.call(appLike, {
+        kind: "checkin_opportunity",
+        nowMs,
+      }).open,
+      false,
+    );
+
+    const status = MossbridgeApp.prototype.recordBackgroundRuntimeFirstEventFailure.call(appLike, {
+      trigger: "dreaming_opportunity",
+      threadId: "thread-2",
+      bindingKey: "binding:user-1#mossbridge-system",
+      workspaceRoot: "/workspace",
+      nowMs: nowMs + 60_000,
+    });
+
+    assert.equal(status.open, true);
+    assert.equal(status.openUntilMs, nowMs + 60_000 + 30 * 60_000);
+    const persisted = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    assert.equal(persisted.consecutiveFirstEventFailures, 2);
+    assert.equal(persisted.reason, "background_first_event_failure");
+
+    MossbridgeApp.prototype.recordBackgroundRuntimeSuccess.call(appLike, {
+      event: {
+        type: "runtime.turn.completed",
+        payload: { threadId: "foreground-thread" },
+      },
+      nowMs: nowMs + 120_000,
+    });
+
+    const cleared = MossbridgeApp.prototype.getBackgroundRuntimeCircuitStatus.call(appLike, {
+      kind: "checkin_opportunity",
+      nowMs: nowMs + 120_000,
+    });
+    assert.equal(cleared.open, false);
+    assert.equal(cleared.consecutiveFirstEventFailures, 0);
+  } finally {
+    console.warn = originalWarn;
+    console.log = originalLog;
+  }
+});
+
+test("background runtime circuit drops checkins and defers dreaming attempts", async () => {
+  const originalLog = console.log;
+  const dispatched = [];
+  const deferred = [];
+  const openUntilMs = Date.now() + 30 * 60_000;
+  const appLike = {
+    config: {
+      runtime: "claudecode",
+      backgroundRuntimeCircuitEnabled: true,
+      backgroundRuntimeCircuitFailureThreshold: 1,
+      backgroundRuntimeCircuitCooldownMinutes: 30,
+    },
+    backgroundRuntimeCircuit: {
+      consecutiveFirstEventFailures: 1,
+      openUntilMs,
+      reason: "background_first_event_failure",
+    },
+    memoryMetabolismService: {
+      deferAttempt(attemptId, payload) {
+        deferred.push({ attemptId, payload });
+      },
+    },
+    getBackgroundRuntimeCircuitStatus: MossbridgeApp.prototype.getBackgroundRuntimeCircuitStatus,
+    deferMemoryMetabolismAttemptForRuntimeCircuit: MossbridgeApp.prototype.deferMemoryMetabolismAttemptForRuntimeCircuit,
+    async dispatchPreparedTurn(payload) {
+      dispatched.push(payload);
+      return true;
+    },
+  };
+
+  console.log = () => {};
+  try {
+    const checkinOk = await MossbridgeApp.prototype.dispatchSystemMessage.call(appLike, {
+      id: "checkin-1",
+      accountId: "wx-account",
+      senderId: "user-1",
+      workspaceRoot: "/workspace",
+      text: "A small ordinary check-in window opens.",
+      kind: "checkin_opportunity",
+      priority: "normal",
+      title: "random_checkin",
+      createdAt: "2026-06-02T10:00:00.000Z",
+    });
+    const dreamingOk = await MossbridgeApp.prototype.dispatchSystemMessage.call(appLike, {
+      id: "dreaming-1",
+      accountId: "wx-account",
+      senderId: "user-1",
+      workspaceRoot: "/workspace",
+      text: "Memory metabolism opportunity.",
+      kind: "dreaming_opportunity",
+      metadata: {
+        dreamingAttemptId: "attempt-1",
+      },
+      createdAt: "2026-06-02T10:01:00.000Z",
+    });
+
+    assert.equal(checkinOk, true);
+    assert.equal(dreamingOk, true);
+    assert.deepEqual(dispatched, []);
+    assert.deepEqual(deferred, [{
+      attemptId: "attempt-1",
+      payload: {
+        reason: "background_runtime_circuit",
+        retryAfterMs: openUntilMs,
+      },
+    }]);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("reply system messages are delivered directly instead of re-entering the runtime", async () => {
   const sent = [];
   const dispatched = [];

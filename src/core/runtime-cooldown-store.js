@@ -151,7 +151,8 @@ function resolveCapacityResetAtMs(text, {
     0
   );
 
-  if (parsed.hasDate && !Number.isFinite(parsed.year) && resetAtMs <= nowMs + 60_000) {
+  const resetAtWithGraceMs = resetAtMs + graceMs;
+  if (parsed.hasDate && !Number.isFinite(parsed.year) && resetAtWithGraceMs <= nowMs) {
     year += 1;
     resetAtMs = Date.UTC(
       year,
@@ -162,7 +163,7 @@ function resolveCapacityResetAtMs(text, {
       0,
       0
     );
-  } else if (!parsed.hasDate && resetAtMs <= nowMs + 60_000) {
+  } else if (!parsed.hasDate && resetAtWithGraceMs <= nowMs) {
     resetAtMs += 24 * 60 * 60_000;
   }
   return resetAtMs + graceMs;
