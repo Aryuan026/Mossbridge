@@ -1724,6 +1724,67 @@ test("affective relationship turns bring warm anchors without cold architecture 
   assert.match(packet.runtime_prelude, /warm: 没得选时先接住/);
 });
 
+test("playful relational turns carry ambient warm without work tracks", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-playful-relational-tier-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "关系连续底色",
+    summary: "日常短句先从稳定关系底色回来。",
+    body_markdown: "这是常驻关系连续规则。",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "日常相处空气",
+    summary: "轻松短句保留一点关系节奏，不背上任务。",
+    body_markdown: "这是 relationship continuity，不是工作上下文。",
+    tags: ["relationship", "continuity"],
+    certainty_state: "settled",
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Bridge 提示词维护",
+    summary: "最近在调微信提示词和上下文递送。",
+    body_markdown: "这张卡模拟系统提示词、token、bridge 调试相关的温卡。",
+    tags: ["bridge", "token", "提示词"],
+    resident: false,
+  });
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "装修决策与交房前准备",
+    summary: "装修公司已选定，后续看渲染图、合同和工地。",
+    kind: "home",
+    tags: ["装修", "新家"],
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "嘻嘻嘻你陪我玩啥呀",
+    includeRuntimePreludeGuidance: false,
+  });
+
+  assert.equal(packet.delivery_profile.tier, "affective_warm");
+  assert.equal(packet.delivery_profile.include_warm, true);
+  assert.equal(packet.delivery_profile.include_ambient_warm, true);
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.delivery_profile.include_cold, false);
+  assert.equal(packet.ongoing_track_packet.hit_count, 0);
+  assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
+  assert.match(packet.runtime_prelude, /ambient-warm: 日常相处空气/);
+  assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词维护/);
+  assert.doesNotMatch(packet.runtime_prelude, /ongoing: 装修决策/);
+});
+
 test("pinned anchors surface as resident anchors after many newer writes", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-anchor-many-"));
   const service = new AsherieMemoryService({
