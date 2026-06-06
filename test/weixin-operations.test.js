@@ -24,6 +24,20 @@ test("weixin operations memory guidance stays operational instead of styling the
   assert.doesNotMatch(memorySection, /\bher\b|\bshe\b|她/i);
 });
 
+test("weixin operations allows evidence-based assistant preferences without private persona coupling", () => {
+  const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
+  const raw = fs.readFileSync(templatePath, "utf8");
+  const memorySectionMatch = raw.match(/## Memory Use\s*([\s\S]*?)$/);
+  const memorySection = memorySectionMatch ? memorySectionMatch[1] : "";
+
+  assert.match(memorySection, /Your own preferences are allowed to develop from evidence/i);
+  assert.match(memorySection, /express a current preference, dislike, aesthetic reaction, or emotional response/i);
+  assert.match(memorySection, /revisable self-continuity note\/card/i);
+  assert.match(memorySection, /current assistant\/persona rather than \{\{USER_NAME\}\}/i);
+  assert.match(memorySection, /momentary reaction, tentative preference, and settled preference/i);
+  assert.doesNotMatch(memorySection, /Aji|阿霁|AsherieBridge/i);
+});
+
 test("weixin operations front-stage guidance allows fuller replies without forcing a question ending", () => {
   const templatePath = path.join(__dirname, "..", "templates", "weixin-operations.md");
   const raw = fs.readFileSync(templatePath, "utf8");
