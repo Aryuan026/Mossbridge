@@ -177,6 +177,187 @@ test("session refresh requests wait through background system turns", async () =
   assert.equal(store.listRequests().find((entry) => entry.id === request.id).status, "pending");
 });
 
+test("auto session refresh preapplies after the pressured turn completes", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "claudecode",
+    oldThreadId: "old-thread",
+    reason: "context_pressure_session_refresh",
+    requestedBy: "auto_context_pressure",
+  });
+  const calls = [];
+  const controlEvents = [];
+  let currentThreadId = "old-thread";
+
+  const result = await MossbridgeApp.prototype.maybePreApplyAutoSessionRefreshAfterTurn.call({
+    config: { runtime: "claudecode" },
+    sessionRefreshRequests: store,
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return currentThreadId;
+          },
+          clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            calls.push(["clearPending", bindingKey, workspaceRoot]);
+          },
+          clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            calls.push(["clearThread", bindingKey, workspaceRoot]);
+            currentThreadId = "";
+          },
+        };
+      },
+      async startFreshThreadDraft(payload) {
+        calls.push(["fresh", payload.oldThreadId, payload.reason]);
+      },
+    },
+    recordControlEvent(event) {
+      controlEvents.push(event);
+    },
+  }, {
+    event: {
+      type: "runtime.turn.completed",
+      payload: { threadId: "old-thread", turnId: "turn-1" },
+    },
+    linked: { bindingKey: "binding-1", workspaceRoot: "/workspace" },
+  });
+
+  assert.equal(result.id, request.id);
+  assert.deepEqual(calls, [
+    ["fresh", "old-thread", "context_pressure_session_refresh"],
+    ["clearPending", "binding-1", "/workspace"],
+    ["clearThread", "binding-1", "/workspace"],
+  ]);
+  assert.equal(currentThreadId, "");
+  const pending = store.getPendingRequest({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "claudecode",
+  });
+  assert.equal(pending.id, request.id);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.preAppliedOldThreadId, "old-thread");
+  assert.equal(pending.preAppliedBy, "runtime_turn_completed");
+  assert.match(pending.preAppliedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(controlEvents[0].type, "runtime.context.session_refresh_preapplied");
+});
+
+test("dispatchPreparedTurn completes a preapplied session refresh without reopening the old draft", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "claudecode",
+    oldThreadId: "old-thread",
+    reason: "context_pressure_session_refresh",
+    requestedBy: "auto_context_pressure",
+  });
+  store.updateRequest(request.id, {
+    preAppliedAt: "2026-06-06T10:00:00.000Z",
+    preAppliedOldThreadId: "old-thread",
+    preAppliedBy: "runtime_turn_completed",
+  });
+  const calls = [];
+
+  const appLike = {
+    config: { runtime: "claudecode" },
+    sessionRefreshRequests: store,
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          getThreadIdForWorkspace() {
+            return "";
+          },
+          clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            calls.push(["clearPending", bindingKey, workspaceRoot]);
+          },
+          clearThreadIdForWorkspace(bindingKey, workspaceRoot) {
+            calls.push(["clearThread", bindingKey, workspaceRoot]);
+          },
+          getRuntimeParamsForWorkspace() {
+            return { model: "" };
+          },
+        };
+      },
+      async startFreshThreadDraft(payload) {
+        calls.push(["fresh", payload.oldThreadId, payload.reason]);
+      },
+      async sendTextTurn(payload) {
+        calls.push(["send", payload.text]);
+        return { threadId: "new-thread", turnId: "turn-1", openingTurn: true };
+      },
+    },
+    turnGateStore: {
+      begin() {
+        return "scope-1";
+      },
+      attachThread(scope, threadId) {
+        calls.push(["attach", scope, threadId]);
+      },
+      releaseScope() {},
+    },
+    channelAdapter: {
+      async sendTyping() {},
+      async sendText() {},
+    },
+    streamDelivery: {
+      bindReplyTargetForTurn(payload) {
+        calls.push(["replyTarget", payload.threadId, payload.turnId]);
+      },
+    },
+    runtimeContextStore: {
+      setActiveContext(payload) {
+        calls.push(["activeContext", payload.threadId]);
+      },
+    },
+    rememberTurnWritebackContext() {},
+    markMemoryMetabolismAttemptDispatched() {},
+    scheduleRuntimeEventWatchdog() {},
+    scheduleRunningTurnWatchdog() {},
+    maybeApplySessionRefreshRequest: MossbridgeApp.prototype.maybeApplySessionRefreshRequest,
+  };
+
+  const dispatched = await MossbridgeApp.prototype.dispatchPreparedTurn.call(appLike, {
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    prepared: {
+      workspaceId: "default",
+      accountId: "account-1",
+      senderId: "user-1",
+      contextToken: "ctx-1",
+      provider: "weixin",
+      text: "hello after refresh",
+    },
+  });
+
+  assert.equal(dispatched, true);
+  assert.equal(calls.some((entry) => entry[0] === "fresh"), false);
+  assert.deepEqual(calls.slice(0, 3), [
+    ["clearPending", "binding-1", "/workspace"],
+    ["clearThread", "binding-1", "/workspace"],
+    ["send", "hello after refresh"],
+  ]);
+  const completed = store.listRequests().find((entry) => entry.id === request.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.oldThreadId, "old-thread");
+  assert.equal(completed.newThreadId, "new-thread");
+  assert.equal(completed.openingTurn, true);
+});
+
 test("context pressure queues one session refresh for the next normal user turn", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({

@@ -258,6 +258,67 @@ test("handleRuntimeEvent prompts for project shell commands instead of auto-appr
   assert.equal(prompts.length, 1);
 });
 
+test("handleRuntimeEvent auto-denies approval when the WeChat prompt cannot be delivered", async () => {
+  const responses = [];
+  const cleared = [];
+  const resolved = [];
+  const originalWarn = console.warn;
+  console.warn = () => {};
+
+  try {
+    const appLike = {
+      streamDelivery: {
+        async handleRuntimeEvent() {},
+      },
+      runtimeAdapter: {
+        getSessionStore() {
+          return {
+            clearApprovalPrompt(threadId) {
+              cleared.push(threadId);
+            },
+            findBindingForThreadId() {
+              return { bindingKey: "binding-1", workspaceRoot: "/workspace" };
+            },
+            getApprovalPromptState() {
+              return null;
+            },
+            rememberApprovalPrompt() {},
+            getApprovalCommandAllowlistForWorkspace() {
+              return [];
+            },
+          };
+        },
+        async respondApproval(payload) {
+          responses.push(payload);
+        },
+      },
+      threadStateStore: {
+        resolveApproval(threadId, status, requestId) {
+          resolved.push([threadId, status, requestId]);
+        },
+      },
+      async sendApprovalPrompt() {
+        throw new Error("sendMessage ret=-2");
+      },
+    };
+
+    await MossbridgeApp.prototype.handleRuntimeEvent.call(appLike, {
+      type: "runtime.approval.requested",
+      payload: {
+        threadId: "thread-1",
+        requestId: "req-undelivered",
+        commandTokens: ["bash", "unknown"],
+      },
+    });
+
+    assert.deepEqual(responses, [{ requestId: "req-undelivered", decision: "decline" }]);
+    assert.deepEqual(cleared, ["thread-1"]);
+    assert.deepEqual(resolved, [["thread-1", "running", "req-undelivered"]]);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("handleNewCommand asks runtime to start a fresh draft before clearing the saved thread", async () => {
   const calls = [];
   const appLike = {

@@ -1008,21 +1008,26 @@ class MossbridgeApp {
       return null;
     }
 
-    if (typeof this.runtimeAdapter.startFreshThreadDraft === "function") {
+    const preAppliedAt = normalizeText(request.preAppliedAt);
+    const shouldStartFreshDraft = !preAppliedAt || Boolean(currentThreadId);
+    if (shouldStartFreshDraft && typeof this.runtimeAdapter.startFreshThreadDraft === "function") {
       await this.runtimeAdapter.startFreshThreadDraft({
         bindingKey,
         workspaceRoot,
-        oldThreadId: currentThreadId,
+        oldThreadId: currentThreadId || requestedOldThreadId,
         reason: request.reason || "manual_maintenance",
       });
     }
     sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
     sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+    const appliedOldThreadId = currentThreadId
+      || normalizeCommandArgument(request.preAppliedOldThreadId)
+      || requestedOldThreadId;
     const applied = this.sessionRefreshRequests.markApplied(request.id, {
-      oldThreadId: currentThreadId,
+      oldThreadId: appliedOldThreadId,
     }) || request;
     console.log(
-      `[mossbridge] session refresh applied id=${request.id} runtime=${runtimeId} workspace=${workspaceRoot} oldThread=${currentThreadId || "(none)"} reason=${request.reason || "manual_maintenance"}`
+      `[mossbridge] session refresh applied id=${request.id} runtime=${runtimeId} workspace=${workspaceRoot} oldThread=${appliedOldThreadId || "(none)"} reason=${request.reason || "manual_maintenance"}`
     );
     return applied;
   }
@@ -1731,6 +1736,83 @@ class MossbridgeApp {
       `[mossbridge] session refresh queued thread=${threadId} current=${formatCompactNumber(decision.currentTokens)} threshold=${formatCompactNumber(decision.refreshThresholdTokens)}`
     );
     return request;
+  }
+
+  async maybePreApplyAutoSessionRefreshAfterTurn({ event, linked, pendingOperation } = {}) {
+    if (event?.type !== "runtime.turn.completed") {
+      return null;
+    }
+    if (pendingOperation?.kind === "compact") {
+      return null;
+    }
+    if (!linked?.bindingKey || !linked?.workspaceRoot || !this.sessionRefreshRequests) {
+      return null;
+    }
+    const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id) || normalizeText(this.config?.runtime) || "codex";
+    const request = this.sessionRefreshRequests.getPendingRequest({
+      bindingKey: linked.bindingKey,
+      workspaceRoot: linked.workspaceRoot,
+      runtimeId,
+    });
+    if (!request || !isAutoSessionRefreshRequest(request) || normalizeText(request.preAppliedAt)) {
+      return null;
+    }
+    const eventThreadId = normalizeCommandArgument(event?.payload?.threadId);
+    const requestedOldThreadId = normalizeCommandArgument(request.oldThreadId);
+    if (requestedOldThreadId && eventThreadId && requestedOldThreadId !== eventThreadId) {
+      return null;
+    }
+
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const currentThreadId = normalizeCommandArgument(
+      sessionStore.getThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot) || "",
+    );
+    if (requestedOldThreadId && currentThreadId && requestedOldThreadId !== currentThreadId) {
+      this.sessionRefreshRequests.markSkipped(request.id, "current_thread_changed_before_preapply", {
+        currentThreadId,
+      });
+      console.warn(
+        `[mossbridge] auto session refresh preapply skipped id=${request.id} reason=current_thread_changed requested=${requestedOldThreadId} current=${currentThreadId}`
+      );
+      return null;
+    }
+
+    const oldThreadId = currentThreadId || requestedOldThreadId || eventThreadId;
+    if (typeof this.runtimeAdapter.startFreshThreadDraft === "function") {
+      await this.runtimeAdapter.startFreshThreadDraft({
+        bindingKey: linked.bindingKey,
+        workspaceRoot: linked.workspaceRoot,
+        oldThreadId,
+        reason: request.reason || "context_pressure_session_refresh",
+      });
+    }
+    sessionStore.clearPendingThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
+    sessionStore.clearThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
+    const updated = this.sessionRefreshRequests.updateRequest?.(request.id, {
+      preAppliedAt: new Date().toISOString(),
+      preAppliedOldThreadId: oldThreadId,
+      preAppliedBy: "runtime_turn_completed",
+    }) || request;
+    this.recordControlEvent?.({
+      type: "runtime.context.session_refresh_preapplied",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.maybePreApplyAutoSessionRefreshAfterTurn",
+      subject: oldThreadId,
+      reason: request.reason || "context_pressure_session_refresh",
+      outcome: "preapplied",
+      correlationId: request.id,
+      payload: {
+        bindingKey: linked.bindingKey,
+        workspaceRoot: linked.workspaceRoot,
+        runtimeId,
+        oldThreadId,
+      },
+    });
+    console.log(
+      `[mossbridge] auto session refresh preapplied id=${request.id} runtime=${runtimeId} workspace=${linked.workspaceRoot} oldThread=${oldThreadId || "(none)"} reason=${request.reason || "context_pressure_session_refresh"}`
+    );
+    return updated;
   }
 
   async maybeAutoCompactAfterTurn({ event, linked, pendingOperation }) {
@@ -3610,6 +3692,9 @@ class MossbridgeApp {
             failureReplyTarget,
           );
         }
+        if (typeof this.maybePreApplyAutoSessionRefreshAfterTurn === "function") {
+          await this.maybePreApplyAutoSessionRefreshAfterTurn({ event, linked, pendingOperation });
+        }
         if (linked?.bindingKey && linked?.workspaceRoot) {
           await this.flushPendingInboundMessages({
             bindingKey: linked.bindingKey,
@@ -3694,13 +3779,24 @@ class MossbridgeApp {
         return;
       }
       sessionStore.rememberApprovalPrompt(event.payload.threadId, event.payload.requestId, promptSignature);
-      await this.sendApprovalPrompt({
-        bindingKey: linked.bindingKey,
-        approval: event.payload,
-      }).catch((error) => {
+      try {
+        await this.sendApprovalPrompt({
+          bindingKey: linked.bindingKey,
+          approval: event.payload,
+        });
+      } catch (error) {
         sessionStore.clearApprovalPrompt(event.payload.threadId);
+        const approvalResponse = buildApprovalResponsePayload(event.payload, "no");
+        if (approvalResponse) {
+          await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
+          this.threadStateStore.resolveApproval(event.payload.threadId, "running", event.payload.requestId);
+          console.warn(
+            `[mossbridge] approval prompt delivery failed; auto-denied request thread=${event.payload.threadId} requestId=${event.payload.requestId} error=${formatErrorMessage(error)}`
+          );
+          return;
+        }
         throw error;
-      });
+      }
       return;
     }
     const approvalResponse = buildApprovalResponsePayload(event.payload, "yes");
@@ -4867,6 +4963,16 @@ function evaluateSessionAutoRefresh(usage = {}, config = {}) {
     refreshThresholdPercent,
     refreshThresholdTokens,
   };
+}
+
+function isAutoSessionRefreshRequest(request = {}) {
+  const requestedBy = normalizeText(request.requestedBy).toLowerCase();
+  const reason = normalizeText(request.reason).toLowerCase();
+  return requestedBy.startsWith("auto_session")
+    || requestedBy === "auto_context_pressure"
+    || reason === "severe_context_pressure"
+    || reason === "context_pressure_refresh"
+    || reason === "context_pressure_session_refresh";
 }
 
 function readNonNegativeNumber(value) {
