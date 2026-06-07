@@ -1428,6 +1428,16 @@ test("asherie memory service builds a session handoff snapshot for long continui
     },
   });
 
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "关系连续热场空气",
+    summary: "换到新的对话承接点时，先带一点关系连续空气，再承接刚才的尾流。",
+    body_markdown: "这是关系 continuity 背景热场，不是任务模板。",
+    tags: ["relationship", "continuity"],
+    resident: false,
+    certainty_state: "settled",
+  });
+
   for (let index = 1; index <= 8; index += 1) {
     await service.writebackTurn({
       userId: "demo-user",
@@ -1454,7 +1464,9 @@ test("asherie memory service builds a session handoff snapshot for long continui
   });
   const recentThreadCount = (freshPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
   assert.equal(recentThreadCount, 8);
+  assert.equal(freshPacket.delivery_profile.include_ambient_warm, true);
   assert.match(freshPacket.runtime_prelude, /session-handoff/);
+  assert.match(freshPacket.runtime_prelude, /ambient-warm: 关系连续热场空气/);
   assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
   assert.match(freshPacket.runtime_prelude, /论文架构第8步/);
   assert.match(freshPacket.recall_focus.current_query, /论文架构第8步/);

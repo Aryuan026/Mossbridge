@@ -67,7 +67,8 @@ function resolveMemoryDeliveryProfile({
   }
 
   const includeWarm = ["affective_warm", "focused", "full"].includes(tier);
-  const includeAmbientWarm = ["ambient_warm", "affective_warm", "heartbeat_lite"].includes(tier);
+  const includeAmbientWarm = ["ambient_warm", "affective_warm", "heartbeat_lite"].includes(tier)
+    || Boolean(forceRecentContext);
   let includeOngoing = tier === "full" || tier === "focused";
   let includeEpisode = ["focused", "full"].includes(tier) && explicitEpisode;
   let includeObservation = tier === "full" || tier === "focused";

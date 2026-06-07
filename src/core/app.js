@@ -4682,6 +4682,8 @@ function buildMemoryCapturePressureOptions(
     ? {
         cacheLimit: 64,
         recallRecentRecordLimit: 24,
+        ambientLimit: 3,
+        preludeAmbientWarmLimit: 3,
         preludeRecentSnippetLimit: 0,
         preludeRecentThreadLimit: 12,
       }
