@@ -9,7 +9,7 @@ const TEMPORAL_PATTERN = /(昨天|前天|大前天|刚才|刚刚|上次|那天|�
 const READING_PATTERN = /(读书|共读|这本书|章节|第.{0,4}章|书里|小说|epub|txt)/iu;
 const LOW_CONTEXT_MARKERS = /(mua|宝宝|亲亲|抱抱|抱住|贴贴|晚安|早安|想你|哼|呜|嘿嘿|哈哈|摸摸|蹭蹭|亲一口|搂住|困了|睡了|醒了)/iu;
 const QUESTION_OR_TASK_PATTERN = /(怎么|为什么|什么|哪个|哪种|能不能|会不会|要不要|帮我|检查|看看|处理|写|推|部署|修|改|删|删除|结束|不要|打开|搜索|读|发|上传)/iu;
-const ACTIVE_TASK_PATTERN = /(怎么|为什么|什么|哪个|哪种|能不能|会不会|要不要|帮我|检查|看看|处理|写|推|部署|修|改一下|改掉|删|删除|结束|不要|打开|搜索|读|发|上传)/iu;
+const ACTIVE_TASK_PATTERN = /(帮我|检查|看看|处理|写|推|部署|修|改一下|改掉|删|删除|打开|搜索|读|发|上传)/iu;
 
 function resolveMemoryDeliveryProfile({
   query = "",
@@ -29,6 +29,8 @@ function resolveMemoryDeliveryProfile({
   const affectiveRelational = AFFECTIVE_RELATIONAL_PATTERN.test(text);
   const temporalReference = TEMPORAL_PATTERN.test(text);
   const readingContext = READING_PATTERN.test(text);
+  const looseOperationalClose = looksLikeLooseOperationalClose(text);
+  const activeTask = ACTIVE_TASK_PATTERN.test(text) && !looseOperationalClose;
   const gateTriggered = Boolean(recallFocus?.should_trigger || recallFocus?.semantic_recall_signal || recallFocus?.explicit_recall_signal);
   const lowContext = looksLikeLowContextChat(text) && !(
     explicitMemory
@@ -50,7 +52,8 @@ function resolveMemoryDeliveryProfile({
     || readingContext
     || gateTriggered
     || Boolean(forceRecentContext)
-    || ACTIVE_TASK_PATTERN.test(text)
+    || activeTask
+    || looseOperationalClose
   );
 
   let tier = "resident_only";
@@ -60,20 +63,24 @@ function resolveMemoryDeliveryProfile({
     tier = "full";
   } else if (affectiveRelational && !explicitOngoing && !explicitEpisode && !explicitObservation) {
     tier = "affective_warm";
+  } else if (activeTask && !(readingContext || explicitWarm || explicitOngoing || explicitEpisode || explicitObservation)) {
+    tier = "task_ambient";
   } else if (gateTriggered || readingContext || explicitWarm || explicitOngoing || explicitEpisode || explicitObservation) {
     tier = "focused";
+  } else if (activeTask) {
+    tier = "task_ambient";
   } else if (lowContext || casualBackground) {
     tier = "ambient_warm";
   }
 
   const includeWarm = ["affective_warm", "focused", "full"].includes(tier);
-  const includeAmbientWarm = ["ambient_warm", "affective_warm", "heartbeat_lite"].includes(tier)
+  const includeAmbientWarm = ["ambient_warm", "affective_warm", "task_ambient", "focused", "full", "heartbeat_lite"].includes(tier)
     || Boolean(forceRecentContext);
   let includeOngoing = tier === "full" || tier === "focused";
-  let includeEpisode = ["focused", "full"].includes(tier) && explicitEpisode;
+  let includeEpisode = ["focused", "full"].includes(tier) && (explicitEpisode || explicitMemory || temporalReference);
   let includeObservation = tier === "full" || tier === "focused";
   let includeTemporal = tier !== "resident_only" && tier !== "ambient_warm" && temporalReference;
-  let includeCold = !["resident_only", "ambient_warm", "affective_warm", "heartbeat_lite"].includes(tier);
+  let includeCold = !["resident_only", "ambient_warm", "affective_warm", "task_ambient", "heartbeat_lite"].includes(tier);
 
   if (mode === "proactive" && runtime === "proactive_lite") {
     includeOngoing = includeOngoing && explicitOngoing;
@@ -94,6 +101,8 @@ function resolveMemoryDeliveryProfile({
     affective_relational: affectiveRelational,
     temporal_reference: temporalReference,
     reading_context: readingContext,
+    active_task: activeTask,
+    loose_operational_close: looseOperationalClose,
     include_resident: true,
     include_ambient_warm: includeAmbientWarm,
     include_warm: includeWarm,
@@ -103,6 +112,20 @@ function resolveMemoryDeliveryProfile({
     include_temporal: includeTemporal,
     include_cold: includeCold,
   };
+}
+
+function looksLikeLooseOperationalClose(value = "") {
+  const compact = normalizeText(value).replace(/\s+/gu, "");
+  if (!compact || compact.length > 24) {
+    return false;
+  }
+  if (!/(不要了|不用了|算了|结束了|删掉|删了|别要了|不要|结束)/iu.test(compact)) {
+    return false;
+  }
+  if (/(这个|这条|这张|这份|页面|文件|代码|记录|温卡|记忆|提醒|日历|任务|项目|case|预约|链接|仓库|服务|部署|数据|配置|权限|按钮|接口|网页)/iu.test(compact)) {
+    return false;
+  }
+  return /(哈哈|啊|啦|吧|算了|已经)/iu.test(compact);
 }
 
 function looksLikeLowContextChat(value = "") {
@@ -123,4 +146,5 @@ function normalizeText(value) {
 module.exports = {
   resolveMemoryDeliveryProfile,
   looksLikeLowContextChat,
+  looksLikeLooseOperationalClose,
 };

@@ -114,11 +114,13 @@ class EpisodeJournalStore {
         if (statuses.size && !statuses.has(normalizeStatus(normalized.status))) {
           continue;
         }
-        const score = scoreEpisode(normalized, query);
+        const entries = this.listEntries(normalized.scoped_user_id, normalized.episode_id, { limit: 300 });
+        const match = scoreEpisodeMatch(normalized, query, { entries });
+        const score = Number(match.score) || 0;
         if (query && score <= minScore) {
           continue;
         }
-        rows.push({ ...normalized, query_score: score });
+        rows.push({ ...normalized, query_score: score, matched_entries: match.matched_entries || [] });
       }
     }
     rows.sort((a, b) => compareEpisodeRows(a, b));
@@ -126,6 +128,7 @@ class EpisodeJournalStore {
     return rows.slice(0, limit).map((item) => ({
       ...this.projectEpisode(item.scoped_user_id, item.episode_id),
       query_score: item.query_score,
+      matched_entries: item.matched_entries || [],
     }));
   }
 
@@ -243,9 +246,24 @@ function compactEpisodeHit(item = {}) {
     topology_refs: compactTopology,
     source_refs: stringList(item.source_refs).slice(0, 6),
     related_track_ids: stringList(item.related_track_ids).slice(0, 8),
+    matched_entries: (Array.isArray(item.matched_entries) ? item.matched_entries : []).slice(0, 3).map(compactEntryHit),
     query_score: Number(item.query_score) || 0,
     last_touched_at: normalizeText(item.last_touched_at),
     markdown_path: normalizeText(item.markdown_path),
+  };
+}
+
+function compactEntryHit(item = {}) {
+  return {
+    entry_id: normalizeText(item.entry_id),
+    entry_type: normalizeText(item.entry_type),
+    day_label: normalizeText(item.day_label),
+    happened_at_utc: normalizeText(item.happened_at_utc),
+    text: truncateText(normalizeText(item.text), 260),
+    tags: stringList(item.tags).slice(0, 8),
+    source_refs: stringList(item.source_refs).slice(0, 4),
+    attachment_refs: attachmentRefs(item.attachment_refs).slice(0, 3),
+    query_score: Number(item.query_score) || 0,
   };
 }
 
@@ -448,9 +466,13 @@ function attachmentRefs(value) {
 }
 
 function scoreEpisode(row, query) {
+  return scoreEpisodeMatch(row, query).score;
+}
+
+function scoreEpisodeMatch(row, query, { entries = [] } = {}) {
   const q = normalizeText(query).toLowerCase();
   if (!q) {
-    return 0;
+    return { score: 0, matched_entries: [] };
   }
   const haystack = [
     row.title,
@@ -461,13 +483,49 @@ function scoreEpisode(row, query) {
     ...(Array.isArray(row.source_refs) ? row.source_refs : []),
     ...Object.values(topologyRefs(row.topology_refs)).flat(),
   ].map((item) => normalizeText(item).toLowerCase()).join("\n");
-  let score = haystack.includes(q) ? 8 : 0;
-  queryTerms(q).forEach((token) => {
+  const terms = queryTerms(q);
+  let score = scoreHaystack(q, terms, haystack);
+  const matchedEntries = [];
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    const normalizedEntry = normalizeEntry(entry);
+    const entryScore = scoreHaystack(q, terms, entrySearchText(normalizedEntry).toLowerCase());
+    if (entryScore > 0) {
+      matchedEntries.push({ ...normalizedEntry, query_score: entryScore });
+      score += Math.min(entryScore, 10);
+    }
+  });
+  matchedEntries.sort((a, b) => {
+    const diff = (Number(b.query_score) || 0) - (Number(a.query_score) || 0);
+    if (diff) {
+      return diff;
+    }
+    return `${normalizeText(a.happened_at_utc)}${normalizeText(a.entry_id)}`
+      .localeCompare(`${normalizeText(b.happened_at_utc)}${normalizeText(b.entry_id)}`);
+  });
+  return { score, matched_entries: matchedEntries.slice(0, 3) };
+}
+
+function scoreHaystack(query, terms, haystack) {
+  let score = query && haystack.includes(query) ? 8 : 0;
+  terms.forEach((token) => {
     if (haystack.includes(token)) {
       score += 2;
     }
   });
   return score;
+}
+
+function entrySearchText(entry = {}) {
+  return [
+    entry.text,
+    entry.entry_type,
+    entry.day_label,
+    ...stringList(entry.tags),
+    ...stringList(entry.source_refs),
+    ...Object.values(topologyRefs(entry.topology_refs)).flat(),
+    ...attachmentRefs(entry.attachment_refs)
+      .map((ref) => normalizeText(ref.caption || ref.description || ref.path || ref.note_path)),
+  ].map(normalizeText).filter(Boolean).join("\n");
 }
 
 function queryTerms(query) {

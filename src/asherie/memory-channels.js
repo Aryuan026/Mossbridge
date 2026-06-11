@@ -8,10 +8,11 @@ const AMBIENT_POSITIVE_TERMS = [
 const AMBIENT_NEGATIVE_TERMS = [
   "task", "project", "case", "debug", "bug", "deploy", "server", "github", "mcp", "tool", "token",
   "session", "context", "runtime", "wakeup", "dreaming", "calendar", "reminder", "episode", "reading",
-  "book", "pdf", "attachment", "file", "inbox", "wechat", "bridge", "mossbridge",
+  "book", "pdf", "attachment", "file", "inbox", "wechat", "bridge", "mossbridge", "family", "gossip",
   "任务", "项目", "案例", "调试", "报错", "部署", "服务器", "工具", "权限", "白名单", "令牌",
   "上下文", "线程", "唤醒", "心跳", "日历", "提醒", "小事记", "共读", "读书", "书", "附件",
   "文件", "上传", "图片", "照片", "微信", "提示词", "代码", "仓库", "备份", "设备", "预约",
+  "家族", "家庭", "亲属", "亲戚", "八卦",
 ];
 
 function buildWarmMemoryRuntimePacket(

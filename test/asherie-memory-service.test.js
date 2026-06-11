@@ -1666,6 +1666,60 @@ test("short banter carries resident and ambient warm without broad memory layers
   assert.doesNotMatch(packet.runtime_prelude, /observation:/);
 });
 
+test("plain work tasks keep ambient warm without broad dynamic layers", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-task-ambient-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "日常相处空气",
+    summary: "工作和分析时也保留一点自然相处底色。",
+    body_markdown: "这是 relationship continuity 和称呼习惯，不是任务线。",
+    tags: ["relationship", "continuity", "称呼"],
+    resident: false,
+    certainty_state: "settled",
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "帮我检查这份文档哪里不顺",
+  });
+
+  assert.equal(packet.delivery_profile.tier, "task_ambient");
+  assert.equal(packet.delivery_profile.include_ambient_warm, true);
+  assert.equal(packet.delivery_profile.include_warm, false);
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.delivery_profile.include_episode, false);
+  assert.equal(packet.cold_root_packet.hit_count, 0);
+  assert.match(packet.runtime_prelude, /ambient-warm: 日常相处空气/);
+});
+
+test("loose operational close does not become a work-memory turn", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-loose-close-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "哈哈算了不要了",
+  });
+
+  assert.equal(packet.delivery_profile.loose_operational_close, true);
+  assert.equal(packet.delivery_profile.active_task, false);
+  assert.notEqual(packet.delivery_profile.tier, "task_ambient");
+  assert.equal(packet.delivery_profile.include_ongoing, false);
+  assert.equal(packet.delivery_profile.include_cold, false);
+});
+
 test("ordinary state chatter uses ambient warm unless it asks for dynamic recall", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-ordinary-chat-tier-"));
   const service = new AsherieMemoryService({
@@ -2161,6 +2215,45 @@ test("asherie memory service keeps bounded event episodes with attachment refs",
   );
   assert.equal(fs.existsSync(markdownPath), true);
   assert.match(fs.readFileSync(markdownPath, "utf8"), /打铁花小船/);
+});
+
+test("asherie memory service searches episode entry bodies on explicit memory turns", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-episode-entry-body-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.upsertEpisode({
+    userId: "demo-user",
+    episode_id: "renovation-2026-06",
+    title: "装修阶段讨论",
+    summary: "记录装修沟通和设计沟通的阶段性事件。",
+    kind: "life_event",
+    tags: ["装修"],
+  });
+  await service.appendEpisodeEntry({
+    userId: "demo-user",
+    episode_id: "renovation-2026-06",
+    entry_type: "artifact",
+    day_label: "水电定位",
+    text: "厨房电源定位：冰箱单独回路，岛台预留插座，洗碗机和蒸烤箱分开规划。",
+    source_refs: ["doc:designer-brief-0603"],
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "还记得厨房电源定位吗",
+  });
+
+  assert.equal(packet.delivery_profile.tier, "full");
+  assert.equal(packet.delivery_profile.include_episode, true);
+  assert.equal(packet.episode_journal_packet.hit_count, 1);
+  assert.equal(packet.episode_journal_packet.hits[0].episode_id, "renovation-2026-06");
+  assert.match(packet.episode_journal_packet.hits[0].matched_entries[0].text, /厨房电源定位/);
+  assert.match(packet.runtime_prelude, /matched: 厨房电源定位/);
 });
 
 test("asherie memory service recalls conversation cache by temporal window", async () => {

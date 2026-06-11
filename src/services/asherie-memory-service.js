@@ -1944,12 +1944,14 @@ function buildEpisodePrelude(packet = {}, limit = 3) {
     const title = normalizePreludeText(item.title) || normalizePreludeText(item.episode_id) || "episode";
     const status = normalizePreludeText(item.status) || "active";
     const summary = normalizePreludeText(item.summary);
+    const matchedEntry = Array.isArray(item.matched_entries) ? item.matched_entries.find((entry) => normalizePreludeText(entry?.text)) : null;
+    const matchedText = matchedEntry ? normalizePreludeText(matchedEntry.text) : "";
     const counts = [
       Number(item.entry_count) ? `entries=${Number(item.entry_count)}` : "",
       Number(item.attachment_count) ? `attachments=${Number(item.attachment_count)}` : "",
       Number(item.topology_edge_count) ? `topology_edges=${Number(item.topology_edge_count)}` : "",
     ].filter(Boolean).join(" ");
-    return `- 小事记：${[title, status, counts, summary ? truncateText(summary, 110) : ""].filter(Boolean).join(" | ")}`;
+    return `- 小事记：${[title, status, counts, summary ? truncateText(summary, 110) : "", matchedText ? `matched: ${truncateText(matchedText, 110)}` : ""].filter(Boolean).join(" | ")}`;
   });
 }
 
