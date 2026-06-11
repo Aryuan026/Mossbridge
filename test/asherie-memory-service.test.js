@@ -272,6 +272,8 @@ test("asherie memory runtime can omit repeated stable guidance from prelude", as
     includeRuntimePreludeGuidance: true,
   });
   assert.match(guided.runtime_prelude, /记忆自维护/);
+  assert.match(guided.runtime_prelude, /证据缺口/);
+  assert.match(guided.runtime_prelude, /检索方式/);
 
   const lean = await service.captureContextPacket({
     query: "今天吃面要不要加蛋",
@@ -279,6 +281,8 @@ test("asherie memory runtime can omit repeated stable guidance from prelude", as
     includeRuntimePreludeGuidance: false,
   });
   assert.doesNotMatch(lean.runtime_prelude, /记忆自维护/);
+  assert.doesNotMatch(lean.runtime_prelude, /证据缺口/);
+  assert.doesNotMatch(lean.runtime_prelude, /检索方式/);
 });
 
 test("asherie observation journal search requires intent or lexical activation", async () => {
@@ -1104,6 +1108,36 @@ test("asherie memory service suppresses noisy operational warm-card recall", asy
     material_id: materialId,
   });
   assert.equal(Number(stored.record.recall_count) || 0, 0);
+});
+
+test("asherie memory service treats route-frame words as low signal for ordinary warm recall", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-route-frame-denoise-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Renovation work thread",
+    summary: "装修、产权和房梁讨论旧线，不能被普通逗嘴句子拖出来。",
+    body_markdown: "这张卡故意带两个人之间、关系、重要等路由词，模拟旧工作卡误召回。",
+    tags: ["装修", "关系"],
+    storage_strength: 2,
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "丸辣！一时之间也没想到怎么不正经，我只是随口绕远了一句而已 workspace_tmp attachment_001 png",
+  });
+
+  assert.equal(packet.warm_memory_packet.hit_count, 0);
+  assert.equal(packet.warm_memory_packet.route_tag, "warm_query_suppressed");
+  assert.equal(packet.warm_memory_packet.recall_gate.reason, "ordinary_low_signal");
+  assert.equal(packet.warm_memory_packet.recall_gate.strong_token_count, 0);
+  assert.deepEqual(packet.warm_memory_packet.feedback_rows || [], []);
 });
 
 test("asherie memory service lets proactive recall surface symbolic relationship objects before the candidate window clips them", async () => {

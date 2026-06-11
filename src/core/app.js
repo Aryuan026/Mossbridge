@@ -4252,11 +4252,19 @@ class MossbridgeApp {
       return true;
     }
     try {
-      return Boolean(this.sessionRefreshRequests?.getPendingRequest?.({
+      if (this.sessionRefreshRequests?.getPendingRequest?.({
         bindingKey,
         workspaceRoot: root,
         runtimeId,
-      }));
+      })) {
+        return true;
+      }
+      return Boolean(this.sessionRefreshRequests?.consumePostRefreshGrace?.({
+        bindingKey,
+        workspaceRoot: root,
+        runtimeId,
+        threadId,
+      })?.active);
     } catch {
       return false;
     }

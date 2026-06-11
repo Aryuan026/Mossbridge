@@ -2,6 +2,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
+const DEFAULT_POST_REFRESH_GRACE_TURNS = 4;
+const DEFAULT_POST_REFRESH_GRACE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 class SessionRefreshRequestStore {
   constructor({ filePath } = {}) {
     this.filePath = filePath || "";
@@ -99,11 +102,22 @@ class SessionRefreshRequestStore {
   }
 
   markCompleted(id, patch = {}) {
-    return this.updateRequest(id, {
-      ...patch,
+    const completedAt = new Date().toISOString();
+    const normalizedPatch = normalizePatch(patch);
+    const nextPatch = {
+      ...normalizedPatch,
       status: "completed",
-      completedAt: new Date().toISOString(),
-    });
+      completedAt,
+    };
+    const newThreadId = normalizeText(normalizedPatch.newThreadId);
+    const graceTurns = resolveGraceTurns(normalizedPatch);
+    if (newThreadId && graceTurns > 0) {
+      nextPatch.postRefreshGraceThreadId = newThreadId;
+      nextPatch.postRefreshGraceRemaining = graceTurns;
+      nextPatch.postRefreshGraceStartedAt = completedAt;
+      nextPatch.postRefreshGraceLastUsedAt = "";
+    }
+    return this.updateRequest(id, nextPatch);
   }
 
   markSkipped(id, reason = "", patch = {}) {
@@ -118,6 +132,63 @@ class SessionRefreshRequestStore {
   listRequests() {
     this.load();
     return (Array.isArray(this.state.requests) ? this.state.requests : []).map((entry) => ({ ...entry }));
+  }
+
+  consumePostRefreshGrace({
+    bindingKey = "",
+    workspaceRoot = "",
+    runtimeId = "",
+    threadId = "",
+    maxAgeMs = DEFAULT_POST_REFRESH_GRACE_MAX_AGE_MS,
+  } = {}) {
+    const normalized = normalizeScope({ bindingKey, workspaceRoot, runtimeId });
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalized.bindingKey || !normalized.workspaceRoot || !normalized.runtimeId || !normalizedThreadId) {
+      return null;
+    }
+    this.load();
+    const requests = Array.isArray(this.state.requests) ? this.state.requests : [];
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    for (let index = requests.length - 1; index >= 0; index -= 1) {
+      const candidate = requests[index];
+      if (!isSameCompletedScope(candidate, normalized)) {
+        continue;
+      }
+      const graceThreadId = normalizeText(candidate.postRefreshGraceThreadId || candidate.newThreadId);
+      if (graceThreadId !== normalizedThreadId) {
+        continue;
+      }
+      const remaining = Math.max(0, Number(candidate.postRefreshGraceRemaining) || 0);
+      if (remaining <= 0) {
+        return null;
+      }
+      const startedAtMs = Date.parse(normalizeText(candidate.postRefreshGraceStartedAt || candidate.completedAt));
+      if (Number.isFinite(startedAtMs) && maxAgeMs > 0 && nowMs - startedAtMs > maxAgeMs) {
+        const expired = {
+          ...candidate,
+          postRefreshGraceRemaining: 0,
+          postRefreshGraceExpiredAt: nowIso,
+        };
+        this.state.requests[index] = expired;
+        this.save();
+        return null;
+      }
+      const updated = {
+        ...candidate,
+        postRefreshGraceRemaining: remaining - 1,
+        postRefreshGraceLastUsedAt: nowIso,
+      };
+      this.state.requests[index] = updated;
+      this.save();
+      return {
+        active: true,
+        request: { ...updated },
+        remainingBefore: remaining,
+        remainingAfter: remaining - 1,
+      };
+    }
+    return null;
   }
 
   updateRequest(id, patch = {}) {
@@ -164,8 +235,25 @@ function normalizePatch(patch = {}) {
   return out;
 }
 
+function resolveGraceTurns(patch = {}) {
+  if (Object.prototype.hasOwnProperty.call(patch, "postRefreshGraceRemaining")) {
+    return Math.max(0, Number(patch.postRefreshGraceRemaining) || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "postRefreshGraceTurns")) {
+    return Math.max(0, Number(patch.postRefreshGraceTurns) || 0);
+  }
+  return DEFAULT_POST_REFRESH_GRACE_TURNS;
+}
+
 function isSamePendingScope(entry = {}, scope = {}) {
   return normalizeText(entry?.status) === "pending"
+    && normalizeText(entry?.bindingKey) === scope.bindingKey
+    && normalizeText(entry?.workspaceRoot) === scope.workspaceRoot
+    && normalizeText(entry?.runtimeId) === scope.runtimeId;
+}
+
+function isSameCompletedScope(entry = {}, scope = {}) {
+  return normalizeText(entry?.status) === "completed"
     && normalizeText(entry?.bindingKey) === scope.bindingKey
     && normalizeText(entry?.workspaceRoot) === scope.workspaceRoot
     && normalizeText(entry?.runtimeId) === scope.runtimeId;

@@ -143,6 +143,65 @@ test("dispatchPreparedTurn applies a pending session refresh before the next nor
   assert.equal(completed.status, "completed");
   assert.equal(completed.oldThreadId, "old-thread");
   assert.equal(completed.newThreadId, "new-thread");
+  assert.equal(completed.postRefreshGraceThreadId, "new-thread");
+  assert.equal(completed.postRefreshGraceRemaining, 4);
+});
+
+test("post-refresh grace keeps fresh thread in forced recent context for a few foreground turns", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "claudecode",
+    oldThreadId: "old-thread",
+  });
+  store.markCompleted(request.id, {
+    newThreadId: "new-thread",
+    openingTurn: true,
+  });
+
+  const appLike = {
+    config: { runtime: "claudecode", workspaceRoot: "/workspace" },
+    activeAccountId: "account-1",
+    sessionRefreshRequests: store,
+    runtimeAdapter: {
+      describe() {
+        return { id: "claudecode" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding-1";
+          },
+          getThreadIdForWorkspace() {
+            return "new-thread";
+          },
+        };
+      },
+    },
+  };
+  const prepared = {
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    provider: "weixin",
+  };
+
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), false);
+  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, {
+    ...prepared,
+    provider: "system",
+  }, "/workspace"), false);
+
+  const completed = store.listRequests().find((entry) => entry.id === request.id);
+  assert.equal(completed.postRefreshGraceRemaining, 0);
 });
 
 test("session refresh requests wait through background system turns", async () => {

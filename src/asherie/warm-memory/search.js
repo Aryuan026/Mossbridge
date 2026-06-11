@@ -106,6 +106,11 @@ WARM_ROUTE_SIGNAL_TERMS.forEach((term) => {
   QUERY_SIGNAL_TERMS.add(normalizeText(term).toLowerCase());
 });
 
+const ROUTE_ONLY_QUERY_FRAME_TERMS = new Set([
+  "我们", "彼此", "之间",
+  "us", "together",
+]);
+
 Object.entries(CONCEPT_SYNONYMS).forEach(([key, values]) => {
   QUERY_SIGNAL_TERMS.add(normalizeText(key).toLowerCase());
   values.forEach((item) => QUERY_SIGNAL_TERMS.add(normalizeText(item).toLowerCase()));
@@ -368,6 +373,7 @@ function buildWarmRecallGate({
   const operational = looksLikeOperationalWarmSuppression(normalized);
   const phatic = looksLikePhaticOrReaction(normalized, contentChars);
   const strongTokenCount = tokenList.filter((token) => isStrongRecallKeyword(token)).length;
+  const ordinarySignalCount = tokenList.filter((token) => isOrdinaryWarmSignalToken(token)).length;
   const base = {
     suppressed: false,
     reason: "",
@@ -378,6 +384,7 @@ function buildWarmRecallGate({
     phatic,
     content_chars: contentChars,
     strong_token_count: strongTokenCount,
+    ordinary_signal_count: ordinarySignalCount,
     feedback_policy: explicit ? "explicit" : "high_confidence_only",
   };
 
@@ -409,6 +416,9 @@ function buildWarmRecallGate({
   }
   if (!tokenList.length && contentChars <= 28) {
     return suppressWarmRecall(base, "no_signal_tokens");
+  }
+  if (strongTokenCount < 1 && ordinarySignalCount < 2 && !answerTypeList.length) {
+    return suppressWarmRecall(base, "ordinary_low_signal");
   }
 
   return {
@@ -707,6 +717,9 @@ function isStrongRecallKeyword(token = "") {
   if (!clean || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
     return false;
   }
+  if (ROUTE_ONLY_QUERY_FRAME_TERMS.has(clean)) {
+    return false;
+  }
   if (/^[a-z0-9_-]{4,}$/i.test(clean)) {
     return true;
   }
@@ -714,6 +727,14 @@ function isStrongRecallKeyword(token = "") {
     return true;
   }
   return QUERY_SIGNAL_TERMS.has(clean);
+}
+
+function isOrdinaryWarmSignalToken(token = "") {
+  const clean = normalizeText(token).toLowerCase();
+  if (!clean || ROUTE_ONLY_QUERY_FRAME_TERMS.has(clean) || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
+    return false;
+  }
+  return isStrongRecallKeyword(clean) || /^[a-z0-9_-]{4,}$/i.test(clean) || /^[\u4e00-\u9fff]{4,}$/.test(clean);
 }
 
 function buildActivationScore(row, config = DEFAULT_WARM_MEMORY_RECALL_CONFIG) {
@@ -848,7 +869,7 @@ function buildQuerySignalTokens(rawTokens = []) {
 
   const addToken = (token) => {
     const clean = normalizeText(token).toLowerCase();
-    if (!clean || seen.has(clean)) {
+    if (!clean || seen.has(clean) || shouldDiscardQuerySignalToken(clean)) {
       return;
     }
     seen.add(clean);
@@ -857,7 +878,7 @@ function buildQuerySignalTokens(rawTokens = []) {
 
   tokens.forEach((token) => {
     const clean = normalizeText(token).toLowerCase();
-    if (!clean || QUERY_STOP_TOKENS.has(clean)) {
+    if (!clean || shouldDiscardQuerySignalToken(clean)) {
       return;
     }
     if (clean.length >= 8) {
@@ -872,18 +893,6 @@ function buildQuerySignalTokens(rawTokens = []) {
         return;
       }
     }
-    if (QUERY_NOISE_PATTERN.test(clean)) {
-      return;
-    }
-    if (
-      clean.length >= 2
-      && clean.length <= 3
-      && /^[\u4e00-\u9fff]+$/.test(clean)
-      && !Array.from(QUERY_SIGNAL_TERMS).some((term) => term.length >= 2 && clean.includes(term))
-      && clean.split("").some((char) => QUERY_BRIDGE_NOISE_CHARS.has(char))
-    ) {
-      return;
-    }
     addToken(clean);
   });
 
@@ -895,7 +904,7 @@ function buildFallbackQuerySignalTokens(tokens = []) {
   const output = [];
   (Array.isArray(tokens) ? tokens : []).forEach((token) => {
     const clean = normalizeText(token).toLowerCase();
-    if (!clean || seen.has(clean) || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
+    if (!clean || seen.has(clean) || shouldDiscardQuerySignalToken(clean)) {
       return;
     }
     if (/^[a-z0-9_-]{4,}$/i.test(clean)) {
@@ -909,6 +918,37 @@ function buildFallbackQuerySignalTokens(tokens = []) {
     }
   });
   return output;
+}
+
+function shouldDiscardQuerySignalToken(token = "") {
+  const clean = normalizeText(token).toLowerCase();
+  if (!clean || QUERY_STOP_TOKENS.has(clean) || QUERY_NOISE_PATTERN.test(clean)) {
+    return true;
+  }
+  if (looksLikePathOrAttachmentMetaToken(clean)) {
+    return true;
+  }
+  if (
+    clean.length >= 2
+    && clean.length <= 3
+    && /^[\u4e00-\u9fff]+$/.test(clean)
+    && !QUERY_SIGNAL_TERMS.has(clean)
+    && clean.split("").some((char) => QUERY_BRIDGE_NOISE_CHARS.has(char))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function looksLikePathOrAttachmentMetaToken(token = "") {
+  const clean = normalizeText(token).toLowerCase();
+  if (!clean) {
+    return false;
+  }
+  if (/^(?:bridge|mossbridge|home|owner|workspace|workspaces|inbox|outbox|attachment|sticker|image|file|data|storage|srv|asherie)[_-]/i.test(clean)) {
+    return true;
+  }
+  return /^(?:png|jpe?g|webp|gif|pdf|docx?|xlsx?|jsonl?|md|txt)$/i.test(clean);
 }
 
 function uniqueTokens(tokens = []) {
