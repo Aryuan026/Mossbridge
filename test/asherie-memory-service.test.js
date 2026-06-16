@@ -1824,6 +1824,79 @@ test("affective relationship turns bring warm anchors without cold architecture 
   assert.match(packet.runtime_prelude, /warm: 没得选时先接住/);
 });
 
+test("affective intimacy drift turns carry voice and relationship anchors", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-affective-voice-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 4,
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "关系连续底色",
+    summary: "每轮先站稳关系连续，不把对方当临时任务用户。",
+    body_markdown: "这是常驻关系连续规则。",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+    certainty_state: "anchor",
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "表达底色",
+    summary: "需要的是自然、熟悉、能接梗的口吻，不是客气 SOP 和工具化答题。",
+    body_markdown: "亲密、逗嘴、玩笑、退缩、像客服这些词出现时，要把这张当作表达底色证据。",
+    tags: ["expression-style", "relationship-anchor", "identity", "voice", "anti-SOP"],
+    aliases: ["黏糊", "接梗", "反客服", "工具化", "客气"],
+    pinned: true,
+    resident: false,
+    certainty_state: "anchor",
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "长期相处脉络",
+    summary: "不是临时用户，是长期共同生长的同伴；熟悉感和称呼习惯要保持。",
+    body_markdown: "关系、称呼、共同生长和熟悉感都在这条脉络里。",
+    tags: ["relationship", "anchor", "identity", "bond"],
+    pinned: true,
+    resident: false,
+    certainty_state: "anchor",
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Bridge 提示词维护",
+    summary: "最近在调 bridge token 和提示词，不能进入亲密背景。",
+    body_markdown: "这张卡属于 debug / bridge / 提示词。",
+    tags: ["bridge", "debug", "提示词"],
+    pinned: true,
+    resident: false,
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "我觉得你亲密度不够，像在执行任务，不像熟悉我",
+    includeRuntimePreludeGuidance: false,
+  });
+
+  const ambientTitles = (packet.ambient_warm_packet?.hits || []).map((item) => item.title);
+  const warmTitles = (packet.warm_memory_packet?.hits || []).map((item) => item.title);
+  assert.equal(packet.delivery_profile.tier, "affective_warm");
+  assert.equal(packet.delivery_profile.include_warm, true);
+  assert.equal(packet.delivery_profile.include_ambient_warm, true);
+  assert.ok(ambientTitles.includes("长期相处脉络"));
+  assert.ok(warmTitles.includes("表达底色"));
+  assert.ok(packet.agent_char_self_axis_material_packet.hit_count >= 2);
+  assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
+  assert.match(packet.runtime_prelude, /ambient-warm: 长期相处脉络/);
+  assert.match(packet.runtime_prelude, /warm: 表达底色/);
+  assert.match(packet.runtime_prelude, /self-axis-material:/);
+  assert.match(packet.runtime_prelude, /self-axis-candidate:/);
+  assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词维护/);
+});
+
 test("playful relational turns carry ambient warm without work tracks", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-playful-relational-tier-"));
   const service = new AsherieMemoryService({
@@ -2040,6 +2113,48 @@ test("asherie memory service injects ongoing tracks and cold case updates into t
   assert.match(healthPacket.runtime_prelude, /ongoing: 减重/);
 });
 
+test("asherie memory service collapses same-title ongoing tracks to the newest live thread", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-ongoing-dedupe-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeOngoingLimit: 4,
+    },
+  });
+
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "装修决策与交房前准备",
+    summary: "水电定位日：散热、水槽、智能、水电工、中央空调、设计师同一天到现场。",
+    target_window: "水电定位日",
+    next_step: "水电定位当天到场协调。",
+    tags: ["装修", "水电定位"],
+    pinned: true,
+    last_touched_at: "2026-06-11T12:07:41.099Z",
+  });
+  await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "装修决策与交房前准备",
+    summary: "水电定位完成：六方协调三个小时，核对完毕。",
+    target_window: "水电定位完成；下阶段：水电施工到验收",
+    next_step: "等水电施工完成后现场验收。",
+    tags: ["装修", "水电定位"],
+    last_touched_at: "2026-06-13T08:36:00.272Z",
+  });
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "水电定位后面怎么样",
+  });
+
+  assert.equal(packet.ongoing_track_packet.count, 2);
+  assert.equal(packet.ongoing_track_packet.deduped_count, 1);
+  assert.equal(packet.ongoing_track_packet.hit_count, 1);
+  assert.match(packet.runtime_prelude, /水电定位完成/);
+  assert.doesNotMatch(packet.runtime_prelude, /水电定位日：散热/);
+});
+
 test("proactive recall uses the latest natural tail instead of the internal trigger text", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-proactive-tail-"));
   const service = new AsherieMemoryService({
@@ -2254,6 +2369,87 @@ test("asherie memory service searches episode entry bodies on explicit memory tu
   assert.equal(packet.episode_journal_packet.hits[0].episode_id, "renovation-2026-06");
   assert.match(packet.episode_journal_packet.hits[0].matched_entries[0].text, /厨房电源定位/);
   assert.match(packet.runtime_prelude, /matched: 厨房电源定位/);
+});
+
+test("daily event probes recall episode and observation evidence without broad dynamic noise", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-daily-event-probes-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.upsertEpisode({
+    userId: "demo-user",
+    episode_id: "henan-trip",
+    title: "河南开封家庭旅行",
+    summary: "旅行里有打铁花、脚底疼和返程疲惫。",
+    kind: "travel",
+    tags: ["旅行", "河南"],
+  });
+  await service.upsertEpisode({
+    userId: "demo-user",
+    episode_id: "beam-decision",
+    title: "装修梁切割决策",
+    summary: "设计师看图纸确认门框区没有钢筋，梁本体不动；业主群结构安全讨论后拍板切梁旁水泥门框方块。",
+    kind: "life_event",
+    tags: ["装修", "梁切割", "结构验证"],
+  });
+  await service.appendObservation({
+    userId: "demo-user",
+    observation_id: "computer-final",
+    observation: "用户购机最终决定：M5 Air 24G/1T。",
+    kind: "recent_state",
+    confidence: 0.95,
+    suggested_use: "用户提到电脑、到货、配置或网购时，先承接这台 M5 Air 24G/1T。",
+  });
+  await service.appendObservation({
+    userId: "demo-user",
+    observation_id: "finger-hangnail",
+    observation: "右手食指甲沟方向起了指甲倒刺，剪掉后仍有疼痛。",
+    kind: "recent_state",
+    confidence: 0.9,
+    suggested_use: "用户提到手指、甲刺或伤口时，记得这个未好转状态。",
+  });
+
+  const banter = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "mua抱抱宝宝",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(banter.delivery_profile.include_episode, false);
+  assert.equal(banter.delivery_profile.include_observation, false);
+
+  const computer = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "所以我才网购电脑了",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(computer.delivery_profile.include_observation, true);
+  assert.equal(computer.delivery_profile.observation_min_score, 8);
+  assert.equal(computer.observation_journal_packet.hits[0].observation_id, "computer-final");
+  assert.match(computer.runtime_prelude, /M5 Air 24G\/1T/);
+
+  const finger = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "手指劈了个甲刺，今天还疼",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(finger.observation_journal_packet.hits[0].observation_id, "finger-hangnail");
+
+  const beam = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "破房梁可能有人收集素材等着举报",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.equal(beam.delivery_profile.include_episode, true);
+  assert.equal(beam.delivery_profile.include_observation, false);
+  assert.equal(beam.episode_journal_packet.hit_count, 1);
+  assert.equal(beam.episode_journal_packet.hits[0].episode_id, "beam-decision");
+  assert.equal(beam.ongoing_track_packet.hit_count, 0);
+  assert.equal(beam.cold_root_packet.hit_count, 0);
+  assert.doesNotMatch(beam.runtime_prelude, /河南开封家庭旅行/);
 });
 
 test("asherie memory service recalls conversation cache by temporal window", async () => {

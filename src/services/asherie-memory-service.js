@@ -26,6 +26,7 @@ const {
   ensureGatewayStorageLayout,
 } = require("../asherie/storage-layout");
 const {
+  buildAgentCharSelfAxisMaterialPacket,
   buildAmbientWarmMemoryPacket,
   buildMemoryRetrievalPacket,
   buildResidentWarmMemoryPacket,
@@ -259,6 +260,10 @@ class AsherieMemoryService {
             args.prelude_observation_limit || args.preludeObservationLimit,
             Number(this.config.asheriePreludeObservationLimit) || 4,
           ),
+          minScore: resolveNonNegativeNumber(
+            args.observation_min_score ?? args.observationMinScore,
+            Number(deliveryProfile.observation_min_score) || 0,
+          ),
         })
       : emptyObservationJournalPacket(scopes.scopedUserId, recallQuery, "observation_journal_delivery_suppressed");
     const episodeJournalPacket = deliveryProfile.include_episode
@@ -267,6 +272,10 @@ class AsherieMemoryService {
           limit: resolvePositiveInt(
             args.prelude_episode_limit || args.preludeEpisodeLimit,
             Number(this.config.asheriePreludeEpisodeLimit) || 3,
+          ),
+          minScore: resolvePositiveInt(
+            args.episode_min_score || args.episodeMinScore,
+            Number(deliveryProfile.episode_min_score) || 4,
           ),
         })
       : emptyEpisodeJournalPacket(scopes.scopedUserId, recallQuery, "episode_journal_delivery_suppressed");
@@ -303,6 +312,15 @@ class AsherieMemoryService {
           summary: "",
           policy: "Solitude digest is only carried for wakeup/maintenance or explicit self-review queries.",
         };
+    const agentCharSelfAxisMaterialPacket = buildAgentCharSelfAxisMaterialPacket({
+      residentWarmPacket,
+      ambientWarmPacket,
+      warmMemoryPacket,
+      limit: resolvePositiveInt(
+        args.prelude_self_axis_material_limit || args.preludeSelfAxisMaterialLimit,
+        Number(this.config.asheriePreludeSelfAxisMaterialLimit) || 4,
+      ),
+    });
     const currentTurnSignals = normalizeCurrentTurnSignals(args.current_turn_signals || args.currentTurnSignals || {});
 
     let coldMemoryVersion = "";
@@ -390,6 +408,7 @@ class AsherieMemoryService {
       episodeJournalPacket,
       observationJournalPacket,
       solitudeJournalPacket,
+      agentCharSelfAxisMaterialPacket,
       curatedHits: [],
       liteFallbackHits: localArchivePacket.hits,
       hippocovePacket: coldMemoryVersion
@@ -422,6 +441,7 @@ class AsherieMemoryService {
       episodeJournalPacket,
       observationJournalPacket,
       solitudeJournalPacket,
+      agentCharSelfAxisMaterialPacket,
       recallMode,
       forceRecentContext,
       currentTurnSignals,
@@ -439,7 +459,7 @@ class AsherieMemoryService {
       ),
       preludeAmbientWarmLimit: resolvePositiveInt(
         args.prelude_ambient_warm_limit || args.preludeAmbientWarmLimit,
-        Number(this.config.asheriePreludeAmbientWarmLimit) || 2,
+        Number(this.config.asheriePreludeAmbientWarmLimit) || 4,
       ),
       preludeOngoingLimit: resolvePositiveInt(
         args.prelude_ongoing_limit || args.preludeOngoingLimit,
@@ -492,6 +512,7 @@ class AsherieMemoryService {
       episode_attention: buildEpisodeAttentionPacket(episodeJournalPacket, currentTurnSignals),
       observation_journal_packet: observationJournalPacket,
       solitude_journal_packet: solitudeJournalPacket,
+      agent_char_self_axis_material_packet: agentCharSelfAxisMaterialPacket,
       temporal_recall_packet: {
         ...temporalRecallPacket,
         stats: temporalRows.stats,
@@ -593,6 +614,11 @@ class AsherieMemoryService {
         || args.memoryContextPacket?.observation_journal_packet
         || args.observation_journal
         || args.observationJournal
+        || {},
+      agent_char_self_axis_material: args.memory_context_packet?.agent_char_self_axis_material_packet
+        || args.memoryContextPacket?.agent_char_self_axis_material_packet
+        || args.agent_char_self_axis_material
+        || args.agentCharSelfAxisMaterial
         || {},
       surfacing: args.surfacing || {},
       gateway_events: Array.isArray(args.gateway_events || args.gatewayEvents)
@@ -1262,10 +1288,11 @@ class AsherieMemoryService {
       statuses: ["active", "blocked", "paused"],
       limit: 24,
     });
+    const visibleTracks = collapseOngoingTracksByTitle(activeTracks);
     const overviewQuery = isOngoingOverviewQuery(query);
     const eligibleTracks = normalizeText(query) && !includeZeroScore
-      ? activeTracks.filter((item) => shouldCarryOngoingTrackForQuery(item, { overviewQuery }))
-      : activeTracks;
+      ? visibleTracks.filter((item) => shouldCarryOngoingTrackForQuery(item, { overviewQuery }))
+      : visibleTracks;
     const hits = eligibleTracks.slice(0, Math.max(1, Math.min(Number(limit) || 4, 12)));
     const shadowSnippets = collectTrackShadowSnippets(hits, shadowLimit);
     const openLoops = hits
@@ -1275,6 +1302,7 @@ class AsherieMemoryService {
     const activeEntities = collectTrackEntities(hits).slice(0, 6);
     return {
       count: activeTracks.length,
+      deduped_count: visibleTracks.length,
       hit_count: hits.length,
       hits,
       open_loops: openLoops,
@@ -1289,10 +1317,11 @@ class AsherieMemoryService {
     };
   }
 
-  buildObservationJournalRuntimePacket(scopedUserId, { query = "", limit = 4 } = {}) {
+  buildObservationJournalRuntimePacket(scopedUserId, { query = "", limit = 4, minScore = 0 } = {}) {
     const packet = this.observationJournal.search(scopedUserId, {
       query,
       limit,
+      minScore,
       statuses: ["active", "tentative"],
     });
     return {
@@ -1305,11 +1334,12 @@ class AsherieMemoryService {
     };
   }
 
-  buildEpisodeJournalRuntimePacket(scopedUserId, { query = "", limit = 3 } = {}) {
+  buildEpisodeJournalRuntimePacket(scopedUserId, { query = "", limit = 3, minScore = 4 } = {}) {
     return buildEpisodeJournalPacket(this.episodeJournal, scopedUserId, {
       query,
       limit,
       statuses: ["active", "settled"],
+      minScore,
     });
   }
 
@@ -1352,6 +1382,83 @@ function shouldCarryOngoingTrackForQuery(item = {}, { overviewQuery = false } = 
     return true;
   }
   return Boolean(overviewQuery && normalizeText(item?.status) !== "done" && normalizeText(item?.status) !== "archived");
+}
+
+function collapseOngoingTracksByTitle(tracks = []) {
+  const grouped = new Map();
+  const order = [];
+  for (const track of Array.isArray(tracks) ? tracks : []) {
+    if (!track || typeof track !== "object") {
+      continue;
+    }
+    const key = buildOngoingTrackGroupKey(track);
+    if (!grouped.has(key)) {
+      grouped.set(key, track);
+      order.push(key);
+      continue;
+    }
+    const current = grouped.get(key);
+    if (shouldPreferOngoingTrackCandidate(track, current)) {
+      grouped.set(key, track);
+    }
+  }
+  return order.map((key) => grouped.get(key)).filter(Boolean);
+}
+
+function buildOngoingTrackGroupKey(track = {}) {
+  const title = normalizeText(track.title).replace(/\s+/g, " ").toLowerCase();
+  if (title) {
+    return `title:${title}`;
+  }
+  return `track:${normalizeText(track.track_id) || fallbackOngoingTrackKey(track)}`;
+}
+
+function fallbackOngoingTrackKey(track = {}) {
+  return [
+    normalizeText(track.summary),
+    normalizeText(track.target_window || track.targetWindow),
+    normalizeText(track.next_step || track.nextStep),
+  ].filter(Boolean).join("|") || "unknown";
+}
+
+function shouldPreferOngoingTrackCandidate(candidate = {}, current = {}) {
+  const candidateSparse = isSparseOngoingTrack(candidate);
+  const currentSparse = isSparseOngoingTrack(current);
+  if (candidateSparse !== currentSparse) {
+    return !candidateSparse;
+  }
+  const candidateTime = rankOngoingTrackFreshness(candidate);
+  const currentTime = rankOngoingTrackFreshness(current);
+  if (candidateTime !== currentTime) {
+    return candidateTime > currentTime;
+  }
+  const candidateScore = Number(candidate.query_score) || 0;
+  const currentScore = Number(current.query_score) || 0;
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore;
+  }
+  return normalizeText(candidate.track_id) > normalizeText(current.track_id);
+}
+
+function isSparseOngoingTrack(track = {}) {
+  return ![
+    track.summary,
+    track.target_window || track.targetWindow,
+    track.next_step || track.nextStep,
+    ...(Array.isArray(track.shadow_snippets) ? track.shadow_snippets : []),
+    ...(Array.isArray(track.progress_log) ? track.progress_log : []),
+  ].some((item) => {
+    if (item && typeof item === "object") {
+      return normalizeText(item.text || item.summary || item.snippet);
+    }
+    return normalizeText(item);
+  });
+}
+
+function rankOngoingTrackFreshness(track = {}) {
+  const raw = normalizeText(track.last_touched_at || track.lastTouchedAt || track.updated_at || track.updatedAt || track.created_at || track.createdAt);
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function buildEffectiveRecallQuery({
@@ -1406,6 +1513,7 @@ function buildRuntimePrelude({
   episodeJournalPacket,
   observationJournalPacket,
   solitudeJournalPacket,
+  agentCharSelfAxisMaterialPacket,
   currentTurnSignals,
   coldMemoryVersion,
   coldMemoryPayload,
@@ -1421,7 +1529,7 @@ function buildRuntimePrelude({
   wakeupPacket,
   preludeWarmLimit = 5,
   preludeResidentWarmLimit = 4,
-  preludeAmbientWarmLimit = 2,
+  preludeAmbientWarmLimit = 4,
   preludeOngoingLimit = 4,
   preludeEpisodeLimit = 3,
   preludeOngoingShadowLimit = 2,
@@ -1476,6 +1584,11 @@ function buildRuntimePrelude({
       const summary = normalizePreludeText(hit.summary || hit.snippet);
       lines.push(`- ambient-warm: ${title}${summary ? ` | ${summary}` : ""}`);
     });
+  }
+  const selfAxisLines = buildAgentCharSelfAxisMaterialPrelude(agentCharSelfAxisMaterialPacket);
+  if (selfAxisLines.length) {
+    ensurePreludeHeader(lines);
+    lines.push(...selfAxisLines);
   }
   if (warmHits.length) {
     ensurePreludeHeader(lines);
@@ -1665,6 +1778,32 @@ function ensurePreludeHeader(lines) {
     lines.push("[记忆参考]");
     lines.push("这是后台轻量召回。下面的当前消息是这一轮对话的中心。");
   }
+}
+
+function buildAgentCharSelfAxisMaterialPrelude(packet = {}, { limit = 3 } = {}) {
+  const candidates = Array.isArray(packet?.candidate_sources) ? packet.candidate_sources : [];
+  if (!candidates.length) {
+    return [];
+  }
+  const lines = [
+    "- self-axis-material: 给前台 assistant 在 dreaming、回顾或明确整理自我连续时使用；按第一人称自我轴写入，日常回复仍以当前消息为中心。",
+    "- self-axis-format: inner_voice_note / axis_kind / semantic_tensions / signature_moves / lived_impression / evidence_linkage / stability_state",
+  ];
+  candidates.slice(0, Math.max(1, Number(limit) || 3)).forEach((item) => {
+    const lane = normalizePreludeText(item?.source_lane) || "memory";
+    const axisKind = normalizePreludeText(item?.axis_kind_hint) || "self_image";
+    const title = normalizePreludeText(item?.title || item?.material_id) || "self_axis_material";
+    const summary = normalizePreludeText(item?.summary);
+    const evidence = item?.evidence_refs && typeof item.evidence_refs === "object"
+      ? [
+          normalizePreludeText(item.evidence_refs.relative_path),
+          ...normalizeStringList(item.evidence_refs.episode_refs).slice(0, 2),
+          ...normalizeStringList(item.evidence_refs.case_refs).slice(0, 2),
+        ].filter(Boolean).slice(0, 3).join(", ")
+      : "";
+    lines.push(`- self-axis-candidate: ${lane}/${axisKind} | ${title}${summary ? ` | ${summary}` : ""}${evidence ? ` | evidence=${evidence}` : ""}`);
+  });
+  return lines;
 }
 
 function buildWakeupRuntimePacket(wakeupStore, scopedUserId) {
@@ -2446,7 +2585,7 @@ function resolveAmbientWarmLimit({ requested, recallMode = "", config = {} } = {
   if (normalizeText(recallMode) === "proactive") {
     return resolvePositiveInt(config.asheriePreludeAmbientWarmLimit, 1);
   }
-  return resolvePositiveInt(config.asheriePreludeAmbientWarmLimit, 2);
+  return resolvePositiveInt(config.asheriePreludeAmbientWarmLimit, 4);
 }
 
 function resolveOptionalNonNegativeInt(value) {
@@ -2479,6 +2618,14 @@ function resolvePositiveInt(value, fallback) {
     return parsed;
   }
   return Math.max(1, Number(fallback) || 1);
+}
+
+function resolveNonNegativeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return Math.max(0, Number(fallback) || 0);
 }
 
 function normalizeStringList(value) {

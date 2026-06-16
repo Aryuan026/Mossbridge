@@ -530,15 +530,50 @@ function entrySearchText(entry = {}) {
 
 function queryTerms(query) {
   const normalized = normalizeText(query).toLowerCase();
-  const terms = new Set(normalized.split(/\s+/u).filter(Boolean));
-  const cjkRuns = normalized.match(/[\u4e00-\u9fff]{2,}/gu) || [];
+  const terms = new Set(normalized.split(/\s+/u).filter((token) => token.length >= 2 && /[a-z0-9]/iu.test(token)));
+  queryCjkSignalTerms(normalized).forEach((token) => terms.add(token));
+  queryExpansionTerms(normalized).forEach((token) => terms.add(token));
+  return Array.from(terms);
+}
+
+function queryCjkSignalTerms(query) {
+  const terms = new Set();
+  const stopWordPattern = /(这个|那个|这些|那些|这里|那里|今天|昨天|前天|现在|刚刚|所以|然后|因为|如果|但是|已经|可能|有人|一下|一点|什么|怎么|为什么|还有|还是|就是|觉得|知道|记得|看看|我|你|他|她|它|我们|你们|他们|的|一|是|在|了|有|和|就|都|不|这|那|啊|呀|吗|呢|吧|啦|嘛|哦|哈|呜|嘤|个|们|到|说|想|会|能|可|要|用|给|把|被|让|又|还|很|也|但|才|再|先|去|来|里|中|上|下|前|后|等|着|之|于)/gu;
+  const cjkRuns = normalizeText(query).match(/[\u4e00-\u9fff]{2,}/gu) || [];
   cjkRuns.forEach((run) => {
-    for (let size = 2; size <= Math.min(4, run.length); size += 1) {
-      for (let index = 0; index <= run.length - size; index += 1) {
-        terms.add(run.slice(index, index + size));
-      }
-    }
+    run.split(stopWordPattern)
+      .filter((chunk) => chunk && chunk.length >= 2)
+      .forEach((chunk) => {
+        if (chunk.length <= 8) {
+          terms.add(chunk);
+        }
+        for (let size = 2; size <= Math.min(4, chunk.length); size += 1) {
+          for (let index = 0; index <= chunk.length - size; index += 1) {
+            terms.add(chunk.slice(index, index + size));
+          }
+        }
+      });
   });
+  return Array.from(terms);
+}
+
+function queryExpansionTerms(query) {
+  const terms = new Set();
+  if (["房梁", "门梁", "横梁", "框架梁", "梁切", "切梁", "破房梁"].some((token) => query.includes(token))) {
+    ["梁切割", "切梁", "门框", "水泥门框", "框架梁", "结构验证", "匠心", "美居"].forEach((token) => terms.add(token));
+  }
+  if (["业主群", "邻居群", "大群", "举报", "内鬼"].some((token) => query.includes(token))) {
+    ["业主群", "邻居群", "内鬼", "开发商信息", "结构安全"].forEach((token) => terms.add(token));
+  }
+  if (["水电", "点位", "底稿", "插座", "布线"].some((token) => query.includes(token))) {
+    ["水电定位", "电源点位", "全屋电源", "智能布线", "插座规划", "底稿"].forEach((token) => terms.add(token));
+  }
+  if (["网购", "电脑", "苹果店", "macbook", "m5 air", "m5 pro"].some((token) => query.includes(token))) {
+    ["网购电脑", "苹果店", "macbook", "m5 air", "m5 pro"].forEach((token) => terms.add(token));
+  }
+  if (["手指", "甲刺", "伤口", "甲沟炎"].some((token) => query.includes(token))) {
+    ["手指", "甲刺", "伤口", "甲沟炎", "疼痛"].forEach((token) => terms.add(token));
+  }
   return Array.from(terms);
 }
 

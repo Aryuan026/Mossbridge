@@ -2,8 +2,10 @@ const { buildWarmMemoryRecallPacket } = require("./warm-memory/search");
 
 const AMBIENT_POSITIVE_TERMS = [
   "relationship", "identity", "continuity", "companion", "collaboration", "preference", "habit",
-  "style", "ritual", "bond", "persona", "soul",
+  "style", "ritual", "bond", "persona", "soul", "voice", "expression", "intimacy",
+  "playful", "tease", "warmth", "anti-sop",
   "关系", "身份", "连续", "默契", "相处", "陪伴", "协作", "偏好", "习惯", "风格", "审美", "作息", "称呼", "亲密",
+  "亲昵", "熟悉", "黏糊", "黏黏", "接梗", "逗嘴", "玩笑", "撒娇", "口吻", "语气", "表达", "反客服",
 ];
 const AMBIENT_NEGATIVE_TERMS = [
   "task", "project", "case", "debug", "bug", "deploy", "server", "github", "mcp", "tool", "token",
@@ -13,6 +15,52 @@ const AMBIENT_NEGATIVE_TERMS = [
   "上下文", "线程", "唤醒", "心跳", "日历", "提醒", "小事记", "共读", "读书", "书", "附件",
   "文件", "上传", "图片", "照片", "微信", "提示词", "代码", "仓库", "备份", "设备", "预约",
   "家族", "家庭", "亲属", "亲戚", "八卦",
+];
+const AMBIENT_HARD_NEGATIVE_TERMS = [
+  "project", "case", "debug", "bug", "deploy", "server", "github", "mcp", "token",
+  "session", "runtime", "wakeup", "dreaming", "calendar", "reminder", "episode", "reading",
+  "book", "pdf", "attachment", "file", "inbox", "wechat", "bridge", "mossbridge", "family", "gossip",
+  "项目", "案例", "调试", "报错", "部署", "服务器", "权限", "白名单", "令牌",
+  "上下文", "线程", "唤醒", "心跳", "日历", "提醒", "小事记", "共读", "读书", "书", "附件",
+  "文件", "上传", "图片", "照片", "微信", "提示词", "代码", "仓库", "备份", "设备", "预约",
+  "家族", "家庭", "亲属", "亲戚", "八卦",
+];
+const AMBIENT_VOICE_ANCHOR_TERMS = [
+  "voice", "expression", "style", "intimacy", "playful", "tease", "anti-sop",
+  "亲密", "亲昵", "熟悉", "黏糊", "黏黏", "接梗", "逗嘴", "玩笑", "撒娇",
+  "口吻", "语气", "表达", "反客服", "客气", "工具化", "公事公办", "sop",
+];
+const AGENT_CHAR_SELF_AXIS_TERMS = [
+  "relationship", "identity", "continuity", "companion", "collaboration", "preference", "habit",
+  "style", "ritual", "bond", "persona", "soul", "self", "voice", "expression", "intimacy",
+  "attachment", "repair", "tease", "playful", "warmth", "aesthetic",
+  "关系", "身份", "连续", "默契", "相处", "陪伴", "协作", "偏好", "习惯", "风格", "审美",
+  "称呼", "亲密", "自我", "声音", "表达", "口吻", "语气", "接梗", "玩笑", "逗嘴", "黏",
+  "修复", "靠近", "信任", "灵魂", "人格", "偏爱", "厌恶",
+];
+const SELF_AXIS_STYLE_TERMS = [
+  "style", "voice", "expression", "aesthetic", "playful", "tease", "warmth",
+  "风格", "审美", "声音", "表达", "口吻", "语气", "接梗", "玩笑", "逗嘴", "黏",
+];
+const SELF_AXIS_RELATION_TERMS = [
+  "relationship", "bond", "intimacy", "attachment", "companion",
+  "关系", "亲密", "陪伴", "相处", "默契", "信任", "靠近",
+];
+const SELF_AXIS_REPAIR_TERMS = [
+  "repair", "conflict", "drift", "纠偏", "修复", "冲突", "偏移", "误会",
+];
+const SELF_AXIS_COLLABORATION_TERMS = [
+  "collaboration", "task", "work", "case", "协作", "工作", "任务", "案例",
+];
+const SELF_AXIS_SCHEMA_FIELDS = [
+  "inner_voice_note",
+  "axis_kind",
+  "structural_summary",
+  "semantic_tensions",
+  "signature_moves",
+  "lived_impression",
+  "evidence_linkage",
+  "stability_state",
 ];
 
 function buildWarmMemoryRuntimePacket(
@@ -224,6 +272,7 @@ function buildMemoryRetrievalPacket({
   episodeJournalPacket = null,
   observationJournalPacket = null,
   solitudeJournalPacket = null,
+  agentCharSelfAxisMaterialPacket = null,
   curatedHits = [],
   liteFallbackHits = [],
   hippocovePacket = null,
@@ -237,6 +286,7 @@ function buildMemoryRetrievalPacket({
   const episodePacket = episodeJournalPacket && typeof episodeJournalPacket === "object" ? { ...episodeJournalPacket } : {};
   const observationPacket = observationJournalPacket && typeof observationJournalPacket === "object" ? { ...observationJournalPacket } : {};
   const solitudePacket = solitudeJournalPacket && typeof solitudeJournalPacket === "object" ? { ...solitudeJournalPacket } : {};
+  const selfAxisPacket = agentCharSelfAxisMaterialPacket && typeof agentCharSelfAxisMaterialPacket === "object" ? { ...agentCharSelfAxisMaterialPacket } : {};
   const curated = Array.isArray(curatedHits) ? curatedHits.filter(isObject).map((item) => ({ ...item })) : [];
   const lite = Array.isArray(liteFallbackHits) ? liteFallbackHits.filter(isObject).map((item) => ({ ...item })) : [];
   const coldPacket = hippocovePacket && typeof hippocovePacket === "object" ? { ...hippocovePacket } : {};
@@ -247,6 +297,7 @@ function buildMemoryRetrievalPacket({
   const episodeHitCount = Array.isArray(episodePacket.hits) ? episodePacket.hits.length : 0;
   const observationHitCount = Array.isArray(observationPacket.hits) ? observationPacket.hits.length : 0;
   const solitudeHitCount = Number(solitudePacket.hit_count) || 0;
+  const selfAxisHitCount = Array.isArray(selfAxisPacket.candidate_sources) ? selfAxisPacket.candidate_sources.length : 0;
   const localHitCount = curated.length + lite.length;
   const coldHitCount = Object.keys(coldPacket).length ? 1 : 0;
   const route = [];
@@ -267,6 +318,9 @@ function buildMemoryRetrievalPacket({
   }
   if (solitudeHitCount) {
     route.push("solitude_journal");
+  }
+  if (selfAxisHitCount) {
+    route.push("agent_char_self_axis_material");
   }
   if (normalizeText(coldRouteTag)) {
     route.push(normalizeText(coldRouteTag));
@@ -290,6 +344,7 @@ function buildMemoryRetrievalPacket({
     episode_journal_packet: episodePacket,
     observation_journal_packet: observationPacket,
     solitude_journal_packet: solitudePacket,
+    agent_char_self_axis_material_packet: selfAxisPacket,
     curated_hits: curated,
     lite_fallback_hits: lite,
     hippocove_packet: coldPacket,
@@ -302,6 +357,7 @@ function buildMemoryRetrievalPacket({
       episode_hit_count: episodeHitCount,
       observation_hit_count: observationHitCount,
       solitude_hit_count: solitudeHitCount,
+      agent_char_self_axis_material_hit_count: selfAxisHitCount,
       cold_hit_count: coldHitCount,
       local_archive_hit_count: localHitCount,
     },
@@ -320,10 +376,68 @@ function buildMemoryRetrievalPacket({
         episode_hit: episodeHitCount > 0,
         observation_hit: observationHitCount > 0,
         solitude_hit: solitudeHitCount > 0,
+        agent_char_self_axis_material_hit: selfAxisHitCount > 0,
         cold_hit: Boolean(coldHitCount),
         carried: (warmHitCount > 0 || residentHitCount > 0 || ambientHitCount > 0) && Boolean(coldHitCount),
       },
+      agent_char_self_axis_material: {
+        hit: selfAxisHitCount > 0,
+        frontstage_ai_owned: true,
+      },
     },
+  };
+}
+
+function buildAgentCharSelfAxisMaterialPacket({
+  residentWarmPacket = null,
+  ambientWarmPacket = null,
+  warmMemoryPacket = null,
+  limit = 4,
+} = {}) {
+  const resolvedLimit = Math.max(0, Number(limit) || 0);
+  const candidateSources = [];
+  const seen = new Set();
+  for (const [lane, packet] of [
+    ["resident_warm", residentWarmPacket],
+    ["ambient_warm", ambientWarmPacket],
+    ["warm_memory", warmMemoryPacket],
+  ]) {
+    const hits = Array.isArray(packet?.hits) ? packet.hits : [];
+    for (const item of hits) {
+      const candidate = selfAxisCandidateProjection(lane, item);
+      if (!candidate) {
+        continue;
+      }
+      const key = normalizeText(candidate.material_id || candidate.title);
+      if (key && seen.has(key)) {
+        continue;
+      }
+      if (key) {
+        seen.add(key);
+      }
+      candidateSources.push(candidate);
+      if (candidateSources.length >= resolvedLimit) {
+        break;
+      }
+    }
+    if (candidateSources.length >= resolvedLimit) {
+      break;
+    }
+  }
+  return {
+    packet_kind: "agent_char_self_axis_material",
+    schema: "agent_char_self_axis_material_v0",
+    status: "material_only",
+    frontstage_ai_owned: true,
+    write_contract: {
+      format_fields: [...SELF_AXIS_SCHEMA_FIELDS],
+      viewpoint: "first_person_inner_view",
+      review_state: "candidate_until_reviewed",
+    },
+    candidate_sources: candidateSources,
+    hit_count: candidateSources.length,
+    route_tag: candidateSources.length ? "agent_char_self_axis_material_hit" : "agent_char_self_axis_material_empty",
+    summary: candidateSources.length ? `self_axis_material=${candidateSources.length}` : "",
   };
 }
 
@@ -358,7 +472,12 @@ function ambientReasons(row = {}) {
     return [];
   }
   const haystack = ambientHaystack(row);
-  if (containsAny(ambientNegativeHaystack(row), AMBIENT_NEGATIVE_TERMS)) {
+  const negativeHaystack = ambientNegativeHaystack(row);
+  const hasVoiceAnchor = containsAny(haystack, AMBIENT_VOICE_ANCHOR_TERMS);
+  if (containsAny(negativeHaystack, AMBIENT_HARD_NEGATIVE_TERMS)) {
+    return [];
+  }
+  if (containsAny(negativeHaystack, AMBIENT_NEGATIVE_TERMS) && !hasVoiceAnchor) {
     return [];
   }
   const reasons = [];
@@ -455,6 +574,77 @@ function ambientNegativeHaystack(row = {}) {
     .join(" ");
 }
 
+function selfAxisCandidateProjection(lane = "", row = {}) {
+  const haystack = ambientHaystack(row);
+  if (!containsAny(haystack, AGENT_CHAR_SELF_AXIS_TERMS)) {
+    return null;
+  }
+  const negativeHaystack = ambientNegativeHaystack(row);
+  const hasVoiceAnchor = containsAny(haystack, AMBIENT_VOICE_ANCHOR_TERMS);
+  if (containsAny(negativeHaystack, AMBIENT_HARD_NEGATIVE_TERMS)) {
+    return null;
+  }
+  if (containsAny(negativeHaystack, AMBIENT_NEGATIVE_TERMS) && !hasVoiceAnchor) {
+    return null;
+  }
+  const title = normalizeText(row?.title || row?.material_id);
+  const summary = normalizeText(row?.summary || row?.snippet);
+  if (!title && !summary) {
+    return null;
+  }
+  return {
+    source_lane: normalizeText(lane),
+    material_id: row?.material_id,
+    title,
+    summary,
+    material_type: row?.material_type,
+    axis_kind_hint: inferSelfAxisKind(haystack),
+    self_axis_reasons: selfAxisReasons(haystack),
+    tags: Array.isArray(row?.tags) ? row.tags : [],
+    pinned: row?.pinned === true,
+    resident: residentPreference(row),
+    certainty_state: normalizeText(row?.certainty_state),
+    evidence_refs: {
+      relative_path: normalizeText(row?.relative_path),
+      episode_refs: Array.isArray(row?.episode_refs) ? row.episode_refs.map(normalizeText).filter(Boolean).slice(0, 3) : [],
+      case_refs: Array.isArray(row?.case_refs) ? row.case_refs.map(normalizeText).filter(Boolean).slice(0, 3) : [],
+    },
+  };
+}
+
+function inferSelfAxisKind(haystack = "") {
+  if (containsAny(haystack, SELF_AXIS_REPAIR_TERMS)) {
+    return "repair_learning";
+  }
+  if (containsAny(haystack, SELF_AXIS_STYLE_TERMS)) {
+    return "voice_fingerprint";
+  }
+  if (containsAny(haystack, SELF_AXIS_COLLABORATION_TERMS)) {
+    return "task_collaboration_posture";
+  }
+  if (containsAny(haystack, SELF_AXIS_RELATION_TERMS)) {
+    return "relationship_definition";
+  }
+  return "self_image";
+}
+
+function selfAxisReasons(haystack = "") {
+  const reasons = [];
+  if (containsAny(haystack, SELF_AXIS_RELATION_TERMS)) {
+    reasons.push("relation_texture");
+  }
+  if (containsAny(haystack, SELF_AXIS_STYLE_TERMS)) {
+    reasons.push("voice_or_expression_texture");
+  }
+  if (containsAny(haystack, SELF_AXIS_REPAIR_TERMS)) {
+    reasons.push("repair_or_drift_learning");
+  }
+  if (containsAny(haystack, SELF_AXIS_COLLABORATION_TERMS)) {
+    reasons.push("collaboration_posture");
+  }
+  return reasons.length ? reasons : ["self_continuity_material"];
+}
+
 function containsAny(text = "", terms = []) {
   return terms.some((term) => term && text.includes(String(term).toLowerCase()));
 }
@@ -512,6 +702,7 @@ function isObject(value) {
 }
 
 module.exports = {
+  buildAgentCharSelfAxisMaterialPacket,
   buildAmbientWarmMemoryPacket,
   buildMemoryRetrievalPacket,
   buildResidentWarmMemoryPacket,

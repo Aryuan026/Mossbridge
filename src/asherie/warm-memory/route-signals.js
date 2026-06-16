@@ -1,6 +1,9 @@
 const RELATIONSHIP_ROW_TERMS = Object.freeze([
-  "relationship", "bond", "anchor", "meaningful", "important", "intimate",
+  "relationship", "bond", "anchor", "meaningful", "important", "intimate", "intimacy",
+  "voice", "expression", "style", "playful", "tease", "warmth", "anti-sop",
   "关系", "重要", "珍贵", "有意义", "锚点", "陪伴", "牵绊", "羁绊",
+  "亲密", "亲昵", "熟悉", "黏糊", "黏黏", "接梗", "逗嘴", "玩笑", "撒娇",
+  "口吻", "语气", "表达", "反客服", "客气", "工具化",
 ]);
 
 const FAMILY_STORY_ROW_TERMS = Object.freeze([
@@ -29,8 +32,10 @@ const BROAD_IMPORTANCE_QUERY_TERMS = Object.freeze([
 ]);
 
 const RELATIONAL_QUERY_TERMS = Object.freeze([
-  "relationship", "bond", "us", "together",
-  "关系", "我们", "彼此", "之间",
+  "relationship", "bond", "us", "together", "intimacy", "voice", "expression", "playful", "tease",
+  "关系", "我们", "彼此", "之间", "亲密", "亲昵", "熟悉", "黏糊", "黏黏",
+  "接梗", "逗嘴", "玩笑", "撒娇", "调戏", "退缩", "口吻", "语气", "表达",
+  "反客服", "客气", "工具化", "公事公办",
 ]);
 
 const SYMBOLIC_QUERY_TERMS = Object.freeze([
