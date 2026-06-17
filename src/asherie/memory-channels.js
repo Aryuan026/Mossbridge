@@ -30,6 +30,13 @@ const AMBIENT_VOICE_ANCHOR_TERMS = [
   "亲密", "亲昵", "熟悉", "黏糊", "黏黏", "接梗", "逗嘴", "玩笑", "撒娇",
   "口吻", "语气", "表达", "反客服", "客气", "工具化", "公事公办", "sop",
 ];
+const AMBIENT_WORK_ARTIFACT_TERMS = [
+  "benchmark", "evaluation", "regression", "deploy", "deployment", "server",
+  "github", "mcp", "token", "session", "runtime", "claudecode", "codex", "hippocove",
+  "mossbridge", "cyberboss", "coverage", "pytest", "unittest",
+  "评测", "测试", "回归", "部署", "服务器", "仓库", "接口", "权限", "白名单",
+  "令牌", "上下文", "线程", "工具", "代码", "单测", "冒烟", "冷树", "冷记忆树",
+];
 const AGENT_CHAR_SELF_AXIS_TERMS = [
   "relationship", "identity", "continuity", "companion", "collaboration", "preference", "habit",
   "style", "ritual", "bond", "persona", "soul", "self", "voice", "expression", "intimacy",
@@ -474,6 +481,9 @@ function ambientReasons(row = {}) {
   const haystack = ambientHaystack(row);
   const negativeHaystack = ambientNegativeHaystack(row);
   const hasVoiceAnchor = containsAny(haystack, AMBIENT_VOICE_ANCHOR_TERMS);
+  if (isWorkArtifactWithoutVoiceAnchor(row)) {
+    return [];
+  }
   if (containsAny(negativeHaystack, AMBIENT_HARD_NEGATIVE_TERMS)) {
     return [];
   }
@@ -581,6 +591,9 @@ function selfAxisCandidateProjection(lane = "", row = {}) {
   }
   const negativeHaystack = ambientNegativeHaystack(row);
   const hasVoiceAnchor = containsAny(haystack, AMBIENT_VOICE_ANCHOR_TERMS);
+  if (isWorkArtifactWithoutVoiceAnchor(row)) {
+    return null;
+  }
   if (containsAny(negativeHaystack, AMBIENT_HARD_NEGATIVE_TERMS)) {
     return null;
   }
@@ -654,6 +667,9 @@ function residentPreference(row = {}) {
   if (explicit !== null) {
     return explicit;
   }
+  if (isWorkArtifactWithoutVoiceAnchor(row)) {
+    return null;
+  }
   if (row?.pinned === true) {
     return true;
   }
@@ -662,6 +678,13 @@ function residentPreference(row = {}) {
     return true;
   }
   return null;
+}
+
+function isWorkArtifactWithoutVoiceAnchor(row = {}) {
+  const haystack = ambientHaystack(row);
+  const negativeHaystack = ambientNegativeHaystack(row);
+  return containsAny(negativeHaystack, AMBIENT_WORK_ARTIFACT_TERMS)
+    && !containsAny(haystack, AMBIENT_VOICE_ANCHOR_TERMS);
 }
 
 function residentRouteReasons(row = {}) {

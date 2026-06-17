@@ -1617,6 +1617,15 @@ test("short banter carries resident and ambient warm without broad memory layers
     pinned: true,
     resident: false,
   });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Hippocove 记忆系统 benchmark",
+    summary: "冷记忆树回归测试和证据召回评分进展，不能当成日常关系空气。",
+    body_markdown: "这是工作产物和评测记录。",
+    tags: ["memory", "benchmark", "评测", "协作"],
+    pinned: true,
+    certainty_state: "settled",
+  });
   await service.upsertOngoingTrack({
     userId: "demo-user",
     title: "插件捕获与发布准备",
@@ -1661,9 +1670,61 @@ test("short banter carries resident and ambient warm without broad memory layers
   assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
   assert.match(packet.runtime_prelude, /ambient-warm: 日常相处空气/);
   assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词维护/);
+  assert.doesNotMatch(packet.runtime_prelude, /Hippocove 记忆系统 benchmark/);
   assert.doesNotMatch(packet.runtime_prelude, /ongoing: 插件捕获/);
   assert.doesNotMatch(packet.runtime_prelude, /闲聊读书测试/);
   assert.doesNotMatch(packet.runtime_prelude, /observation:/);
+});
+
+test("runtime prelude budget keeps resident anchors while trimming dynamic evidence", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-budget-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "预算测试常驻关系",
+    summary: "预算紧张时也不能丢 resident anchor。",
+    body_markdown: "resident continuity anchor",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+  });
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "预算测试热场空气",
+    summary: "预算紧张时仍保留轻量 ambient warm。",
+    body_markdown: "relationship continuity ambient warmth",
+    tags: ["relationship", "continuity", "称呼"],
+    certainty_state: "settled",
+  });
+
+  const longChunk = "budget regression anchor dynamic evidence ".repeat(220);
+  for (let index = 1; index <= 40; index += 1) {
+    await service.writeWarmMaterial({
+      userId: "demo-user",
+      title: `Dynamic Evidence ${index}`,
+      summary: `${longChunk}${index}`,
+      body_markdown: `${longChunk}${index}`,
+      tags: ["budget", "regression", "anchor"],
+    });
+  }
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "mua抱抱宝宝，记得 budget regression anchor 吗",
+    includeRuntimePreludeGuidance: false,
+    limit: 40,
+    preludeWarmLimit: 40,
+  });
+
+  assert.ok(packet.runtime_prelude.length <= 18000);
+  assert.match(packet.runtime_prelude, /resident-anchor: 预算测试常驻关系/);
+  assert.match(packet.runtime_prelude, /memory-budget: dynamic evidence shortened/);
 });
 
 test("plain work tasks keep ambient warm without broad dynamic layers", async () => {

@@ -1770,7 +1770,7 @@ function buildRuntimePrelude({
     lines.push(...snippets);
   }
 
-  return lines.join("\n").trim();
+  return applyRuntimePreludeBudget(lines).join("\n").trim();
 }
 
 function ensurePreludeHeader(lines) {
@@ -1778,6 +1778,82 @@ function ensurePreludeHeader(lines) {
     lines.push("[记忆参考]");
     lines.push("这是后台轻量召回。下面的当前消息是这一轮对话的中心。");
   }
+}
+
+function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
+  const normalizedLines = Array.isArray(lines)
+    ? lines.map((line) => normalizePreludeText(line)).filter(Boolean)
+    : [];
+  if (normalizedLines.join("\n").length <= hardLimit) {
+    return normalizedLines;
+  }
+
+  const protectedPrefixes = [
+    "[记忆参考]",
+    "这是后台轻量召回。",
+    "- 记忆自维护：",
+    "- 普通聊天不强行动作；",
+    "- 证据缺口：",
+    "- 检索方式：",
+    "- 常驻层：",
+    "- 小事记：",
+    "- 观察簿：",
+    "- 系统反馈：",
+    "- 前台自由：",
+    "- resident-anchor:",
+    "- ambient-warm:",
+    "- self-axis-material:",
+    "- self-axis-candidate:",
+    "- recall-focus:",
+    "- 主动唤醒当前态：",
+    "- 相对时间校准：",
+    "- session-handoff:",
+    "- current-time-anchor:",
+    "- session-time-guard:",
+    "- session-core:",
+    "- session-last-outcome:",
+    "- session-digest:",
+    "- hot-context:",
+  ];
+  const mediumPrefixes = [
+    "- warm:",
+    "- cold-root:",
+    "- cold-vine:",
+    "- cold:",
+    "- cold-snapshot:",
+    "- temporal-recall:",
+    "- temporal-turn:",
+  ];
+  const protectedLines = [];
+  const mediumLines = [];
+  const dynamicLines = [];
+  for (const line of normalizedLines) {
+    if (protectedPrefixes.some((prefix) => line.startsWith(prefix))) {
+      protectedLines.push(line);
+    } else if (mediumPrefixes.some((prefix) => line.startsWith(prefix))) {
+      mediumLines.push(line);
+    } else {
+      dynamicLines.push(line);
+    }
+  }
+
+  const output = [];
+  let trimmed = 0;
+  for (const line of [...protectedLines, ...mediumLines, ...dynamicLines]) {
+    const candidate = [...output, line].join("\n");
+    if (candidate.length <= hardLimit) {
+      output.push(line);
+    } else {
+      trimmed += 1;
+    }
+  }
+  if (trimmed > 0) {
+    const notice = `- memory-budget: dynamic evidence shortened (${trimmed} lines); use memory tools for detail.`;
+    if ([...output, notice].join("\n").length <= hardLimit) {
+      output.push(notice);
+    }
+  }
+  return output.length ? output : normalizedLines.slice(0, 1);
 }
 
 function buildAgentCharSelfAxisMaterialPrelude(packet = {}, { limit = 3 } = {}) {
