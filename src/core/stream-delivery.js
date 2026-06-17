@@ -693,7 +693,10 @@ class StreamDelivery {
   }
 
   notifyRuntimeNotice(state, runtimeNotice, sourceText = "") {
-    if (!runtimeNotice || runtimeNotice.kind !== RUNTIME_NOTICE_KIND.CAPACITY) {
+    if (
+      !runtimeNotice
+      || ![RUNTIME_NOTICE_KIND.CAPACITY, RUNTIME_NOTICE_KIND.CAPACITY_WARNING].includes(runtimeNotice.kind)
+    ) {
       return;
     }
     if (typeof this.onRuntimeNotice !== "function") {

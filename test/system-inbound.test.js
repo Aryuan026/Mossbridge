@@ -92,7 +92,7 @@ test("random checkin system prompt stays in lightweight no-tool mode", () => {
   assert.ok(prepared.text.length < 2400);
 });
 
-test("stable WeChat guidance is delivered once per runtime thread and pressure trims memory prelude", async () => {
+test("foreground turns keep maintenance guidance out while pressure still trims memory prelude", async () => {
   const captureArgs = [];
   const appLike = {
     config: {
@@ -163,21 +163,89 @@ test("stable WeChat guidance is delivered once per runtime thread and pressure t
     "/workspace",
   );
 
-  assert.match(first.text, /微信前台对话提醒/);
-  assert.match(first.text, /关系、情绪和事实不用排队/);
+  assert.doesNotMatch(first.text, /微信前台对话提醒/);
+  assert.doesNotMatch(first.text, /当前可用动作提醒/);
+  assert.doesNotMatch(first.text, /记忆自维护|证据缺口|风险分层|常驻层|观察簿|前台自由/);
+  assert.match(first.text, /warm: useful card/);
   assert.doesNotMatch(first.text, /先接住这一拍/);
   assert.doesNotMatch(second.text, /微信前台对话提醒/);
-  assert.equal(captureArgs[0].includeRuntimePreludeGuidance, true);
+  assert.equal(captureArgs[0].includeRuntimePreludeGuidance, false);
   assert.equal(captureArgs[1].includeRuntimePreludeGuidance, false);
   assert.equal(captureArgs[0].preludeRecentThreadLimit, 2);
   assert.equal(captureArgs[0].preludeHotUpstreamLimit, 2);
   assert.equal(captureArgs[0].preludeHotTurnLimit, 3);
   assert.equal(captureArgs[0].coldVineLimit, 1);
   assert.equal(first.packet.delivery.mode, "inbound");
-  assert.equal(first.packet.delivery.include_stable_guidance, true);
+  assert.equal(first.packet.delivery.include_stable_guidance, false);
   assert.ok(first.packet.delivery.estimated_tokens > 0);
   assert.equal(second.packet.delivery.include_stable_guidance, false);
   assert.equal(second.packet.delivery.policy.includes("not injected"), true);
+});
+
+test("system maintenance turns may carry runtime maintenance guidance", async () => {
+  const captureArgs = [];
+  const appLike = {
+    config: {
+      workspaceId: "default",
+    },
+    activeAccountId: "account-1",
+    stableTurnGuidanceKeys: new Set(),
+    residentAnchorPreludeKeys: new Set(),
+    projectDomains: {
+      memory: {
+        async captureContextPacket(args) {
+          captureArgs.push(args);
+          return {
+            runtime_prelude: args.includeRuntimePreludeGuidance
+              ? "- 记忆自维护：后台维护轮次可以携带操作手册。"
+              : "- warm: useful card",
+          };
+        },
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "codex" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+          getThreadIdForWorkspace() {
+            return "thread-1";
+          },
+        };
+      },
+    },
+    resolveResidentAnchorPreludeKey: MossbridgeApp.prototype.resolveResidentAnchorPreludeKey,
+    resolveStableTurnGuidanceKey: MossbridgeApp.prototype.resolveStableTurnGuidanceKey,
+    markStableTurnGuidanceDelivered: MossbridgeApp.prototype.markStableTurnGuidanceDelivered,
+    resolveMemoryContextPressureProfile: MossbridgeApp.prototype.resolveMemoryContextPressureProfile,
+    resolvePreparedRuntimeThreadId: MossbridgeApp.prototype.resolvePreparedRuntimeThreadId,
+  };
+  const normalized = {
+    provider: "system",
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    kind: "memory_metabolism",
+    originalText: "run memory maintenance",
+    text: "run memory maintenance",
+  };
+
+  const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call(
+    appLike,
+    normalized,
+    normalized.text,
+    "/workspace",
+  );
+
+  assert.equal(captureArgs[0].includeRuntimePreludeGuidance, true);
+  assert.equal(captureArgs[0].recallMode, "proactive");
+  assert.match(result.text, /记忆自维护/);
+  assert.equal(result.packet.delivery.mode, "inbound");
+  assert.equal(result.packet.delivery.include_stable_guidance, true);
 });
 
 test("random checkin first-event failures recover backstage without bridge text", async () => {
@@ -851,7 +919,7 @@ test("ordinary wechat turns keep dynamic memory context lean when no runtime thr
   assert.match(result.text, /宝宝😏？/);
 });
 
-test("tool hover mentions AI-calendar wakeups on the first keyed guidance turn", async () => {
+test("foreground reminder turns do not receive tool-hover maintenance guidance", async () => {
   const appLike = {
     config: {
       workspaceId: "default",
@@ -898,9 +966,11 @@ test("tool hover mentions AI-calendar wakeups on the first keyed guidance turn",
     text: "明天提醒我继续看这个",
   }, "明天提醒我继续看这个", "/workspace");
 
-  assert.match(result.text, /AI 日历\/提醒/);
-  assert.match(result.text, /到期唤醒会携带完整工具能力/);
-  assert.match(result.text, /随机心跳只负责轻量续联/);
+  assert.doesNotMatch(result.text, /AI 日历\/提醒/);
+  assert.doesNotMatch(result.text, /到期唤醒会携带完整工具能力/);
+  assert.doesNotMatch(result.text, /随机心跳只负责轻量续联/);
+  assert.match(result.text, /\[Mossbridge memory context\]/);
+  assert.match(result.text, /明天提醒我继续看这个/);
 });
 
 test("image attachments inject view_image instructions for runtimes that support it", async () => {

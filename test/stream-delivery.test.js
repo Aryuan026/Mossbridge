@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const { StreamDelivery } = require("../src/core/stream-delivery");
 const { DeferredSystemReplyStore } = require("../src/core/deferred-system-reply-store");
+const { RUNTIME_NOTICE_KIND } = require("../src/core/runtime-notices");
 
 const DEFERRED_REPLY_NOTICE = "[Mossbridge] deferred_delivery\nsource: bridge\nstatus: previous_delivery_failed\nreason: wechat_context_token_expired_or_send_failed\nresult: replaying_with_current_context_token\ntuning: /chunk <number>";
 const DEFERRED_PLAIN_REPLY_HEADER = "===== [Mossbridge] pending_plain_reply =====";
@@ -17,6 +18,7 @@ function createHarness({
   getKnownContextTokens,
   onOutboundDelivery,
   onDeferredSystemReply,
+  onRuntimeNotice,
   transientDeliveryRetryScheduleMs,
   runtimeId = "",
 } = {}) {
@@ -50,6 +52,7 @@ function createHarness({
     runtimeId,
     onOutboundDelivery,
     onDeferredSystemReply,
+    onRuntimeNotice,
     transientDeliveryRetryScheduleMs,
   });
   return { sent, streamDelivery, bindingByThreadId };
@@ -375,6 +378,36 @@ test("user runtime capacity notices are rewritten into bridge notices", async ()
   assert.match(sent[0].text, /result: no_runtime_reply/);
   assert.match(sent[0].text, /10:40pm \(Asia\/Shanghai\)/);
   assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
+});
+
+test("user runtime capacity warnings are rewritten and reported without hard cooldown copy", async () => {
+  const notices = [];
+  const { sent, streamDelivery } = createHarness({
+    onRuntimeNotice(payload) {
+      notices.push(payload);
+    },
+  });
+  streamDelivery.queueReplyTargetForThread("thread-warning-user", {
+    userId: "user-warning",
+    contextToken: "ctx-warning",
+    provider: "weixin",
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-warning-user",
+    turnId: "turn-warning-user",
+    itemId: "item-warning-user",
+    text: "Claude Code: you have 5 messages remaining until reset.",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /^\[Mossbridge] runtime_usage_warning/);
+  assert.match(sent[0].text, /status: usage_warning/);
+  assert.match(sent[0].text, /result: runtime_still_available/);
+  assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].kind, RUNTIME_NOTICE_KIND.CAPACITY_WARNING);
+  assert.equal(notices[0].threadId, "thread-warning-user");
 });
 
 test("system send_message JSON sends only the message text", async () => {

@@ -26,6 +26,17 @@ test("runtime notice shield avoids natural-language false positives", () => {
   assert.equal(classifyRuntimeNotice("这个接口要限制输出长度，不然微信会分片。"), "");
 });
 
+test("runtime notice shield distinguishes capacity warnings from hard cooldowns", () => {
+  assert.equal(
+    classifyRuntimeNotice("Claude Code: you have 5 messages remaining until reset."),
+    RUNTIME_NOTICE_KIND.CAPACITY_WARNING,
+  );
+  assert.equal(
+    classifyRuntimeNotice("You have 2 requests left before reset."),
+    RUNTIME_NOTICE_KIND.CAPACITY_WARNING,
+  );
+});
+
 test("runtime notice shield replaces user-facing capacity notices and suppresses system ones", () => {
   const user = shieldRuntimeNoticeForDelivery("API Error: HTTP 429 rate limit exceeded", {
     provider: "weixin",
@@ -44,4 +55,19 @@ test("runtime notice shield replaces user-facing capacity notices and suppresses
   assert.equal(system.shielded, true);
   assert.equal(system.action, "silent");
   assert.equal(system.text, "");
+});
+
+test("runtime notice shield rewrites capacity warnings as bridge status without hard cooldown wording", () => {
+  const user = shieldRuntimeNoticeForDelivery("Claude Code: you have 5 messages remaining until reset.", {
+    provider: "weixin",
+  });
+  assert.equal(user.shielded, true);
+  assert.equal(user.kind, RUNTIME_NOTICE_KIND.CAPACITY_WARNING);
+  assert.equal(user.action, "replace");
+  assert.match(user.text, /^\[Mossbridge] runtime_usage_warning/);
+  assert.match(user.text, /source: bridge/);
+  assert.match(user.text, /runtime: ClaudeCode/);
+  assert.match(user.text, /status: usage_warning/);
+  assert.match(user.text, /result: runtime_still_available/);
+  assert.doesNotMatch(user.text, /继续接住|记忆断|你的消息没送到/);
 });

@@ -56,6 +56,7 @@ const {
   buildRuntimeCapacityNotice,
   formatBridgeNotice,
   isRuntimeCapacityNotice,
+  isRuntimeCapacitySignal,
   shieldRuntimeNoticeForDelivery,
 } = require("./runtime-notices");
 
@@ -617,6 +618,9 @@ class MossbridgeApp {
   }
 
   recordRuntimeNotice({ text = "", threadId = "", source = "", provider = "" } = {}) {
+    if (!isRuntimeCapacitySignal(text)) {
+      return null;
+    }
     if (!isRuntimeCapacityNotice(text)) {
       return null;
     }
@@ -3882,7 +3886,7 @@ class MossbridgeApp {
       return;
     }
     const rawText = normalizeText(text) || "❌ Execution failed";
-    if (isRuntimeCapacityNotice(rawText)) {
+    if (isRuntimeCapacitySignal(rawText)) {
       this.recordRuntimeNotice({
         text: rawText,
         threadId,
@@ -4012,7 +4016,8 @@ class MossbridgeApp {
         residentPreludeKey && this.residentAnchorPreludeKeys.has(residentPreludeKey),
       );
       const stableGuidanceKey = this.resolveStableTurnGuidanceKey?.(normalized, workspaceRoot) || "";
-      const includeStableTurnGuidance = shouldIncludeStableTurnGuidance(
+      const includeRuntimeMaintenanceGuidance = shouldIncludeRuntimeMaintenanceGuidance(
+        normalized,
         stableGuidanceKey,
         this.stableTurnGuidanceKeys,
       );
@@ -4031,7 +4036,7 @@ class MossbridgeApp {
         forceRecentContext,
         ...buildMemoryCapturePressureOptions(normalized, {
           residentAlreadyDelivered,
-          includeRuntimePreludeGuidance: includeStableTurnGuidance,
+          includeRuntimePreludeGuidance: includeRuntimeMaintenanceGuidance,
           contextPressure,
           forceRecentContext,
         }),
@@ -4044,8 +4049,8 @@ class MossbridgeApp {
         this.residentAnchorPreludeKeys.add(residentPreludeKey);
       }
       const prelude = normalizeText(packet?.runtime_prelude || packet?.summary);
-      const frontstageNote = includeStableTurnGuidance ? buildWechatFrontstageTurnNote(normalized) : "";
-      const toolHoverNote = includeStableTurnGuidance ? buildWechatToolHoverNote(normalized) : "";
+      const frontstageNote = "";
+      const toolHoverNote = "";
       const sections = [frontstageNote, toolHoverNote, prelude].filter(Boolean);
       const delivery = buildMemoryDeliveryReport({
         normalized,
@@ -4055,7 +4060,7 @@ class MossbridgeApp {
         prelude,
         sections,
         contextPressure,
-        includeStableTurnGuidance,
+        includeStableTurnGuidance: includeRuntimeMaintenanceGuidance,
         residentAlreadyDelivered,
       });
       const packetWithDelivery = packet && typeof packet === "object"
@@ -4081,7 +4086,7 @@ class MossbridgeApp {
           delivery,
         },
       });
-      if (includeStableTurnGuidance && stableGuidanceKey && (frontstageNote || toolHoverNote)) {
+      if (includeRuntimeMaintenanceGuidance && stableGuidanceKey) {
         this.markStableTurnGuidanceDelivered(stableGuidanceKey);
       }
       if (!sections.length) {
@@ -4332,7 +4337,7 @@ class MossbridgeApp {
     }
     const threadState = this.threadStateStore.getThreadState(event.payload.threadId);
     const rawAssistantTextFinal = normalizeText(event?.payload?.text) || normalizeText(threadState?.lastReplyText);
-    const runtimeCapacityNotice = isRuntimeCapacityNotice(rawAssistantTextFinal);
+    const runtimeCapacityNotice = isRuntimeCapacitySignal(rawAssistantTextFinal);
     const runtimeFailureNotice = event.type === "runtime.turn.failed";
     const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
     const role = snapshot.prepared.provider === "system" ? "system" : "user";
@@ -4737,6 +4742,16 @@ function shouldIncludeStableTurnGuidance(stableGuidanceKey = "", deliveredKeys =
     return false;
   }
   return !deliveredKeys || !deliveredKeys.has(key);
+}
+
+function shouldIncludeRuntimeMaintenanceGuidance(normalized = {}, stableGuidanceKey = "", deliveredKeys = null) {
+  if (normalizeText(normalized?.provider) !== "system") {
+    return false;
+  }
+  if (isBackgroundCheckinOpportunity(normalized)) {
+    return false;
+  }
+  return shouldIncludeStableTurnGuidance(stableGuidanceKey, deliveredKeys);
 }
 
 function buildTokenPressureMemoryOptions(contextPressure = null, { background = false } = {}) {
