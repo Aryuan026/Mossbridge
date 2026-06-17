@@ -4,6 +4,30 @@ const path = require("node:path");
 
 const { CodexRpcClient } = require("../src/adapters/runtime/codex/rpc-client");
 
+test("codex rpc client treats exited spawn children as disconnected", () => {
+  const client = new CodexRpcClient({});
+
+  client.child = {
+    killed: false,
+    exitCode: 0,
+    signalCode: null,
+    stdin: { writable: true },
+  };
+  assert.equal(client.isTransportReady(), false);
+  assert.throws(
+    () => client.sendRaw(JSON.stringify({ method: "ping" })),
+    /Codex process stdin is not writable/,
+  );
+
+  client.child = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: { writable: true, write() {} },
+  };
+  assert.equal(client.isTransportReady(), true);
+});
+
 test("codex rpc client uses turn/interrupt for stop requests", async () => {
   const client = new CodexRpcClient({ endpoint: "ws://127.0.0.1:8765" });
   const calls = [];

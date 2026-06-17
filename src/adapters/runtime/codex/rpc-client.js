@@ -40,9 +40,10 @@ class CodexRpcClient {
       await this.connectWebSocket();
       return;
     }
-    if (this.child && !this.child.killed) {
+    if (isLiveChildProcess(this.child)) {
       return;
     }
+    this.child = null;
     await this.connectSpawn();
   }
 
@@ -91,6 +92,9 @@ class CodexRpcClient {
     });
     child.on("close", () => {
       this.isReady = false;
+      if (this.child === child) {
+        this.child = null;
+      }
     });
   }
 
@@ -119,7 +123,7 @@ class CodexRpcClient {
     if (this.mode === "websocket") {
       return !!this.socket && this.socket.readyState === WebSocket.OPEN;
     }
-    return !!this.child && !this.child.killed;
+    return isLiveChildProcess(this.child);
   }
 
   onMessage(listener) {
@@ -259,7 +263,7 @@ class CodexRpcClient {
       this.socket.send(payload);
       return;
     }
-    if (!this.child || !this.child.stdin.writable) {
+    if (!isLiveChildProcess(this.child) || !this.child.stdin.writable) {
       throw new Error("Codex process stdin is not writable");
     }
     this.child.stdin.write(`${payload}\n`);
@@ -328,6 +332,13 @@ function buildSpawnSpec(command, mcpServerConfig = null) {
 
 function buildCodexConfigArgs(mcpServerConfig) {
   return buildCodexMcpConfigArgs(mcpServerConfig);
+}
+
+function isLiveChildProcess(child) {
+  return Boolean(child)
+    && child.killed !== true
+    && child.exitCode === null
+    && child.signalCode === null;
 }
 
 function normalizeNonEmptyString(value) {
