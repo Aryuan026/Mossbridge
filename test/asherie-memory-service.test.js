@@ -2491,7 +2491,7 @@ test("asherie memory service recalls conversation cache by temporal window", asy
   assert.match(packet.runtime_prelude, /temporal-turn: .*签证路线截图/);
 });
 
-test("asherie memory service gives the frontstage model memory self-maintenance agency", async () => {
+test("asherie memory service keeps frontstage packets free of default maintenance guidance", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-agency-"));
   const service = new AsherieMemoryService({
     config: {
