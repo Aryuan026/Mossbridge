@@ -1808,6 +1808,7 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
     "- 主动唤醒当前态：",
     "- 相对时间校准：",
     "- session-handoff:",
+    "- session-tail-exchange:",
     "- current-time-anchor:",
     "- session-time-guard:",
     "- session-core:",
@@ -1908,9 +1909,9 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
 }
 
 function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 12 } = {}) {
-  const records = (Array.isArray(recentRecords) ? recentRecords : [])
-    .filter(isSessionHandoffRecord)
-    .slice(0, Math.max(1, Number(coreLimit) || 12));
+  const records = selectSessionHandoffRecords(recentRecords, {
+    limit: Math.max(1, Number(coreLimit) || 12),
+  });
   if (!records.length) {
     return [];
   }
@@ -1934,10 +1935,52 @@ function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 12 } = {})
   if (latestOutcome) {
     lines.push(`- session-last-outcome: ${latestOutcome}`);
   }
+  lines.push(...buildSessionTailExchangePrelude(chronological));
   if (digest) {
     lines.push(`- session-digest: ${digest}`);
   }
   return lines;
+}
+
+function selectSessionHandoffRecords(recentRecords = [], { limit = 12 } = {}) {
+  const records = [];
+  const seen = new Set();
+  for (const record of Array.isArray(recentRecords) ? recentRecords : []) {
+    if (!isSessionHandoffRecord(record)) {
+      continue;
+    }
+    const query = normalizeText(record.query);
+    const reply = normalizeText(record.assistant_text_final);
+    const pairKey = `${query}__${reply}`;
+    if (seen.has(pairKey)) {
+      continue;
+    }
+    seen.add(pairKey);
+    records.push(record);
+    if (records.length >= Math.max(1, Number(limit) || 12)) {
+      break;
+    }
+  }
+  return records;
+}
+
+function buildSessionTailExchangePrelude(chronologicalRecords = [], { limit = 3 } = {}) {
+  const rows = [];
+  const records = Array.isArray(chronologicalRecords)
+    ? chronologicalRecords.slice(-Math.max(1, Number(limit) || 3))
+    : [];
+  for (const record of records) {
+    const timestamp = formatCompactLocalTimestamp(record.ts_utc || record.timestamp || record.received_at);
+    const query = truncateText(record.query, 72);
+    const reply = truncateText(record.assistant_text_final, 132);
+    if (!query && !reply) {
+      continue;
+    }
+    rows.push(
+      `- session-tail-exchange: ${timestamp ? `${timestamp} | ` : ""}用户: ${query || "(no user text)"}${reply ? ` | 你: ${reply}` : ""}`,
+    );
+  }
+  return rows;
 }
 
 function isSessionHandoffRecord(record = {}) {

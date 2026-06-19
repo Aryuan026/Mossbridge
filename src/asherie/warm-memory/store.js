@@ -9,6 +9,9 @@ const {
 } = require("./contracts");
 const { buildWarmRouteScanBonus } = require("./route-signals");
 
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_STALE_MS = 30000;
+
 class WarmMemoryStore {
   constructor(rootDir) {
     this.rootDir = path.resolve(rootDir);
@@ -52,57 +55,81 @@ class WarmMemoryStore {
       scope_id: scope.scopeId(),
       records: Array.isArray(records) ? records : [],
     };
-    fs.writeFileSync(this.indexPath(scope), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    const target = this.indexPath(scope);
+    const tmpPath = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.renameSync(tmpPath, target);
   }
 
   upsertMaterial(scope, payload = {}) {
-    const index = this.readIndex(scope);
-    const requestedMaterialId = normalizeText(payload.material_id || payload.materialId);
-    const existing = requestedMaterialId && index[requestedMaterialId]
-      ? { ...index[requestedMaterialId] }
-      : {};
-    const merged = {
-      ...existing,
-      ...payload,
-    };
-    const record = normalizeMaterialRecord(merged, {
-      nowIso: normalizeText(existing.created_at),
-    });
-    if (existing.created_at) {
-      record.created_at = normalizeText(existing.created_at);
-    }
-    // Preserve existing pinned state when not explicitly included in the update payload
-    if (
-      existing.material_id
-      && !Object.prototype.hasOwnProperty.call(payload, "pinned")
-      && typeof existing.pinned === "boolean"
-    ) {
-      record.pinned = existing.pinned;
-    }
-    record.write_count = existing.material_id ? Math.max(1, Number(existing.write_count) || 1) + 1 : 1;
-    const accessLog = Array.isArray(record.access_log) ? record.access_log.slice() : [];
-    const stamp = normalizeText(record.updated_at || record.created_at);
-    if (stamp && accessLog[accessLog.length - 1] !== stamp) {
-      accessLog.push(stamp);
-    }
-    record.access_log = accessLog.slice(-128);
-    record.last_accessed_at = record.access_log[record.access_log.length - 1] || stamp;
+    return this.withIndexLock(scope, () => {
+      const index = this.readIndex(scope);
+      const requestedMaterialId = normalizeText(payload.material_id || payload.materialId);
+      const existing = requestedMaterialId && index[requestedMaterialId]
+        ? { ...index[requestedMaterialId] }
+        : {};
+      const merged = {
+        ...existing,
+        ...payload,
+      };
+      const record = normalizeMaterialRecord(merged, {
+        nowIso: normalizeText(existing.created_at),
+      });
+      if (existing.created_at) {
+        record.created_at = normalizeText(existing.created_at);
+      }
+      // Preserve existing pinned/resident state when not explicitly included in the update payload.
+      if (
+        existing.material_id
+        && !Object.prototype.hasOwnProperty.call(payload, "pinned")
+        && typeof existing.pinned === "boolean"
+      ) {
+        record.pinned = existing.pinned;
+      }
+      if (
+        existing.material_id
+        && !Object.prototype.hasOwnProperty.call(payload, "resident")
+        && !Object.prototype.hasOwnProperty.call(payload, "residentMemory")
+        && !Object.prototype.hasOwnProperty.call(payload, "resident_memory")
+        && !Object.prototype.hasOwnProperty.call(payload, "residentWarm")
+        && !Object.prototype.hasOwnProperty.call(payload, "resident_warm")
+        && typeof existing.resident === "boolean"
+      ) {
+        record.resident = existing.resident;
+      }
+      if (
+        existing.material_id
+        && !Object.prototype.hasOwnProperty.call(payload, "resident_kind")
+        && !Object.prototype.hasOwnProperty.call(payload, "residentKind")
+        && normalizeText(existing.resident_kind)
+      ) {
+        record.resident_kind = normalizeText(existing.resident_kind);
+      }
+      record.write_count = existing.material_id ? Math.max(1, Number(existing.write_count) || 1) + 1 : 1;
+      const accessLog = Array.isArray(record.access_log) ? record.access_log.slice() : [];
+      const stamp = normalizeText(record.updated_at || record.created_at);
+      if (stamp && accessLog[accessLog.length - 1] !== stamp) {
+        accessLog.push(stamp);
+      }
+      record.access_log = accessLog.slice(-128);
+      record.last_accessed_at = record.access_log[record.access_log.length - 1] || stamp;
 
-    const relativePath = materialRelativePath(scope, record);
-    const absolutePath = path.join(this.rootDir, relativePath);
-    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-    fs.writeFileSync(absolutePath, buildMaterialMarkdown(record), "utf8");
+      const relativePath = materialRelativePath(scope, record);
+      const absolutePath = path.join(this.rootDir, relativePath);
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+      fs.writeFileSync(absolutePath, buildMaterialMarkdown(record), "utf8");
 
-    const stored = {
-      ...record,
-      relative_path: relativePath,
-    };
-    index[record.material_id] = stored;
-    const ordered = Object.values(index).sort((left, right) => {
-      return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+      const stored = {
+        ...record,
+        relative_path: relativePath,
+      };
+      index[record.material_id] = stored;
+      const ordered = Object.values(index).sort((left, right) => {
+        return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+      });
+      this.writeIndex(scope, ordered);
+      return stored;
     });
-    this.writeIndex(scope, ordered);
-    return stored;
   }
 
   applyRecallFeedback(scope, feedbackRows = []) {
@@ -112,40 +139,42 @@ class WarmMemoryStore {
     if (!rows.length) {
       return { updated: 0, reinforced: 0 };
     }
-    const index = this.readIndex(scope);
-    let updated = 0;
-    let reinforced = 0;
+    return this.withIndexLock(scope, () => {
+      const index = this.readIndex(scope);
+      let updated = 0;
+      let reinforced = 0;
 
-    rows.forEach((row) => {
-      const materialId = normalizeText(row.material_id || row.materialId);
-      if (!materialId || !index[materialId]) {
-        return;
-      }
-      const current = { ...index[materialId] };
-      const recalledAt = normalizeText(row.recalled_at || row.recalledAt) || new Date().toISOString();
-      const accessLog = Array.isArray(current.access_log) ? current.access_log.slice() : [];
-      if (recalledAt && accessLog[accessLog.length - 1] !== recalledAt) {
-        accessLog.push(recalledAt);
-      }
-      current.access_log = accessLog.slice(-128);
-      current.last_accessed_at = current.access_log[current.access_log.length - 1] || recalledAt;
-      current.recall_count = (Number(current.recall_count) || 0) + 1;
-      const suggestedBoost = Number(row.storage_boost ?? row.storageBoost);
-      const currentBoost = Number(current.storage_boost) || 1;
-      if (Number.isFinite(suggestedBoost) && suggestedBoost > currentBoost) {
-        current.storage_boost = suggestedBoost;
-        current.desirable_difficulty_hits = (Number(current.desirable_difficulty_hits) || 0) + 1;
-        reinforced += 1;
-      }
-      index[materialId] = current;
-      updated += 1;
-    });
+      rows.forEach((row) => {
+        const materialId = normalizeText(row.material_id || row.materialId);
+        if (!materialId || !index[materialId]) {
+          return;
+        }
+        const current = { ...index[materialId] };
+        const recalledAt = normalizeText(row.recalled_at || row.recalledAt) || new Date().toISOString();
+        const accessLog = Array.isArray(current.access_log) ? current.access_log.slice() : [];
+        if (recalledAt && accessLog[accessLog.length - 1] !== recalledAt) {
+          accessLog.push(recalledAt);
+        }
+        current.access_log = accessLog.slice(-128);
+        current.last_accessed_at = current.access_log[current.access_log.length - 1] || recalledAt;
+        current.recall_count = (Number(current.recall_count) || 0) + 1;
+        const suggestedBoost = Number(row.storage_boost ?? row.storageBoost);
+        const currentBoost = Number(current.storage_boost) || 1;
+        if (Number.isFinite(suggestedBoost) && suggestedBoost > currentBoost) {
+          current.storage_boost = suggestedBoost;
+          current.desirable_difficulty_hits = (Number(current.desirable_difficulty_hits) || 0) + 1;
+          reinforced += 1;
+        }
+        index[materialId] = current;
+        updated += 1;
+      });
 
-    const ordered = Object.values(index).sort((left, right) => {
-      return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+      const ordered = Object.values(index).sort((left, right) => {
+        return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+      });
+      this.writeIndex(scope, ordered);
+      return { updated, reinforced };
     });
-    this.writeIndex(scope, ordered);
-    return { updated, reinforced };
   }
 
   getMaterial(scope, materialId) {
@@ -181,35 +210,77 @@ class WarmMemoryStore {
     if (!target) {
       return { ok: false, error: "empty material_id" };
     }
-    const index = this.readIndex(scope);
-    const record = index[target];
-    if (!record) {
-      return { ok: false, error: `material_id not found: ${target}` };
-    }
-    delete index[target];
-    const relativePath = normalizeText(record.relative_path);
-    if (relativePath) {
-      fs.rmSync(path.join(this.rootDir, relativePath), { force: true });
-    }
-    const ordered = Object.values(index).sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")));
-    this.writeIndex(scope, ordered);
-    return {
-      ok: true,
-      deleted_material_id: target,
-    };
+    return this.withIndexLock(scope, () => {
+      const index = this.readIndex(scope);
+      const record = index[target];
+      if (!record) {
+        return { ok: false, error: `material_id not found: ${target}` };
+      }
+      delete index[target];
+      const relativePath = normalizeText(record.relative_path);
+      if (relativePath) {
+        fs.rmSync(path.join(this.rootDir, relativePath), { force: true });
+      }
+      const ordered = Object.values(index).sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")));
+      this.writeIndex(scope, ordered);
+      return {
+        ok: true,
+        deleted_material_id: target,
+      };
+    });
   }
 
   clearScope(scope) {
+    return this.withIndexLock(scope, () => {
+      const scopeDir = this.scopeDir(scope);
+      const recordCount = this.countMaterials(scope);
+      const markdownCount = fs.existsSync(scopeDir)
+        ? walkMarkdownFiles(scopeDir).length
+        : 0;
+      fs.rmSync(scopeDir, { recursive: true, force: true });
+      return {
+        deleted_records: recordCount,
+        deleted_markdown_files: markdownCount,
+      };
+    });
+  }
+
+  withIndexLock(scope, fn) {
     const scopeDir = this.scopeDir(scope);
-    const recordCount = this.countMaterials(scope);
-    const markdownCount = fs.existsSync(scopeDir)
-      ? walkMarkdownFiles(scopeDir).length
-      : 0;
-    fs.rmSync(scopeDir, { recursive: true, force: true });
-    return {
-      deleted_records: recordCount,
-      deleted_markdown_files: markdownCount,
-    };
+    fs.mkdirSync(scopeDir, { recursive: true });
+    const lockDir = path.join(scopeDir, "index.json.lock");
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    while (true) {
+      try {
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(
+          path.join(lockDir, "owner.json"),
+          `${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() })}\n`,
+          "utf8",
+        );
+        break;
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        try {
+          const stat = fs.statSync(lockDir);
+          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+            continue;
+          }
+        } catch {}
+        if (Date.now() >= deadline) {
+          throw new Error(`warm memory index is locked: ${lockDir}`);
+        }
+        sleepSync(50);
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -235,6 +306,12 @@ function walkMarkdownFiles(rootDir) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function sleepSync(ms) {
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, Math.max(1, Number(ms) || 1));
 }
 
 function scanPriority(row = {}) {

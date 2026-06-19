@@ -1482,6 +1482,14 @@ test("asherie memory service builds a session handoff snapshot for long continui
       tsUtc: `2026-05-16T0${index}:00:00.000Z`,
     });
   }
+  await service.writebackTurn({
+    userId: "demo-user",
+    query: "论文架构第8步：讨论章节衔接和明天继续修改的安排",
+    assistantTextFinal: "第8步已经接住，下一步继续围绕章节逻辑收束。",
+    sourceClient: "mossbridge_wechat",
+    threadId: "old-thread",
+    tsUtc: "2026-05-16T08:00:00.500Z",
+  });
 
   const ordinaryPacket = await service.captureContextPacket({
     userId: "demo-user",
@@ -1503,6 +1511,9 @@ test("asherie memory service builds a session handoff snapshot for long continui
   assert.match(freshPacket.runtime_prelude, /ambient-warm: 关系连续热场空气/);
   assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
   assert.match(freshPacket.runtime_prelude, /论文架构第8步/);
+  assert.equal((freshPacket.runtime_prelude.match(/session-tail-exchange:/g) || []).length, 3);
+  assert.match(freshPacket.runtime_prelude, /session-tail-exchange: .*用户: 论文架构第8步/);
+  assert.match(freshPacket.runtime_prelude, /你: 第8步已经接住/);
   assert.match(freshPacket.recall_focus.current_query, /论文架构第8步/);
 });
 
@@ -1579,6 +1590,53 @@ test("resident false keeps a pinned anchor out of resident delivery", async () =
   const residentTitles = (packet.resident_warm_packet?.hits || []).map((item) => item.title);
   assert.ok(!residentTitles.includes("Quiet relationship note"));
   assert.doesNotMatch(packet.runtime_prelude, /resident-anchor: Quiet relationship note/);
+});
+
+test("warm material updates preserve resident delivery flags by default", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-resident-update-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+      asheriePreludeResidentWarmLimit: 2,
+    },
+  });
+
+  const first = await service.writeWarmMaterial({
+    userId: "demo-user",
+    title: "Long-lived resident thread",
+    summary: "This should stay resident after later exact-card edits.",
+    body_markdown: "Initial anchor body.",
+    tags: ["relationship", "continuity"],
+    pinned: true,
+    resident: true,
+    resident_kind: "relationship_anchor",
+  });
+  const materialId = first.record.material_id;
+  await service.writeWarmMaterial({
+    userId: "demo-user",
+    material_id: materialId,
+    title: "Long-lived resident thread",
+    summary: "Updated evidence without restating resident flags.",
+    body_markdown: "Updated anchor body.",
+    tags: ["relationship", "continuity", "updated"],
+  });
+
+  const read = await service.readWarmMaterial({
+    userId: "demo-user",
+    material_id: materialId,
+  });
+  assert.equal(read.record.resident, true);
+  assert.equal(read.record.resident_kind, "relationship_anchor");
+
+  const packet = await service.captureContextPacket({
+    userId: "demo-user",
+    sourceClient: "mossbridge_system_turn",
+    recallMode: "proactive",
+    query: "User comes to mind again.",
+  });
+  assert.match(packet.runtime_prelude, /resident-anchor: Long-lived resident thread/);
+  assert.match(packet.runtime_prelude, /Updated evidence without restating resident flags/);
 });
 
 test("short banter carries resident and ambient warm without broad memory layers", async () => {
