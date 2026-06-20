@@ -59,12 +59,63 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
   const bodyMarkdown = normalizeLineEndings(payload.body_markdown || payload.bodyMarkdown || payload.content || "");
   const summary = trimText(payload.summary || bodyMarkdown, 500);
   const materialId = normalizeText(payload.material_id || payload.materialId) || slugify(`${materialType}-${title}`).slice(0, 64);
-  const tags = stringList(payload.tags || [], 24);
+  const provenanceRefs = stringList(payload.provenance_refs || payload.provenanceRefs || [], 24);
+  const sourceArchiveRefs = stringList(payload.source_archive_refs || payload.sourceArchiveRefs || [], 64);
+  const sourceTraceIds = stringList(payload.source_trace_ids || payload.sourceTraceIds || [], 64);
+  const sourceSpanIds = stringList(payload.source_span_ids || payload.sourceSpanIds || [], 64);
+  const sourceMaterialIds = stringList(payload.source_material_ids || payload.sourceMaterialIds || [], 64);
+  const hasInlineSourceEvidence = Boolean(normalizeText(
+    payload.source_query
+      || payload.sourceQuery
+      || payload.evidence_query
+      || payload.evidenceQuery
+      || payload.source_assistant_text
+      || payload.sourceAssistantText
+      || payload.evidence_assistant_text
+      || payload.evidenceAssistantText
+      || payload.source_excerpt
+      || payload.sourceExcerpt
+      || payload.evidence_excerpt
+      || payload.evidenceExcerpt
+      || payload.source_record_id
+      || payload.sourceRecordId,
+  ));
+  const source = {
+    source_client: normalizeText(payload.source_client || payload.sourceClient),
+    channel_id: normalizeText(payload.channel_id || payload.channelId),
+    endpoint_id: normalizeText(payload.endpoint_id || payload.endpointId),
+    thread_id: normalizeText(payload.thread_id || payload.threadId),
+    source_path: normalizeText(payload.source_path || payload.sourcePath),
+  };
+  const hasSourceEvidence = Boolean(
+    provenanceRefs.length
+      || sourceArchiveRefs.length
+      || sourceTraceIds.length
+      || sourceSpanIds.length
+      || sourceMaterialIds.length
+      || hasInlineSourceEvidence
+      || source.source_path,
+  );
+  const explicitSourceBackfillRequired = boolOrNull(payload.source_backfill_required ?? payload.sourceBackfillRequired);
+  const sourceBackfillRequired = explicitSourceBackfillRequired === null
+    ? !hasSourceEvidence
+    : explicitSourceBackfillRequired;
+  const explicitDreamingReviewRequired = boolOrNull(payload.dreaming_review_required ?? payload.dreamingReviewRequired);
+  const dreamingReviewRequired = explicitDreamingReviewRequired === null
+    ? sourceBackfillRequired
+    : explicitDreamingReviewRequired;
+  const sourceStatus = normalizeText(payload.source_status || payload.sourceStatus)
+    || (sourceBackfillRequired ? "pending_backfill" : "bound");
+  const memoryLayer = normalizeText(payload.memory_layer || payload.memoryLayer) || "warm_diary";
+  const tags = buildWarmMemoryTags(payload.tags || [], {
+    memoryLayer,
+    sourceBackfillRequired,
+    dreamingReviewRequired,
+  });
   const entities = stringList(payload.entities || payload.related_entities || payload.relatedEntities || [], 64);
   const aliases = stringList(payload.aliases || payload.entity_aliases || payload.entityAliases || [], 64);
   const storylineId = normalizeText(payload.storyline_id || payload.storylineId);
   const memoryFamily = normalizeText(payload.memory_family || payload.memoryFamily);
-  const provenanceRefs = stringList(payload.provenance_refs || payload.provenanceRefs || [], 24);
   const episodeRefs = stringList(
     payload.episode_refs
       || payload.episodeRefs
@@ -85,13 +136,6 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
   if (!accessLog.length) {
     accessLog = isoStringList([payload.updated_at || payload.updatedAt || payload.created_at || payload.createdAt || now], 128);
   }
-  const source = {
-    source_client: normalizeText(payload.source_client || payload.sourceClient),
-    channel_id: normalizeText(payload.channel_id || payload.channelId),
-    endpoint_id: normalizeText(payload.endpoint_id || payload.endpointId),
-    thread_id: normalizeText(payload.thread_id || payload.threadId),
-    source_path: normalizeText(payload.source_path || payload.sourcePath),
-  };
   const routingText = [tags.join(" "), entities.join(" "), aliases.join(" "), storylineId, memoryFamily, episodeRefs.join(" "), caseRefs.join(" ")].join(" ");
   const keywords = tokenize([title, summary, bodyMarkdown.slice(0, 400), routingText].join(" "));
   const ngrams = charNgrams([title, summary, bodyMarkdown.slice(0, 400), routingText].join(" "));
@@ -130,11 +174,19 @@ function normalizeMaterialRecord(payload = {}, { nowIso = "" } = {}) {
     summary,
     body_markdown: bodyMarkdown,
     tags,
+    memory_layer: memoryLayer,
     entities,
     aliases,
     storyline_id: storylineId,
     memory_family: memoryFamily,
     provenance_refs: provenanceRefs,
+    source_archive_refs: sourceArchiveRefs,
+    source_trace_ids: sourceTraceIds,
+    source_span_ids: sourceSpanIds,
+    source_material_ids: sourceMaterialIds,
+    source_backfill_required: sourceBackfillRequired,
+    dreaming_review_required: dreamingReviewRequired,
+    source_status: sourceStatus,
     episode_refs: episodeRefs,
     case_refs: caseRefs,
     source,
@@ -176,7 +228,11 @@ function buildMaterialMarkdown(record = {}) {
   lines.push("---");
   lines.push(`material_id: ${normalizeText(record.material_id)}`);
   lines.push(`material_type: ${normalizeText(record.material_type) || "memo"}`);
+  lines.push(`memory_layer: ${normalizeText(record.memory_layer) || "warm_diary"}`);
   lines.push(`certainty_state: ${normalizeText(record.certainty_state) || "unknown"}`);
+  lines.push(`source_status: ${normalizeText(record.source_status) || "unknown"}`);
+  lines.push(`source_backfill_required: ${record.source_backfill_required === true ? "true" : "false"}`);
+  lines.push(`dreaming_review_required: ${record.dreaming_review_required === true ? "true" : "false"}`);
   if (record.pinned === true) {
     lines.push("pinned: true");
   }
@@ -205,6 +261,18 @@ function buildMaterialMarkdown(record = {}) {
   }
   if (Array.isArray(record.provenance_refs) && record.provenance_refs.length) {
     lines.push(`provenance_refs: ${record.provenance_refs.join(", ")}`);
+  }
+  if (Array.isArray(record.source_archive_refs) && record.source_archive_refs.length) {
+    lines.push(`source_archive_refs: ${record.source_archive_refs.join(", ")}`);
+  }
+  if (Array.isArray(record.source_trace_ids) && record.source_trace_ids.length) {
+    lines.push(`source_trace_ids: ${record.source_trace_ids.join(", ")}`);
+  }
+  if (Array.isArray(record.source_span_ids) && record.source_span_ids.length) {
+    lines.push(`source_span_ids: ${record.source_span_ids.join(", ")}`);
+  }
+  if (Array.isArray(record.source_material_ids) && record.source_material_ids.length) {
+    lines.push(`source_material_ids: ${record.source_material_ids.join(", ")}`);
   }
   if (Array.isArray(record.episode_refs) && record.episode_refs.length) {
     lines.push(`episode_refs: ${record.episode_refs.join(", ")}`);
@@ -313,6 +381,42 @@ function stringList(items, limit = 24) {
     output.push(value);
   });
   return output.slice(0, limit);
+}
+
+function buildWarmMemoryTags(rawTags = [], {
+  memoryLayer = "warm_diary",
+  sourceBackfillRequired = false,
+  dreamingReviewRequired = false,
+} = {}) {
+  const managed = new Set(["layer:warm_diary", "source:pending", "dreaming:must_review"]);
+  const tags = (Array.isArray(rawTags) ? rawTags : [rawTags])
+    .filter((tag) => !managed.has(normalizeText(tag).toLowerCase()));
+  if (memoryLayer === "warm_diary") {
+    tags.push("layer:warm_diary");
+  }
+  if (sourceBackfillRequired) {
+    tags.push("source:pending");
+  }
+  if (dreamingReviewRequired) {
+    tags.push("dreaming:must_review");
+  }
+  return stringList(tags, 32);
+}
+
+function boolOrNull(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = normalizeText(value).toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return null;
 }
 
 function isoStringList(items, limit = 128) {

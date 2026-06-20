@@ -77,13 +77,16 @@ Control events are operational state under `MOSSBRIDGE_STATE_DIR`, not user memo
 
 Route memory-like material with this simple map:
 
-- "小事记" and light diary notes: `storage/notebook/`.
+- Hot memory / active capture: `cache/hot/`, `cache/conversation_cache/`, and `cache/app_daily_captures/`.
+- "小事记" and light human notes: `storage/notebook/`.
 - Unfinished active threads: `storage/ongoing_tracks.json`.
 - Bounded events, trips, photo sessions, and small stories: `storage/episode_journal/`.
 - Code work, deployment work, files, decisions, artifacts, and tests: `storage/case_index/`.
-- Stable reusable continuity: `storage/warm_memory/`.
-- Relationship/evidence topology candidates: `storage/memory_tree/`.
+- Warm memory diary/persona cards: `storage/warm_memory/`. These are first-person inner-view continuity for the soul/persona, fuzzy-recallable and allowed to be a little noisy; they are not generic user profiles or response-policy sheets.
+- Cold memory: `storage/notebook/`, `storage/ongoing_tracks.json`, `storage/observation_journal/`, `storage/episode_journal/`, `storage/case_index/`, `storage/memory_tree/`, `storage/raw_transcript_archive/`, and cold-root projections. These layers should be more exact, source-bound, and searchable.
 - Future ChatGPT or app captures: stage in `cache/app_daily_captures/`, `cache/conversation_cache/`, and `cache/hot/`; do not write raw captures straight into warm/cold/case memory.
+
+Foreground turns may write a self-warning or resident warm card when the continuity value is immediate. If exact source is not available yet, the warm card must be marked source-pending / dreaming-review-required so the next metabolism pass can bind source refs and decide whether exact facts should sediment into cold memory.
 
 ## Public Tool Boundary
 

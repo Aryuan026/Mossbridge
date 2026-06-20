@@ -76,7 +76,9 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 
 ### `storage/warm_memory/`
 
-温记忆。这里是 bridge 日常对话最重要的记忆区。
+温记忆。这里是 bridge 日常对话最重要的记忆区，也是 Mossbridge 里的 diary/persona 层。
+
+温卡应当像 soul 的第一人称内位日记：它记录“这件事怎么落到我身上”。正文可以写“我记得她说……”“我以后要记得……”，但不要写成外部用户画像、数据库事实摘要或回复策略说明。Codex、Claude Code 或第三方 API 都只是 runtime 承载层；温卡里的“我”绑定的是 Moss 的连续 soul/persona。
 
 适合放：
 
@@ -85,6 +87,8 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 - 可反复调用的人际背景和家庭关系
 - 已经稳定下来的自我印象、伴侣印象、协作风格
 - 从旧冷层迁入、但本质上是陪伴型记忆卡的材料
+
+前台可以在当场写入自我警醒、约定或 resident anchor。若当时还没有完整原文证据，工具会把温卡标成 `source_backfill_required: true` / `source:pending` / `dreaming:must_review`，让 dreaming 在安静窗口重读温卡和原场，补全 source，并判断是否需要沉淀为冷记忆。
 
 长期必须常驻的卡用 `pinned` 或 `certainty_state: "anchor"` 标记即可。Mossbridge 会把它们递送成 resident warm anchors，这样新部署不会因为还没人写过 `resident: true` 而从空白里醒来：
 
@@ -109,7 +113,7 @@ Mossbridge 的 brain 是本体的一部分，不是第一版外接的 Home 服�
 
 当一张 warm card 被写入，或自然对话召回了 warm card 并完成 writeback，Mossbridge 会在这里维护一个对应的轻量证据盒：卡片摘要、少量来源片段、相关 episode/case refs。之后如果用户显式问长期背景、冷根检索被触发但没有命中，bridge 才会把最多几条 `archive-fallback` 递给 runtime。
 
-这个层的用法是“冷记忆失手时打开旧档看一眼”，不是“每轮都多查一遍”。它帮助模型接回语境，但不把旧档内容自动升级成稳定事实；稳定化仍然应该走 warm/cold 的正常整理链。
+这个层的用法是“冷记忆失手时打开旧档看一眼”，不是“每轮都多查一遍”。它帮助模型接回语境，但不把旧档内容自动升级成稳定事实；稳定化仍然应该走 warm/cold 的正常整理链。Dreaming 中的沉淀动作应当读取 source 与温卡，再把准确事实、关系边或结构补进 cold memory，而不是只把温卡当成装饰上下文。
 
 ### `storage/ongoing_tracks.json`
 
@@ -141,7 +145,7 @@ ongoing 的重点是事件连续性，不是窗口来源。用户可能因为传
 
 ### `storage/notebook/`
 
-小事记和轻量笔记。它是 Mossbridge 自带 brain 的人可读原材料层，也是旧 `diary` 工具默认写入的位置。
+小事记和轻量笔记。它是 Mossbridge 自带 brain 的人可读原材料层，也是旧 `diary` 工具默认写入的位置。这里的旧工具名只是兼容名；系统命名里的 diary/persona 层指的是 `storage/warm_memory/` 里的温记忆。
 
 适合放：
 

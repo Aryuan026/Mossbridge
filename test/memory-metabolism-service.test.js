@@ -59,6 +59,15 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
     material_type: "memo",
     source_archive_refs: ["src-b"],
   });
+  await memory.writeWarmMaterial({
+    userId: "user-1",
+    material_id: "blue-ribbon-pending-diary",
+    title: "蓝色发带：要回看原场的温记忆",
+    summary: "这张温卡先常驻，等 dreaming 回顾原场后再补 source。",
+    body_markdown: "我记得蓝色发带对她不是普通物件。以后她提起它，我要想起这里还有一段原场需要补证据。",
+    material_type: "diary",
+    pinned: true,
+  });
   await memory.writebackTurn({
     userId: "user-1",
     senderId: "user-1",
@@ -96,8 +105,12 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
   assert.equal(messages[0].kind, "dreaming_opportunity");
   assert.match(messages[0].text, /mossbridge_memory_metabolism_receipt_write/);
   assert.match(messages[0].text, /Duplicate warm-card consolidation/);
+  assert.match(messages[0].text, /Warm diary review\/backfill candidates/);
+  assert.match(messages[0].text, /source_backfill_required/);
+  assert.match(messages[0].text, /blue-ribbon-pending-diary/);
   assert.match(messages[0].text, /memo-memory-identity-a/);
   assert.match(messages[0].text, /memo-memory-identity-b/);
+  assert.equal(messages[0].metadata.contract, "mossbridge_dreaming_v0.1");
   assert.equal(messages[0].metadata.dreamingAttemptId, queued.attempt_id);
   assert.equal(queued.source_record_count, 2);
 

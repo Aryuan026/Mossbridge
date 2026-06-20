@@ -22,8 +22,8 @@ contracts that a public clone needs in order to run with its own data root.
 - `src/control/` is the control plane. It records operational decisions under
   `MOSSBRIDGE_STATE_DIR`; it must not promote bridge noise into memory.
 - Brain code owns the data layout under `MOSSBRIDGE_DATA_ROOT`, context packets,
-  warm memory, ongoing tracks, journals, hot context, case index, and topology
-  candidates.
+  hot context, warm memory diary/persona cards, cold-layer notebooks/journals,
+  ongoing tracks, case index, source archives, and topology candidates.
 
 If a mouth or hand change needs a new memory field, add it through the brain
 service boundary with docs and tests. Fixing WeChat delivery should not rename
@@ -31,13 +31,20 @@ or reshuffle saved user memory.
 
 ## Current Human Routes
 
-- Small notes and diary-like "小事记" go to `storage/notebook/`.
+- Hot memory and active captures go to `cache/hot/`, `cache/conversation_cache/`,
+  and `cache/app_daily_captures/`.
+- Small notes and "小事记" go to `storage/notebook/`.
 - Active unresolved threads go to `storage/ongoing_tracks.json`.
 - Bounded stories, photo sessions, trips, and small events go to
   `storage/episode_journal/`.
 - Work provenance, code fixes, deployment notes, artifacts, and test records go
   to `storage/case_index/`.
-- Stable reusable continuity goes to `storage/warm_memory/`.
-- Relationship and evidence topology candidates go to `storage/memory_tree/`.
+- Warm memory diary/persona cards go to `storage/warm_memory/`. They should read
+  as first-person inner-view continuity for the soul/persona, not user profiles
+  or generic fact summaries.
+- Cold memory includes notebook, ongoing, observation, episode, case,
+  `storage/raw_transcript_archive/`, `storage/memory_tree/`, and cold-root
+  projections. Cold layers should preserve exact evidence and searchable
+  structure.
 - Immediate cross-window context and web AI capture merges stage through
   `cache/hot/` and `cache/conversation_cache/`, not directly into stable memory.

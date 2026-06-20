@@ -28,6 +28,14 @@ class LocalArchiveStore {
       tags: mergeStringLists(existing?.tags, material.tags),
       entities: mergeStringLists(existing?.entities, material.entities),
       aliases: mergeStringLists(existing?.aliases, material.aliases),
+      source_archive_refs: mergeStringLists(existing?.source_archive_refs, material.source_archive_refs || material.sourceArchiveRefs),
+      source_trace_ids: mergeStringLists(existing?.source_trace_ids, material.source_trace_ids || material.sourceTraceIds),
+      source_span_ids: mergeStringLists(existing?.source_span_ids, material.source_span_ids || material.sourceSpanIds),
+      source_material_ids: mergeStringLists(existing?.source_material_ids, material.source_material_ids || material.sourceMaterialIds),
+      source_backfill_required: material.source_backfill_required === true
+        || material.sourceBackfillRequired === true
+        || existing?.source_backfill_required === true,
+      source_status: normalizeText(material.source_status || material.sourceStatus) || normalizeText(existing?.source_status),
       episode_refs: mergeStringLists(existing?.episode_refs, material.episode_refs || material.episodeRefs),
       case_refs: mergeStringLists(existing?.case_refs, material.case_refs || material.caseRefs),
       material_excerpt: truncateText(
@@ -121,6 +129,12 @@ class LocalArchiveStore {
       score,
       tags: stringList(archive.tags),
       entities: stringList(archive.entities),
+      source_archive_refs: stringList(archive.source_archive_refs),
+      source_trace_ids: stringList(archive.source_trace_ids),
+      source_span_ids: stringList(archive.source_span_ids),
+      source_material_ids: stringList(archive.source_material_ids),
+      source_backfill_required: archive.source_backfill_required === true,
+      source_status: normalizeText(archive.source_status),
       episode_refs: stringList(archive.episode_refs),
       case_refs: stringList(archive.case_refs),
     }));

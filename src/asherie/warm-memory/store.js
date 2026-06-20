@@ -72,6 +72,21 @@ class WarmMemoryStore {
         ...existing,
         ...payload,
       };
+      if (
+        existing.material_id
+        && hasSourceBinding(payload)
+        && !Object.prototype.hasOwnProperty.call(payload, "source_backfill_required")
+        && !Object.prototype.hasOwnProperty.call(payload, "sourceBackfillRequired")
+      ) {
+        merged.source_backfill_required = false;
+        merged.source_status = normalizeText(payload.source_status || payload.sourceStatus) || "bound";
+        if (
+          !Object.prototype.hasOwnProperty.call(payload, "dreaming_review_required")
+          && !Object.prototype.hasOwnProperty.call(payload, "dreamingReviewRequired")
+        ) {
+          merged.dreaming_review_required = false;
+        }
+      }
       const record = normalizeMaterialRecord(merged, {
         nowIso: normalizeText(existing.created_at),
       });
@@ -306,6 +321,48 @@ function walkMarkdownFiles(rootDir) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function hasSourceBinding(payload = {}) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+  const listKeys = [
+    "provenance_refs",
+    "provenanceRefs",
+    "source_archive_refs",
+    "sourceArchiveRefs",
+    "source_trace_ids",
+    "sourceTraceIds",
+    "source_span_ids",
+    "sourceSpanIds",
+    "source_material_ids",
+    "sourceMaterialIds",
+  ];
+  if (listKeys.some((key) => {
+    const value = payload[key];
+    return Array.isArray(value) ? value.some((item) => normalizeText(item)) : Boolean(normalizeText(value));
+  })) {
+    return true;
+  }
+  return Boolean(normalizeText(
+    payload.source_record_id
+      || payload.sourceRecordId
+      || payload.source_query
+      || payload.sourceQuery
+      || payload.source_assistant_text
+      || payload.sourceAssistantText
+      || payload.source_excerpt
+      || payload.sourceExcerpt
+      || payload.evidence_query
+      || payload.evidenceQuery
+      || payload.evidence_assistant_text
+      || payload.evidenceAssistantText
+      || payload.evidence_excerpt
+      || payload.evidenceExcerpt
+      || payload.source_path
+      || payload.sourcePath,
+  ));
 }
 
 function sleepSync(ms) {

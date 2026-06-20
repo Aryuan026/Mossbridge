@@ -269,6 +269,7 @@ class MemoryMetabolismService {
     return {
       records,
       warmDuplicateClusters: this.collectWarmDuplicateClusters({ userId, limit: 6 }),
+      warmReviewCandidates: this.collectWarmReviewCandidates({ userId, limit: 8 }),
       stats: recent.stats || {},
       scoped_user_id: scopes.scopedUserId,
       cutoff_utc: new Date(cutoffMs).toISOString(),
@@ -298,6 +299,23 @@ class MemoryMetabolismService {
     }
   }
 
+  collectWarmReviewCandidates({ userId = "", limit = 8 } = {}) {
+    if (!this.memoryService?.warmMemoryStore || typeof this.memoryService.resolveScopes !== "function") {
+      return [];
+    }
+    try {
+      const scopes = this.memoryService.resolveScopes({ userId });
+      const index = this.memoryService.warmMemoryStore.readIndex(scopes.warmScope);
+      return Object.values(index || {})
+        .filter((record) => record && typeof record === "object" && isWarmReviewCandidate(record))
+        .sort(compareWarmReviewCandidate)
+        .slice(0, Math.max(1, Number(limit) || 8))
+        .map(compactWarmReviewCandidate);
+    } catch {
+      return [];
+    }
+  }
+
   createAttempt({
     accountId = "",
     senderId = "",
@@ -308,6 +326,9 @@ class MemoryMetabolismService {
     const records = Array.isArray(source.records) ? source.records : [];
     const warmDuplicateClusters = Array.isArray(source.warmDuplicateClusters)
       ? source.warmDuplicateClusters
+      : [];
+    const warmReviewCandidates = Array.isArray(source.warmReviewCandidates)
+      ? source.warmReviewCandidates
       : [];
     const sourceRecordIds = records.map((record) => normalizeText(record.record_id)).filter(Boolean);
     const timestamps = records
@@ -328,6 +349,7 @@ class MemoryMetabolismService {
       source_record_ids: sourceRecordIds,
       source_records: records,
       warm_duplicate_clusters: warmDuplicateClusters,
+      warm_review_candidates: warmReviewCandidates,
       receipts: [],
       retry_count: 0,
     };
@@ -655,8 +677,11 @@ function buildDreamingTriggerText(attempt = {}) {
     `Source window: ${attempt.source_window_start_utc} -> ${attempt.source_window_end_utc}.`,
     "",
     "This is a quiet memory-metabolism pass. Review the source digest, then decide whether any small grounded memory mutation belongs in Mossbridge's local brain.",
-    "Allowed routes: warm memory, ongoing tracks, observation journal, episode journal, case index, cold-root patch/version, solitude journal, or no-op when there is no durable candidate.",
-    "Duplicate warm-card consolidation is a first-class dreaming job: if warm cards clearly describe the same stable subject, consolidate the relationship/structure into cold memory while preserving source_material_ids, source_archive_refs, episode_refs, and case_refs. Leave source warm cards in place unless an explicit cleanup path handles them.",
+    "Memory layer contract: hot memory is active/captured context; warm memory is first-person soul diary that may be fuzzy-recalled; cold memory includes notebook, ongoing, observation, episode, case, memory_tree, source archives, and cold-root projections.",
+    "Allowed routes: warm diary memory, ongoing tracks, observation journal, episode journal, case index, memory_tree/cold-root patch or version, solitude journal, or no-op when there is no durable candidate.",
+    "Warm diary cards must read as inner-view 'I' memory for the soul/persona, not a user profile, external analysis, or response policy sheet. They may contain self-warning or future-use promises when the scene supports it.",
+    "When warm cards decay, duplicate, or carry source_backfill_required/source:pending/dreaming:must_review, re-read the warm card plus available source, then either bind source refs, keep it warm, or sediment exact facts/structure into cold memory with source ids. Do not promote untraceable guesses.",
+    "Duplicate warm-card consolidation is a first-class dreaming job: if warm cards clearly describe the same stable subject, consolidate the relationship/structure into cold memory while preserving source_material_ids, source_archive_refs, source_trace_ids, source_span_ids, episode_refs, and case_refs. Leave source warm cards in place unless an explicit cleanup path handles them.",
     "Memory writes should contain grounded, reusable user continuity. Operational failures, quota notices, debug chatter, raw hidden chain-of-thought, credentials, and ungrounded guesses stay outside memory.",
     "After successful mutations, call mossbridge_memory_metabolism_receipt_write with this attempt_id, source record ids, mutation_count, mutation summaries, and a short shareable summary.",
     "If nothing should be promoted, call the same receipt tool with status=no_op and mutation_count=0. A final JSON reply without this receipt is treated as an incomplete dreaming attempt and will be retried.",
@@ -667,6 +692,9 @@ function buildDreamingTriggerText(attempt = {}) {
     "",
     "Warm duplicate cluster candidates:",
     ...formatWarmDuplicateClusters(attempt.warm_duplicate_clusters),
+    "",
+    "Warm diary review/backfill candidates:",
+    ...formatWarmReviewCandidates(attempt.warm_review_candidates),
   ];
   return lines.join("\n").trim();
 }
@@ -702,6 +730,96 @@ function formatWarmDuplicateClusters(clusters = []) {
       caseRefs.length ? `case_refs: ${caseRefs.join(", ")}` : "",
     ].filter(Boolean).join("\n");
   });
+}
+
+function formatWarmReviewCandidates(candidates = []) {
+  const source = Array.isArray(candidates) ? candidates : [];
+  if (!source.length) {
+    return ["(none detected)"];
+  }
+  return source.map((candidate, index) => {
+    const sourceRefs = normalizeStringList(candidate.source_archive_refs || candidate.sourceArchiveRefs);
+    const traceIds = normalizeStringList(candidate.source_trace_ids || candidate.sourceTraceIds);
+    const spanIds = normalizeStringList(candidate.source_span_ids || candidate.sourceSpanIds);
+    const materialIds = normalizeStringList(candidate.source_material_ids || candidate.sourceMaterialIds);
+    const reasons = normalizeStringList(candidate.review_reasons || candidate.reviewReasons);
+    return [
+      `[${index + 1}] id=${normalizeText(candidate.material_id)} title=${truncateText(candidate.title, 120)}`,
+      candidate.summary ? `summary: ${truncateText(candidate.summary, 180)}` : "",
+      candidate.snippet ? `warm_diary: ${truncateText(candidate.snippet, 220)}` : "",
+      reasons.length ? `review_reasons: ${reasons.join(", ")}` : "",
+      candidate.source_status ? `source_status: ${normalizeText(candidate.source_status)}` : "",
+      sourceRefs.length ? `source_archive_refs: ${sourceRefs.join(", ")}` : "",
+      traceIds.length ? `source_trace_ids: ${traceIds.join(", ")}` : "",
+      spanIds.length ? `source_span_ids: ${spanIds.join(", ")}` : "",
+      materialIds.length ? `source_material_ids: ${materialIds.join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+  });
+}
+
+function isWarmReviewCandidate(record = {}) {
+  if (!record || typeof record !== "object") {
+    return false;
+  }
+  if (record.source_backfill_required === true || record.dreaming_review_required === true) {
+    return true;
+  }
+  const tags = recordTags(record);
+  return tags.includes("source:pending") || tags.includes("dreaming:must_review");
+}
+
+function compareWarmReviewCandidate(left = {}, right = {}) {
+  const priorityDelta = warmReviewPriority(right) - warmReviewPriority(left);
+  if (priorityDelta !== 0) {
+    return priorityDelta;
+  }
+  return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+}
+
+function warmReviewPriority(record = {}) {
+  let score = 0;
+  if (record.source_backfill_required === true) score += 8;
+  if (record.dreaming_review_required === true) score += 4;
+  if (record.pinned === true || normalizeText(record.certainty_state) === "anchor") score += 3;
+  if (record.resident === true) score += 2;
+  return score;
+}
+
+function compactWarmReviewCandidate(record = {}) {
+  return {
+    material_id: normalizeText(record.material_id),
+    title: normalizeText(record.title),
+    summary: normalizeText(record.summary),
+    material_type: normalizeText(record.material_type),
+    memory_layer: normalizeText(record.memory_layer),
+    certainty_state: normalizeText(record.certainty_state),
+    pinned: record.pinned === true,
+    resident: record.resident === true,
+    source_status: normalizeText(record.source_status),
+    source_backfill_required: record.source_backfill_required === true,
+    dreaming_review_required: record.dreaming_review_required === true,
+    review_reasons: buildWarmReviewReasons(record),
+    source_archive_refs: normalizeStringList(record.source_archive_refs).slice(0, 12),
+    source_trace_ids: normalizeStringList(record.source_trace_ids).slice(0, 12),
+    source_span_ids: normalizeStringList(record.source_span_ids).slice(0, 12),
+    source_material_ids: normalizeStringList(record.source_material_ids).slice(0, 12),
+    provenance_refs: normalizeStringList(record.provenance_refs).slice(0, 12),
+    episode_refs: normalizeStringList(record.episode_refs).slice(0, 8),
+    case_refs: normalizeStringList(record.case_refs).slice(0, 8),
+    snippet: truncateText(normalizeText(record.body_markdown || record.summary), 260),
+    updated_at: normalizeText(record.updated_at),
+  };
+}
+
+function buildWarmReviewReasons(record = {}) {
+  const reasons = [];
+  if (record.source_backfill_required === true) reasons.push("source_backfill_required");
+  if (record.dreaming_review_required === true) reasons.push("dreaming_review_required");
+  const tags = recordTags(record);
+  if (tags.includes("source:pending")) reasons.push("tag:source:pending");
+  if (tags.includes("dreaming:must_review")) reasons.push("tag:dreaming:must_review");
+  if (record.pinned === true || normalizeText(record.certainty_state) === "anchor") reasons.push("resident_or_anchor");
+  return uniqueStrings(reasons);
 }
 
 function identifyDuplicateWarmClusters(warmRecords = [], { minSimilarity = 0.50, scanLimit = 240 } = {}) {

@@ -557,7 +557,7 @@ function ambientHaystack(row = {}) {
     row.title,
     row.summary,
     row.body_markdown,
-    Array.isArray(row.tags) ? row.tags.join(" ") : "",
+    routingTags(row.tags).join(" "),
     Array.isArray(row.entities) ? row.entities.join(" ") : "",
     Array.isArray(row.aliases) ? row.aliases.join(" ") : "",
     row.storyline_id,
@@ -575,13 +575,20 @@ function ambientNegativeHaystack(row = {}) {
     row.material_type,
     row.memory_family,
     row.storyline_id,
-    Array.isArray(row.tags) ? row.tags.join(" ") : "",
+    routingTags(row.tags).join(" "),
     Array.isArray(row.entities) ? row.entities.join(" ") : "",
     Array.isArray(row.aliases) ? row.aliases.join(" ") : "",
   ]
     .map((item) => normalizeText(item).toLowerCase())
     .filter(Boolean)
     .join(" ");
+}
+
+function routingTags(tags = []) {
+  const hidden = new Set(["layer:warm_diary", "source:pending", "dreaming:must_review"]);
+  return (Array.isArray(tags) ? tags : [tags])
+    .map((tag) => normalizeText(tag).toLowerCase())
+    .filter((tag) => tag && !hidden.has(tag));
 }
 
 function selfAxisCandidateProjection(lane = "", row = {}) {

@@ -239,11 +239,11 @@ Mossbridge is designed so code and personal data can be separated. The bridge sh
 The current memory model is:
 
 - **warm memory**
-  Daily relationship continuity, preferences, symbolic objects, stable impressions, and reusable context cards.
+  First-person diary/persona continuity for the soul: relationship anchors, preferences, symbolic objects, stable impressions, and reusable warm cards.
 - **hot memory**
   Short-lived cross-window context basin, upstream packages, projections, and snapshots for web AI capture merges and active conversation handoff.
 - **notebook**
-  Human-readable small notes and diary-like "小事记". These are source material for memory work, not automatically stable facts.
+  Human-readable small notes and "小事记". These are cold-layer source material for memory work, not automatically stable facts or warm diary cards.
 - **ongoing tracks**
   Active medium-term threads that need continuity but are not necessarily permanent facts.
 - **conversation cache**

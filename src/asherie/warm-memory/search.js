@@ -164,6 +164,7 @@ const AFFECTIVE_WARM_INTENT_PATTERNS = [
   /担心|害怕|焦虑|不安|难过|委屈|破防|想哭|哭了|安全感|没得选/i,
   /冷冷|冷淡|生硬|工具化|公事公办|生疏|不熟|不对劲|不像|疏远/i,
   /亲密|亲昵|熟悉|黏糊|黏黏|逗嘴|接梗|玩笑|调戏|退缩|客气|客服|sop|反客服/i,
+  /亲密度|执行任务|像在(?:执行|完成)任务|不像(?:熟悉|自己|你)|不像.*?(?:熟悉|亲密|自然|你)/i,
   /失去|丢掉|离开|分离|陪我/i,
 ];
 
@@ -280,7 +281,7 @@ function buildWarmMemoryRecallPacket(
       || right.routePrior - left.routePrior
     ))
     .slice(0, candidateLimit)
-    .filter((item) => passesWarmRecallThreshold(item, recallMode, resolvedConfig))
+    .filter((item) => passesWarmRecallThreshold(item, recallMode, resolvedConfig, recallGate))
     .sort((left, right) => right.score - left.score)
     .slice(0, Math.max(1, Number(limit) || 1));
 
@@ -298,6 +299,14 @@ function buildWarmMemoryRecallPacket(
     case_refs: Array.isArray(item.row.case_refs) ? item.row.case_refs : [],
     storyline_id: normalizeText(item.row.storyline_id),
     memory_family: normalizeText(item.row.memory_family),
+    memory_layer: normalizeText(item.row.memory_layer),
+    source_status: normalizeText(item.row.source_status),
+    source_backfill_required: item.row.source_backfill_required === true,
+    dreaming_review_required: item.row.dreaming_review_required === true,
+    source_archive_refs: Array.isArray(item.row.source_archive_refs) ? item.row.source_archive_refs : [],
+    source_trace_ids: Array.isArray(item.row.source_trace_ids) ? item.row.source_trace_ids : [],
+    source_span_ids: Array.isArray(item.row.source_span_ids) ? item.row.source_span_ids : [],
+    source_material_ids: Array.isArray(item.row.source_material_ids) ? item.row.source_material_ids : [],
     score: round(item.score),
     keyword_hits: item.keywordHits,
     exact_match: round(item.exactMatch),
@@ -691,11 +700,12 @@ function buildCandidateSeed({
   );
 }
 
-function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMORY_RECALL_CONFIG) {
+function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMORY_RECALL_CONFIG, recallGate = {}) {
   const threshold = Number(config.lowRetrievalThreshold) || 0.2;
   if ((Number(item?.exactMatch) || 0) > 0) {
     return true;
   }
+  const exactMatch = Number(item?.exactMatch) || 0;
   const score = Number(item?.score) || 0;
   const semanticBlend = Number(item?.semanticBlend) || 0;
   const semanticScore = Number(item?.semanticScore) || 0;
@@ -703,12 +713,30 @@ function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMOR
   const routePrior = Number(item?.routePrior) || 0;
   const hasStrongKeywordHit = Array.isArray(item?.keywordHits)
     && item.keywordHits.some((token) => isStrongRecallKeyword(token));
+  const voiceRow = hasWarmVoiceRoutingAnchor(item?.row);
+  const explicitResidentRow = item?.row?.resident === true;
   if (!isBackgroundRecallMode(recallMode) && !isProactiveRecallMode(recallMode)) {
+    if (
+      recallGate?.affective_intent
+      && exactMatch <= 0
+      && !voiceRow
+      && !explicitResidentRow
+      && (!Array.isArray(item?.keywordHits) || item.keywordHits.length <= 1)
+    ) {
+      return false;
+    }
     const semanticFloor = Number(config.userMinimumSemanticBlend) || 0.065;
     const routeFloor = Number(config.userMinimumRoutePrior) || 0.12;
     const semanticScoreFloor = Number(config.userMinimumSemanticScore) || 0.03;
     const lexicalFloor = Number(config.userMinimumLexicalScore) || 0.08;
     if (hasStrongKeywordHit && (semanticScore >= semanticScoreFloor || lexicalScore >= lexicalFloor)) {
+      return true;
+    }
+    if (
+      recallGate?.affective_intent
+      && hasStrongKeywordHit
+      && (routePrior >= 0.05 || lexicalScore >= (lexicalFloor * 0.65) || semanticScore >= (semanticScoreFloor * 0.65))
+    ) {
       return true;
     }
     return score > threshold && (
@@ -726,6 +754,20 @@ function passesWarmRecallThreshold(item, recallMode, config = DEFAULT_WARM_MEMOR
     return true;
   }
   return false;
+}
+
+function hasWarmVoiceRoutingAnchor(row = {}) {
+  const haystack = [
+    row?.title,
+    Array.isArray(row?.tags) ? row.tags.join(" ") : "",
+    Array.isArray(row?.aliases) ? row.aliases.join(" ") : "",
+    normalizeText(row?.memory_family),
+    normalizeText(row?.storyline_id),
+  ]
+    .map((item) => normalizeText(item).toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+  return /voice|expression|style|anti-sop|sop|口吻|语气|表达|接梗|逗嘴|玩笑|反客服|工具化|客气|亲密|熟悉|黏糊|黏黏/i.test(haystack);
 }
 
 function isStrongRecallKeyword(token = "") {

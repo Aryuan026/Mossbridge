@@ -732,11 +732,26 @@ class AsherieMemoryService {
     if (!existing) {
       throw new Error(`warm memory material not found: ${materialId}`);
     }
-    const stored = this.warmMemoryStore.upsertMaterial(scopes.warmScope, {
+    const updatePayload = {
       ...existing,
       ...args,
       material_id: materialId,
-    });
+    };
+    if (
+      hasWarmSourceBinding(args)
+      && !Object.prototype.hasOwnProperty.call(args, "source_backfill_required")
+      && !Object.prototype.hasOwnProperty.call(args, "sourceBackfillRequired")
+    ) {
+      updatePayload.source_backfill_required = false;
+      updatePayload.source_status = normalizeText(args.source_status || args.sourceStatus) || "bound";
+      if (
+        !Object.prototype.hasOwnProperty.call(args, "dreaming_review_required")
+        && !Object.prototype.hasOwnProperty.call(args, "dreamingReviewRequired")
+      ) {
+        updatePayload.dreaming_review_required = false;
+      }
+    }
+    const stored = this.warmMemoryStore.upsertMaterial(scopes.warmScope, updatePayload);
     return {
       ok: true,
       scope_id: scopes.warmScope.scopeId(),
@@ -2622,6 +2637,48 @@ function buildArchiveSourceRecordFromArgs(args = {}) {
   };
 }
 
+function hasWarmSourceBinding(args = {}) {
+  if (!args || typeof args !== "object") {
+    return false;
+  }
+  const listKeys = [
+    "provenance_refs",
+    "provenanceRefs",
+    "source_archive_refs",
+    "sourceArchiveRefs",
+    "source_trace_ids",
+    "sourceTraceIds",
+    "source_span_ids",
+    "sourceSpanIds",
+    "source_material_ids",
+    "sourceMaterialIds",
+  ];
+  if (listKeys.some((key) => {
+    const value = args[key];
+    return Array.isArray(value) ? value.some((item) => normalizeText(item)) : Boolean(normalizeText(value));
+  })) {
+    return true;
+  }
+  return Boolean(normalizeText(
+    args.source_record_id
+      || args.sourceRecordId
+      || args.source_query
+      || args.sourceQuery
+      || args.source_assistant_text
+      || args.sourceAssistantText
+      || args.source_excerpt
+      || args.sourceExcerpt
+      || args.evidence_query
+      || args.evidenceQuery
+      || args.evidence_assistant_text
+      || args.evidenceAssistantText
+      || args.evidence_excerpt
+      || args.evidenceExcerpt
+      || args.source_path
+      || args.sourcePath,
+  ));
+}
+
 function compactLocalArchiveWrite(archive = null) {
   if (!archive || typeof archive !== "object") {
     return null;
@@ -2631,6 +2688,12 @@ function compactLocalArchiveWrite(archive = null) {
     material_id: normalizeText(archive.material_id),
     title: normalizeText(archive.title),
     snippet_count: Array.isArray(archive.snippets) ? archive.snippets.length : 0,
+    source_backfill_required: archive.source_backfill_required === true,
+    source_status: normalizeText(archive.source_status),
+    source_archive_refs: normalizeStringList(archive.source_archive_refs),
+    source_trace_ids: normalizeStringList(archive.source_trace_ids),
+    source_span_ids: normalizeStringList(archive.source_span_ids),
+    source_material_ids: normalizeStringList(archive.source_material_ids),
     updated_at: normalizeText(archive.updated_at),
   };
 }

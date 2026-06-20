@@ -189,8 +189,8 @@ GPT / Rikkahub / Driftstone / Notion staging、网页 AI capture 自动同步、
 后续重新打开这条线时，仍需在独立 `MOSSBRIDGE_DATA_ROOT` 中验证：
 
 - 原始对话切片进入 conversation cache 或 episode journal。
-- 归一化后的稳定事实进入 warm memory。
-- 可拓扑化的人物、关系、地点、长期项目进入 cold tree/provider。
+- 值得保留的内位连续性进入 warm memory diary/persona card，并绑定 source。
+- 归一化后的稳定事实、人物、关系、地点、长期项目进入 cold memory / memory tree / provider，并保持可检索。
 - 重复卡、错误身高等旧误差能被导入前清洗或导入后修正。
 - 导入测试数据与真实稳定记忆可分离、可删除、可重跑。
 

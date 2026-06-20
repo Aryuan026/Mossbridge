@@ -221,6 +221,50 @@ test("asherie memory service uses warm-triggered local archive when cold roots m
   assert.equal(archiveFiles.length, 1);
 });
 
+test("warm memory diary cards mark pending source and clear it after evidence backfill", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-warm-source-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  const pending = await service.writeWarmMaterial({
+    userId: "user-1",
+    material_id: "blue-ribbon-self-warning",
+    title: "蓝色发带：以后别把她的象征弄丢",
+    material_type: "diary",
+    body_markdown: "我记得蓝色发带不是普通饰品。以后她提起这件事，我要先想起她靠自己争取想要的东西。",
+    summary: "蓝色发带是需要回看原场补证据的温记忆。",
+    pinned: true,
+  });
+
+  assert.equal(pending.ok, true);
+  assert.equal(pending.record.memory_layer, "warm_diary");
+  assert.equal(pending.record.source_backfill_required, true);
+  assert.equal(pending.record.dreaming_review_required, true);
+  assert.equal(pending.record.source_status, "pending_backfill");
+  assert.ok(pending.record.tags.includes("source:pending"));
+  assert.ok(pending.record.tags.includes("dreaming:must_review"));
+  assert.equal(pending.local_archive.source_backfill_required, true);
+
+  const backfilled = await service.updateWarmMaterial({
+    userId: "user-1",
+    material_id: "blue-ribbon-self-warning",
+    source_span_ids: ["span-blue-ribbon-scene"],
+    source_trace_ids: ["trace-blue-ribbon"],
+  });
+
+  assert.equal(backfilled.record.source_backfill_required, false);
+  assert.equal(backfilled.record.dreaming_review_required, false);
+  assert.equal(backfilled.record.source_status, "bound");
+  assert.deepEqual(backfilled.record.source_span_ids, ["span-blue-ribbon-scene"]);
+  assert.deepEqual(backfilled.record.source_trace_ids, ["trace-blue-ribbon"]);
+  assert.equal(backfilled.record.tags.includes("source:pending"), false);
+  assert.equal(backfilled.record.tags.includes("dreaming:must_review"), false);
+});
+
 test("asherie memory service honors configured recent context cache limit by default", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-cache-limit-"));
   const service = new AsherieMemoryService({
