@@ -119,6 +119,8 @@ MossbridgeData/
     notion_sync/
     raw_transcript_archive/
     dreaming_mutation_log/
+    memory_metabolism_source_events/
+    memory_metabolism_mutation_ledger/
     relationship_contracts/
     curated_memories.json
   cache/
@@ -168,8 +170,29 @@ MossbridgeData/
   网页 AI 抓取插件的每日对话入口。第一版提供验证/暂存/导入契约，但不做自动浏览器同步、不直接写稳定记忆。
 - `storage/dreaming_mutation_log/`
   记录 dreaming 做过哪些整理和改写，方便回滚和审计。
+- `storage/memory_metabolism_source_events/`
+  append-only 原料事件账本。Notebook、capture、hot、ongoing/case/episode/observation 变化都应该先作为 source event 进入这里或 conversation cache，再由 dreaming 判断是否沉淀。
+- `storage/memory_metabolism_mutation_ledger/`
+  由工具宿主生成的真实写入账本。它记录 attempt、target、object id、action、before/after hash、source ids；模型的 receipt 不能替代它。
 - `cache/`
   运行缓存，可以清理；不要把它当稳定记忆。
+
+## Dreaming 代谢闭环
+
+Mossbridge 的代谢入口不是“模型说它消化了就算完成”。一个合格闭环是：
+
+```text
+source event / conversation cache
+  -> dreaming attempt
+  -> memory write tool with metabolism_attempt_id + source ids
+  -> server mutation ledger
+  -> receipt with per-source dispositions
+  -> completed/deferred/conflict source state
+```
+
+Codex 接新插件或新工具时，优先写 source event，不要直接写 warm/cold/case。`no_op` 也必须逐条说明每个 source 为什么只是 `evaluated` 或 `rejected_as_noise`。如果模型不确定、证据不足或出现冲突，标成 `deferred` / `conflict_open` / `failed_retryable`，让下一轮继续处理，而不是吞掉整批原料。
+
+召回反馈也分层：被检索到只是 `retrieved`，不会自动增加 `recall_count` 或 `storage_boost`。只有后续接入 `used`、`confirmed` 或用户纠错时，才应该强化、降权或打开冲突。
 
 ## 轻量记忆仓第一阶段怎么用
 

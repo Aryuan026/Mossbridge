@@ -12,6 +12,7 @@ function createHost(overrides = {}) {
       config: {
         ...(overrides.config || {}),
       },
+      memoryMetabolism: overrides.memoryMetabolism || null,
       diary: {
         async append(args) {
           return { filePath: "/tmp/diary.md", ...args };

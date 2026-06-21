@@ -113,6 +113,7 @@ The importer:
 - writes stable, deduplicated turn pairs into `cache/conversation_cache/`
 - writes recent source packets into `cache/hot/upstream_context_merge/`
 - writes recent turn slices and a projection into `cache/hot/context_basin/` and `cache/hot/projections/`
+- writes append-only source events into `storage/memory_metabolism_source_events/` so later dreaming can evaluate old captures without relying only on a recent-time cursor
 
 It does not promote anything directly into warm cards, cold roots, notebooks, episodes, or cases. Those stable layers are still owned by normal memory tools and dreaming/metabolism passes.
 
@@ -124,9 +125,10 @@ The intended flow is:
 capture bundle
   -> validate
   -> stage under cache/app_daily_captures
-  -> normalize into cache/conversation_cache and cache/hot
+  -> normalize into cache/conversation_cache, cache/hot, and metabolism source events
   -> local review/dreaming extracts notebook, warm, ongoing, episode, and case candidates
-  -> accepted stable memory is written to storage
+  -> accepted stable memory is written by tools with a server mutation ledger
+  -> receipt closes each source as promoted, evaluated, rejected, deferred, conflict, or retryable failure
 ```
 
 Daily captures are raw source material. They should stay auditable and reversible.

@@ -12,6 +12,19 @@ const DEFAULT_MIN_SOURCE_RECORDS = 2;
 const ACTIVE_ATTEMPT_MAX_AGE_MS = 6 * 60 * 60_000;
 const MAX_STORED_ATTEMPTS = 120;
 const MAX_STORED_COMPLETED_RECORD_IDS = 500;
+const MAX_SOURCE_EVENT_FILES = 45;
+const MAX_LEDGER_FILES = 45;
+const COMPLETED_SOURCE_DISPOSITIONS = new Set(["promoted", "evaluated", "rejected_as_noise"]);
+const RETRY_SOURCE_DISPOSITIONS = new Set(["deferred", "conflict_open", "failed_retryable"]);
+const ALLOWED_SOURCE_DISPOSITIONS = new Set([
+  "pending",
+  "evaluated",
+  "promoted",
+  "deferred",
+  "rejected_as_noise",
+  "conflict_open",
+  "failed_retryable",
+]);
 
 class MemoryMetabolismService {
   constructor({ config = {}, memoryService = null } = {}) {
@@ -21,9 +34,18 @@ class MemoryMetabolismService {
       || path.join(config.stateDir || process.cwd(), "memory-metabolism-state.json");
     this.logDir = normalizeText(memoryService?.layout?.dreamingMutationLogDir)
       || path.join(config.asherieDataRoot || config.stateDir || process.cwd(), "storage", "dreaming_mutation_log");
+    const storageRoot = normalizeText(memoryService?.layout?.storageRoot)
+      || path.dirname(this.logDir)
+      || path.join(config.asherieDataRoot || config.stateDir || process.cwd(), "storage");
+    this.sourceEventDir = normalizeText(config.memoryMetabolismSourceEventDir)
+      || path.join(storageRoot, "memory_metabolism_source_events");
+    this.mutationLedgerDir = normalizeText(config.memoryMetabolismMutationLedgerDir)
+      || path.join(storageRoot, "memory_metabolism_mutation_ledger");
     this.lastPollAtMs = 0;
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
     fs.mkdirSync(this.logDir, { recursive: true });
+    fs.mkdirSync(this.sourceEventDir, { recursive: true });
+    fs.mkdirSync(this.mutationLedgerDir, { recursive: true });
   }
 
   describe() {
@@ -33,6 +55,8 @@ class MemoryMetabolismService {
       enabled: this.isEnabled(),
       state_file: this.stateFile,
       mutation_log_dir: this.logDir,
+      source_event_dir: this.sourceEventDir,
+      mutation_ledger_dir: this.mutationLedgerDir,
       last_success_at: normalizeText(state.last_success_at),
       last_successful_record_ts_utc: normalizeText(state.last_successful_record_ts_utc),
       active_attempt: summarizeAttempt(findActiveAttempt(state, Date.now())),
@@ -243,16 +267,23 @@ class MemoryMetabolismService {
 
   collectSourceRecords({ userId = "", nowMs = Date.now() } = {}) {
     if (!this.memoryService?.conversationCache || typeof this.memoryService.resolveScopes !== "function") {
-      return { records: [], stats: { reason: "missing_memory_service" } };
+      const eventRecords = this.collectSourceEventRecords({
+        userId,
+        nowMs,
+        completedIds: new Set(this.readState().completed_record_ids || []),
+      });
+      return {
+        records: eventRecords.slice(-this.getMaxSourceRecords()),
+        stats: {
+          reason: eventRecords.length ? "source_event_only" : "missing_memory_service",
+          source_event_count: eventRecords.length,
+        },
+      };
     }
     const scopes = this.memoryService.resolveScopes({ userId });
     const state = this.readState();
-    const lastSuccessMs = Date.parse(state.last_successful_record_ts_utc || state.last_success_at || "");
     const windowStartMs = normalizeNowMs(nowMs) - (this.getWindowHours() * 60 * 60_000);
-    const cutoffMs = Math.max(
-      Number.isFinite(lastSuccessMs) ? lastSuccessMs : 0,
-      windowStartMs,
-    );
+    const cutoffMs = windowStartMs;
     const fetchLimit = Math.max(this.getMaxSourceRecords() * 4, this.getMaxSourceRecords());
     const recent = this.memoryService.conversationCache.listRecent(
       scopes.scopedUserId,
@@ -261,19 +292,108 @@ class MemoryMetabolismService {
       true,
     );
     const completedIds = new Set(Array.isArray(state.completed_record_ids) ? state.completed_record_ids : []);
-    const records = (recent.records || [])
+    const conversationRecords = (recent.records || [])
       .filter((record) => isMetabolizableRecord(record, { cutoffMs, nowMs, completedIds }))
       .sort(compareRecordAsc)
-      .slice(-this.getMaxSourceRecords())
       .map(compactSourceRecord);
+    const eventRecords = this.collectSourceEventRecords({
+      userId,
+      scopedUserId: scopes.scopedUserId,
+      nowMs,
+      completedIds,
+    });
+    const records = mergeSourceRecords(conversationRecords, eventRecords)
+      .sort(compareRecordAsc)
+      .slice(-this.getMaxSourceRecords());
     return {
       records,
       warmDuplicateClusters: this.collectWarmDuplicateClusters({ userId, limit: 6 }),
       warmReviewCandidates: this.collectWarmReviewCandidates({ userId, limit: 8 }),
-      stats: recent.stats || {},
+      stats: {
+        ...(recent.stats || {}),
+        conversation_record_count: conversationRecords.length,
+        source_event_count: eventRecords.length,
+      },
       scoped_user_id: scopes.scopedUserId,
       cutoff_utc: new Date(cutoffMs).toISOString(),
     };
+  }
+
+  collectSourceEventRecords({
+    userId = "",
+    scopedUserId = "",
+    nowMs = Date.now(),
+    completedIds = new Set(),
+  } = {}) {
+    const targetScopedUserId = normalizeText(scopedUserId) || this.resolveScopedUserId(userId);
+    const normalizedNowMs = normalizeNowMs(nowMs);
+    const events = this.readSourceEvents()
+      .filter((event) => isMetabolizableSourceEvent(event, {
+        scopedUserId: targetScopedUserId,
+        userId,
+        nowMs: normalizedNowMs,
+        completedIds,
+      }))
+      .sort(compareRecordAsc);
+    return uniqueSourceEvents(events).map(compactSourceEvent);
+  }
+
+  resolveScopedUserId(userId = "") {
+    if (this.memoryService && typeof this.memoryService.resolveScopes === "function") {
+      try {
+        return normalizeText(this.memoryService.resolveScopes({ userId })?.scopedUserId);
+      } catch {
+        return normalizeText(userId);
+      }
+    }
+    return normalizeText(userId);
+  }
+
+  recordSourceEvent(args = {}) {
+    const nowIso = normalizeText(args.ts_utc || args.tsUtc) || new Date().toISOString();
+    const sourceType = normalizeText(args.source_type || args.sourceType) || "memory_event";
+    const sourceId = normalizeText(
+      args.source_id
+        || args.sourceId
+        || args.record_id
+        || args.recordId
+        || args.object_id
+        || args.objectId,
+    );
+    const content = normalizeText(args.content || args.text || args.summary);
+    const contentHash = normalizeText(args.content_hash || args.contentHash)
+      || hashStableJson({ sourceType, sourceId, content, metadata: args.metadata || {} });
+    const eventId = normalizeText(args.event_id || args.eventId)
+      || `src_${hashStableJson({ sourceType, sourceId, contentHash }).slice(0, 20)}`;
+    const scopedUserId = normalizeText(args.scoped_user_id || args.scopedUserId)
+      || this.resolveScopedUserId(args.user_id || args.userId);
+    const event = {
+      event_id: eventId,
+      source_id: sourceId || eventId,
+      source_type: sourceType,
+      source_label: normalizeText(args.source_label || args.sourceLabel),
+      object_id: normalizeText(args.object_id || args.objectId),
+      action: normalizeText(args.action),
+      user_id: normalizeText(args.user_id || args.userId),
+      scoped_user_id: scopedUserId,
+      ts_utc: nowIso,
+      content_hash: contentHash,
+      content: content ? truncateText(content, 1600) : "",
+      summary: normalizeText(args.summary),
+      metadata: compactMetadata(args.metadata),
+      status: "pending",
+      created_at: new Date().toISOString(),
+    };
+    this.appendJsonl(this.sourceEventDir, event);
+    this.appendLog({
+      event: "source_event_recorded",
+      event_id: event.event_id,
+      source_type: event.source_type,
+      source_id: event.source_id,
+      scoped_user_id: event.scoped_user_id,
+      ts_utc: event.created_at,
+    });
+    return event;
   }
 
   collectWarmDuplicateClusters({ userId = "", limit = 6 } = {}) {
@@ -443,6 +563,71 @@ class MemoryMetabolismService {
     };
   }
 
+  recordMutation(args = {}) {
+    const attemptId = normalizeText(args.attempt_id || args.attemptId);
+    if (!attemptId) {
+      return { ok: false, error: "attempt_id is required for mutation ledger entries" };
+    }
+    const state = this.readState();
+    const attempt = state.attempts[attemptId] || null;
+    if (!attempt) {
+      return { ok: false, error: `attempt not found: ${attemptId}` };
+    }
+    const attemptSourceIds = new Set(normalizeStringList(attempt.source_record_ids));
+    const sourceIds = normalizeStringList(args.source_ids || args.sourceIds || args.source_record_ids || args.sourceRecordIds);
+    const invalidSourceIds = sourceIds.filter((id) => !attemptSourceIds.has(id));
+    if (invalidSourceIds.length) {
+      return {
+        ok: false,
+        error: `mutation source ids do not belong to attempt: ${invalidSourceIds.join(", ")}`,
+        invalid_source_ids: invalidSourceIds,
+      };
+    }
+    const nowIso = new Date().toISOString();
+    const target = normalizeText(args.target);
+    const action = normalizeText(args.action);
+    const objectId = normalizeText(args.object_id || args.objectId || args.id);
+    const beforeHash = normalizeText(args.before_hash || args.beforeHash)
+      || hashStableJson(args.before === undefined ? null : args.before);
+    const afterHash = normalizeText(args.after_hash || args.afterHash)
+      || hashStableJson(args.after === undefined ? null : args.after);
+    const mutation = {
+      mutation_id: normalizeText(args.mutation_id || args.mutationId)
+        || `mut_${hashStableJson({ attemptId, target, action, objectId, sourceIds, beforeHash, afterHash, nowIso }).slice(0, 18)}`,
+      attempt_id: attemptId,
+      target,
+      object_id: objectId,
+      action,
+      before_hash: beforeHash,
+      after_hash: afterHash,
+      source_ids: sourceIds,
+      tool_name: normalizeText(args.tool_name || args.toolName),
+      summary: normalizeText(args.summary),
+      committed_at: nowIso,
+      policy: "Server-generated mutation ledger entry. The model may report judgment, but this entry records a real tool/store mutation.",
+    };
+    if (!mutation.target || !mutation.action || !mutation.object_id) {
+      return { ok: false, error: "target, action, and object_id are required for mutation ledger entries" };
+    }
+    this.appendJsonl(this.mutationLedgerDir, mutation);
+    attempt.mutation_ledger = Array.isArray(attempt.mutation_ledger) ? attempt.mutation_ledger : [];
+    attempt.mutation_ledger.push(mutation);
+    attempt.status = "mutation_seen";
+    attempt.last_mutation_at = nowIso;
+    this.writeState(pruneState(state));
+    this.appendLog({
+      event: "mutation_committed",
+      attempt_id: attemptId,
+      mutation_id: mutation.mutation_id,
+      target: mutation.target,
+      action: mutation.action,
+      object_id: mutation.object_id,
+      source_ids: mutation.source_ids,
+      ts_utc: nowIso,
+    });
+    return { ok: true, mutation, attempt: summarizeAttempt(attempt) };
+  }
+
   recordReceipt(args = {}) {
     const attemptId = normalizeText(args.attempt_id || args.attemptId);
     if (!attemptId) {
@@ -450,34 +635,50 @@ class MemoryMetabolismService {
     }
     const state = this.readState();
     const attempt = state.attempts[attemptId] || null;
-    const mutations = normalizeMutationList(args.mutations);
-    const mutationCount = Math.max(
-      0,
-      Number(args.mutation_count || args.mutationCount) || mutations.length || 0,
-    );
+    const ledger = attempt ? this.readMutationLedgerForAttempt(attemptId, attempt) : [];
+    const mutationCount = ledger.length;
     const status = normalizeReceiptStatus(args.status, mutationCount);
     const sourceRecordIds = normalizeStringList(args.source_record_ids || args.sourceRecordIds);
+    const verification = verifyReceipt({
+      attempt,
+      status,
+      ledger,
+      requestedSourceIds: sourceRecordIds,
+      dispositions: normalizeSourceDispositions(
+        args.source_dispositions
+          || args.sourceDispositions
+          || args.dispositions,
+      ),
+    });
     const receipt = {
       receipt_id: `receipt-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
       attempt_id: attemptId,
       attempt_known: Boolean(attempt),
       status,
-      ok: status === "no_op" || (status === "mutated" && mutationCount > 0),
+      ok: verification.ok,
       mutation_count: mutationCount,
-      source_record_ids: sourceRecordIds.length ? sourceRecordIds : normalizeStringList(attempt?.source_record_ids),
-      mutations,
+      source_record_ids: verification.source_record_ids,
+      completed_source_record_ids: verification.completed_source_record_ids,
+      retry_source_record_ids: verification.retry_source_record_ids,
+      source_dispositions: verification.source_dispositions,
+      mutations: compactMutationLedger(ledger),
       summary: normalizeText(args.summary),
-      error: normalizeText(args.error),
+      error: normalizeText(args.error) || verification.error,
+      verification,
       ts_utc: new Date().toISOString(),
-      policy: "Receipt stores shareable mutation summaries only; no raw hidden chain-of-thought.",
+      policy: "Receipt stores model judgment plus server verification. Tool-host mutation ledger, not model self-report, proves memory writes.",
     };
 
     if (attempt) {
       attempt.receipts = Array.isArray(attempt.receipts) ? attempt.receipts : [];
       attempt.receipts.push(receipt);
-      attempt.status = receipt.ok ? "mutation_recorded" : "receipt_failed";
+      attempt.source_dispositions = {
+        ...(attempt.source_dispositions && typeof attempt.source_dispositions === "object" ? attempt.source_dispositions : {}),
+        ...Object.fromEntries(receipt.source_dispositions.map((item) => [item.source_id, item])),
+      };
+      attempt.status = receipt.ok ? "receipt_verified" : "receipt_failed";
       attempt.last_receipt_at = receipt.ts_utc;
-      attempt.last_error = receipt.ok ? "" : (receipt.error || "metabolism receipt did not report a successful mutation/no-op");
+      attempt.last_error = receipt.ok ? "" : (receipt.error || "metabolism receipt did not pass server verification");
       this.writeState(pruneState(state));
     }
     this.appendLog({
@@ -555,14 +756,23 @@ class MemoryMetabolismService {
       status: receipt.status,
       mutation_count: receipt.mutation_count,
       summary: receipt.summary,
+      completed_source_record_ids: normalizeStringList(receipt.completed_source_record_ids),
+      retry_source_record_ids: normalizeStringList(receipt.retry_source_record_ids),
     };
     attempt.last_error = "";
     state.last_success_at = completedAt;
-    state.last_successful_record_ts_utc = maxRecordTimestamp(attempt.source_records) || completedAt;
+    const completedSourceIds = normalizeStringList(receipt.completed_source_record_ids);
+    state.last_successful_record_ts_utc = maxRecordTimestamp(
+      filterRecordsByIds(attempt.source_records, completedSourceIds),
+    ) || completedAt;
     state.retry_after_ms = 0;
     state.completed_record_ids = mergeCompletedRecordIds(
       state.completed_record_ids,
-      attempt.source_record_ids,
+      completedSourceIds,
+    );
+    state.source_record_statuses = mergeSourceRecordStatuses(
+      state.source_record_statuses,
+      receipt.source_dispositions,
     );
     this.writeState(pruneState(state));
     this.appendLog({
@@ -571,7 +781,8 @@ class MemoryMetabolismService {
       receipt_id: receipt.receipt_id,
       status: receipt.status,
       mutation_count: receipt.mutation_count,
-      source_record_ids: attempt.source_record_ids,
+      source_record_ids: completedSourceIds,
+      retry_source_record_ids: normalizeStringList(receipt.retry_source_record_ids),
       ts_utc: completedAt,
     });
     return {
@@ -656,18 +867,35 @@ class MemoryMetabolismService {
 
   writeState(state) {
     fs.mkdirSync(path.dirname(this.stateFile), { recursive: true });
-    fs.writeFileSync(this.stateFile, `${JSON.stringify(normalizeState(state), null, 2)}\n`, "utf8");
+    writeJsonFileAtomic(this.stateFile, normalizeState(state));
   }
 
   appendLog(entry = {}) {
+    return this.appendJsonl(this.logDir, entry);
+  }
+
+  appendJsonl(dir, entry = {}) {
     const ts = normalizeText(entry.ts_utc || entry.tsUtc) || new Date().toISOString();
-    const filePath = path.join(this.logDir, `${ts.slice(0, 10)}.jsonl`);
+    const filePath = path.join(dir, `${ts.slice(0, 10)}.jsonl`);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.appendFileSync(filePath, `${JSON.stringify({
       ...entry,
       ts_utc: ts,
     })}\n`, "utf8");
     return filePath;
+  }
+
+  readSourceEvents() {
+    return readJsonlDir(this.sourceEventDir, MAX_SOURCE_EVENT_FILES);
+  }
+
+  readMutationLedgerForAttempt(attemptId = "", attempt = null) {
+    const id = normalizeText(attemptId);
+    const stateMutations = Array.isArray(attempt?.mutation_ledger) ? attempt.mutation_ledger : [];
+    const diskMutations = readJsonlDir(this.mutationLedgerDir, MAX_LEDGER_FILES)
+      .filter((entry) => normalizeText(entry.attempt_id || entry.attemptId) === id);
+    return uniqueMutations([...stateMutations, ...diskMutations])
+      .sort((left, right) => String(left.committed_at || "").localeCompare(String(right.committed_at || "")));
   }
 }
 
@@ -683,8 +911,11 @@ function buildDreamingTriggerText(attempt = {}) {
     "When warm cards decay, duplicate, or carry source_backfill_required/source:pending/dreaming:must_review, re-read the warm card plus available source, then either bind source refs, keep it warm, or sediment exact facts/structure into cold memory with source ids. Do not promote untraceable guesses.",
     "Duplicate warm-card consolidation is a first-class dreaming job: if warm cards clearly describe the same stable subject, consolidate the relationship/structure into cold memory while preserving source_material_ids, source_archive_refs, source_trace_ids, source_span_ids, episode_refs, and case_refs. Leave source warm cards in place unless an explicit cleanup path handles them.",
     "Memory writes should contain grounded, reusable user continuity. Operational failures, quota notices, debug chatter, raw hidden chain-of-thought, credentials, and ungrounded guesses stay outside memory.",
-    "After successful mutations, call mossbridge_memory_metabolism_receipt_write with this attempt_id, source record ids, mutation_count, mutation summaries, and a short shareable summary.",
-    "If nothing should be promoted, call the same receipt tool with status=no_op and mutation_count=0. A final JSON reply without this receipt is treated as an incomplete dreaming attempt and will be retried.",
+    "When you use memory-writing tools during this pass, include metabolism_attempt_id plus the exact source_record_ids/source_ids that justify that mutation. The tool host records the real server-side mutation ledger with before/after hashes; do not rely on self-reported mutation_count as proof.",
+    "After reviewing every source, call mossbridge_memory_metabolism_receipt_write with this attempt_id, the examined source_record_ids, and source_dispositions. Every source id needs one shareable reason and one status: promoted, evaluated, rejected_as_noise, deferred, conflict_open, or failed_retryable.",
+    "If nothing should be promoted, call the receipt tool with status=no_op and per-source rejected_as_noise/evaluated dispositions. A batch no_op without per-source reasons is incomplete and will be retried.",
+    "If a source needs more evidence or a conflict is open, mark it deferred/conflict_open/failed_retryable so the bridge does not permanently consume it.",
+    "A final JSON reply without a verified receipt is treated as an incomplete dreaming attempt and will be retried.",
     "Usually finish with {\"action\":\"silent\"}; contact the user only if the source records reveal a timely obligation that cannot wait.",
     "",
     "Source digest:",
@@ -705,9 +936,10 @@ function formatSourceDigest(records = []) {
     return ["(no source records)"];
   }
   return source.map((record, index) => [
-    `[${index + 1}] id=${record.record_id} ts=${record.ts_utc} source=${record.source_client || "(unknown)"}`,
+    `[${index + 1}] id=${record.record_id} ts=${record.ts_utc} type=${record.source_type || "conversation_cache"} source=${record.source_client || "(unknown)"} hash=${record.content_hash || "(none)"}`,
     record.query ? `user: ${truncateText(record.query, 420)}` : "",
     record.assistant_text_final ? `assistant: ${truncateText(record.assistant_text_final, 420)}` : "",
+    record.content ? `content: ${truncateText(record.content, 520)}` : "",
   ].filter(Boolean).join("\n"));
 }
 
@@ -1078,6 +1310,9 @@ function normalizeState(value) {
     last_successful_record_ts_utc: normalizeText(source.last_successful_record_ts_utc),
     retry_after_ms: Number(source.retry_after_ms) || 0,
     completed_record_ids: normalizeStringList(source.completed_record_ids),
+    source_record_statuses: source.source_record_statuses && typeof source.source_record_statuses === "object" && !Array.isArray(source.source_record_statuses)
+      ? { ...source.source_record_statuses }
+      : {},
   };
 }
 
@@ -1107,7 +1342,7 @@ function findActiveAttempt(state, nowMs = Date.now()) {
       const retryAfterMs = Date.parse(attempt.retry_after || "") || 0;
       return retryAfterMs > normalizedNowMs;
     }
-    if (!["queued", "dispatched", "mutation_recorded"].includes(status)) {
+  if (!["queued", "dispatched", "mutation_seen", "receipt_verified"].includes(status)) {
       return false;
     }
     const createdAtMs = Date.parse(attempt.created_at || "") || 0;
@@ -1152,8 +1387,15 @@ function isMetabolizableRecord(record = {}, { cutoffMs = 0, nowMs = Date.now(), 
 }
 
 function compactSourceRecord(record = {}) {
+  const contentHash = hashStableJson({
+    query: normalizeText(record.query),
+    assistant_text_final: normalizeText(record.assistant_text_final),
+    ts_utc: normalizeText(record.ts_utc),
+  });
   return {
     record_id: normalizeText(record.record_id),
+    source_type: "conversation_cache",
+    source_id: normalizeText(record.record_id),
     ts_utc: normalizeText(record.ts_utc),
     source_client: normalizeText(record.source_client),
     route_id: normalizeText(record.route_id),
@@ -1161,7 +1403,84 @@ function compactSourceRecord(record = {}) {
     model: normalizeText(record.model),
     query: normalizeText(record.query),
     assistant_text_final: normalizeText(record.assistant_text_final),
+    content_hash: contentHash,
   };
+}
+
+function compactSourceEvent(event = {}) {
+  const eventId = normalizeText(event.event_id || event.eventId);
+  const content = normalizeText(event.content || event.text || event.summary);
+  return {
+    record_id: eventId,
+    source_type: normalizeText(event.source_type || event.sourceType) || "memory_event",
+    source_id: normalizeText(event.source_id || event.sourceId) || eventId,
+    source_client: normalizeText(event.source_label || event.sourceLabel) || "memory_event",
+    route_id: normalizeText(event.action),
+    thread_id: normalizeText(event.object_id || event.objectId),
+    model: "",
+    ts_utc: normalizeText(event.ts_utc || event.tsUtc || event.created_at || event.createdAt),
+    query: normalizeText(event.summary) || truncateText(content, 280),
+    assistant_text_final: "",
+    content: truncateText(content, 1600),
+    content_hash: normalizeText(event.content_hash || event.contentHash) || hashStableJson(content),
+    event_metadata: compactMetadata(event.metadata),
+  };
+}
+
+function mergeSourceRecords(...groups) {
+  const seen = new Set();
+  const output = [];
+  for (const record of groups.flat()) {
+    const id = normalizeText(record?.record_id);
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    output.push(record);
+  }
+  return output;
+}
+
+function uniqueSourceEvents(events = []) {
+  const seen = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    const id = normalizeText(event?.event_id || event?.eventId);
+    if (!id) {
+      continue;
+    }
+    seen.set(id, event);
+  }
+  return Array.from(seen.values());
+}
+
+function isMetabolizableSourceEvent(event = {}, {
+  scopedUserId = "",
+  userId = "",
+  nowMs = Date.now(),
+  completedIds = new Set(),
+} = {}) {
+  const eventId = normalizeText(event.event_id || event.eventId);
+  const sourceId = normalizeText(event.source_id || event.sourceId);
+  if (!eventId || completedIds.has(eventId) || (sourceId && completedIds.has(sourceId))) {
+    return false;
+  }
+  const status = normalizeText(event.status).toLowerCase();
+  if (status && status !== "pending") {
+    return false;
+  }
+  const eventScopedUserId = normalizeText(event.scoped_user_id || event.scopedUserId);
+  const eventUserId = normalizeText(event.user_id || event.userId);
+  if (normalizeText(scopedUserId) && eventScopedUserId && eventScopedUserId !== normalizeText(scopedUserId)) {
+    return false;
+  }
+  if (!eventScopedUserId && normalizeText(userId) && eventUserId && eventUserId !== normalizeText(userId)) {
+    return false;
+  }
+  const tsMs = Date.parse(event.ts_utc || event.tsUtc || event.created_at || event.createdAt || "");
+  if (Number.isFinite(tsMs) && tsMs > normalizeNowMs(nowMs) + 60_000) {
+    return false;
+  }
+  return Boolean(normalizeText(event.content || event.text || event.summary || event.source_id || event.sourceId));
 }
 
 function compareRecordAsc(left, right) {
@@ -1197,6 +1516,236 @@ function normalizeMutationList(value) {
     .slice(0, 30);
 }
 
+function normalizeSourceDispositions(value) {
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => {
+      const status = normalizeSourceDispositionStatus(item.status || item.disposition);
+      return {
+        source_id: normalizeText(item.source_id || item.sourceId || item.record_id || item.recordId),
+        status,
+        reason: normalizeText(item.reason || item.summary),
+        target_refs: normalizeStringList(item.target_refs || item.targetRefs || item.object_ids || item.objectIds),
+      };
+    })
+    .filter((item) => item.source_id || item.status || item.reason)
+    .slice(0, 120);
+}
+
+function normalizeSourceDispositionStatus(value) {
+  const status = normalizeText(value).toLowerCase().replace(/-/g, "_");
+  if (status === "rejected" || status === "noise" || status === "no_op") {
+    return "rejected_as_noise";
+  }
+  if (status === "done" || status === "checked") {
+    return "evaluated";
+  }
+  if (status === "mutated" || status === "promote") {
+    return "promoted";
+  }
+  if (ALLOWED_SOURCE_DISPOSITIONS.has(status)) {
+    return status;
+  }
+  return "";
+}
+
+function verifyReceipt({
+  attempt = null,
+  status = "",
+  ledger = [],
+  requestedSourceIds = [],
+  dispositions = [],
+} = {}) {
+  if (!attempt) {
+    return buildReceiptVerification({
+      ok: false,
+      error: "attempt not found",
+      status,
+    });
+  }
+  const attemptSourceIds = normalizeStringList(attempt.source_record_ids);
+  const attemptSourceSet = new Set(attemptSourceIds);
+  const sourceRecordIds = normalizeStringList(requestedSourceIds).length
+    ? normalizeStringList(requestedSourceIds)
+    : attemptSourceIds;
+  const invalidSourceIds = sourceRecordIds.filter((id) => !attemptSourceSet.has(id));
+  if (invalidSourceIds.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `receipt source ids do not belong to attempt: ${invalidSourceIds.join(", ")}`,
+      status,
+      sourceRecordIds,
+      invalidSourceIds,
+    });
+  }
+  const receiptSourceSet = new Set(sourceRecordIds);
+  const missingAttemptSourceIds = attemptSourceIds.filter((id) => !receiptSourceSet.has(id));
+  if (missingAttemptSourceIds.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `receipt must cover every attempt source id: ${missingAttemptSourceIds.join(", ")}`,
+      status,
+      sourceRecordIds,
+      missingAttemptSourceIds,
+    });
+  }
+  const dispositionById = new Map();
+  for (const disposition of dispositions) {
+    if (!disposition.source_id) {
+      continue;
+    }
+    dispositionById.set(disposition.source_id, disposition);
+  }
+  const missingDispositionIds = sourceRecordIds.filter((id) => !dispositionById.has(id));
+  if (missingDispositionIds.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `source dispositions required for every receipt source: ${missingDispositionIds.join(", ")}`,
+      status,
+      sourceRecordIds,
+      missingDispositionIds,
+      sourceDispositions: Array.from(dispositionById.values()),
+    });
+  }
+  const normalizedDispositions = sourceRecordIds.map((id) => {
+    const disposition = dispositionById.get(id) || {};
+    return {
+      source_id: id,
+      status: disposition.status,
+      reason: disposition.reason,
+      target_refs: normalizeStringList(disposition.target_refs),
+    };
+  });
+  const invalidDispositions = normalizedDispositions
+    .filter((item) => !ALLOWED_SOURCE_DISPOSITIONS.has(item.status) || !item.reason)
+    .map((item) => item.source_id);
+  if (invalidDispositions.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `each source disposition needs an allowed status and reason: ${invalidDispositions.join(", ")}`,
+      status,
+      sourceRecordIds,
+      sourceDispositions: normalizedDispositions,
+    });
+  }
+  const retrySourceIds = normalizedDispositions
+    .filter((item) => RETRY_SOURCE_DISPOSITIONS.has(item.status) || item.status === "pending")
+    .map((item) => item.source_id);
+  if (retrySourceIds.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `receipt leaves retryable source ids open: ${retrySourceIds.join(", ")}`,
+      status,
+      sourceRecordIds,
+      retrySourceIds,
+      sourceDispositions: normalizedDispositions,
+    });
+  }
+  const completedSourceIds = normalizedDispositions
+    .filter((item) => COMPLETED_SOURCE_DISPOSITIONS.has(item.status))
+    .map((item) => item.source_id);
+  const ledgerSourceIds = new Set(normalizeStringList(ledger.flatMap((mutation) => mutation.source_ids || mutation.sourceIds)));
+  const invalidLedgerSourceIds = [...ledgerSourceIds].filter((id) => !attemptSourceSet.has(id));
+  if (invalidLedgerSourceIds.length) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `mutation ledger has source ids outside attempt: ${invalidLedgerSourceIds.join(", ")}`,
+      status,
+      sourceRecordIds,
+      invalidLedgerSourceIds,
+      sourceDispositions: normalizedDispositions,
+    });
+  }
+  const promotedSourceIds = normalizedDispositions
+    .filter((item) => item.status === "promoted")
+    .map((item) => item.source_id);
+  if (status === "mutated") {
+    if (!ledger.length) {
+      return buildReceiptVerification({
+        ok: false,
+        error: "mutated receipt requires at least one server-generated mutation ledger entry",
+        status,
+        sourceRecordIds,
+        sourceDispositions: normalizedDispositions,
+      });
+    }
+    const unprovenPromotedIds = promotedSourceIds.filter((id) => !ledgerSourceIds.has(id));
+    if (unprovenPromotedIds.length) {
+      return buildReceiptVerification({
+        ok: false,
+        error: `promoted source ids have no matching mutation ledger entry: ${unprovenPromotedIds.join(", ")}`,
+        status,
+        sourceRecordIds,
+        sourceDispositions: normalizedDispositions,
+      });
+    }
+  }
+  if (status === "no_op" && (ledger.length || promotedSourceIds.length)) {
+    return buildReceiptVerification({
+      ok: false,
+      error: "no_op receipt cannot include committed mutations or promoted source dispositions",
+      status,
+      sourceRecordIds,
+      sourceDispositions: normalizedDispositions,
+    });
+  }
+  return buildReceiptVerification({
+    ok: true,
+    status,
+    sourceRecordIds,
+    completedSourceIds,
+    retrySourceIds: [],
+    sourceDispositions: normalizedDispositions,
+  });
+}
+
+function buildReceiptVerification({
+  ok = false,
+  error = "",
+  status = "",
+  sourceRecordIds = [],
+  completedSourceIds = [],
+  retrySourceIds = [],
+  invalidSourceIds = [],
+  missingAttemptSourceIds = [],
+  missingDispositionIds = [],
+  invalidLedgerSourceIds = [],
+  sourceDispositions = [],
+} = {}) {
+  return {
+    ok: Boolean(ok),
+    error: normalizeText(error),
+    status: normalizeText(status),
+    source_record_ids: normalizeStringList(sourceRecordIds),
+    completed_source_record_ids: normalizeStringList(completedSourceIds),
+    retry_source_record_ids: normalizeStringList(retrySourceIds),
+    invalid_source_ids: normalizeStringList(invalidSourceIds),
+    missing_attempt_source_ids: normalizeStringList(missingAttemptSourceIds),
+    missing_disposition_ids: normalizeStringList(missingDispositionIds),
+    invalid_ledger_source_ids: normalizeStringList(invalidLedgerSourceIds),
+    source_dispositions: Array.isArray(sourceDispositions) ? sourceDispositions : [],
+  };
+}
+
+function compactMutationLedger(ledger = []) {
+  return (Array.isArray(ledger) ? ledger : [])
+    .map((item) => ({
+      mutation_id: normalizeText(item.mutation_id || item.mutationId),
+      target: normalizeText(item.target),
+      action: normalizeText(item.action),
+      object_id: normalizeText(item.object_id || item.objectId || item.id),
+      before_hash: normalizeText(item.before_hash || item.beforeHash),
+      after_hash: normalizeText(item.after_hash || item.afterHash),
+      source_ids: normalizeStringList(item.source_ids || item.sourceIds),
+      committed_at: normalizeText(item.committed_at || item.committedAt),
+      tool_name: normalizeText(item.tool_name || item.toolName),
+      summary: normalizeText(item.summary),
+    }))
+    .filter((item) => item.mutation_id || item.target || item.object_id)
+    .slice(0, 80);
+}
+
 function findLatestSuccessfulReceipt(attempt = {}) {
   const receipts = Array.isArray(attempt.receipts) ? attempt.receipts : [];
   return receipts
@@ -1211,12 +1760,124 @@ function maxRecordTimestamp(records = []) {
   return timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : "";
 }
 
+function filterRecordsByIds(records = [], ids = []) {
+  const idSet = new Set(normalizeStringList(ids));
+  if (!idSet.size) {
+    return [];
+  }
+  return (Array.isArray(records) ? records : [])
+    .filter((record) => idSet.has(normalizeText(record.record_id)));
+}
+
 function mergeCompletedRecordIds(existing = [], next = []) {
   const merged = new Set(normalizeStringList(existing));
   for (const id of normalizeStringList(next)) {
     merged.add(id);
   }
   return Array.from(merged).slice(-MAX_STORED_COMPLETED_RECORD_IDS);
+}
+
+function mergeSourceRecordStatuses(existing = {}, dispositions = []) {
+  const output = existing && typeof existing === "object" && !Array.isArray(existing) ? { ...existing } : {};
+  for (const disposition of Array.isArray(dispositions) ? dispositions : []) {
+    const id = normalizeText(disposition?.source_id || disposition?.sourceId);
+    if (!id) {
+      continue;
+    }
+    output[id] = {
+      status: normalizeText(disposition.status),
+      reason: normalizeText(disposition.reason),
+      updated_at: new Date().toISOString(),
+    };
+  }
+  return output;
+}
+
+function uniqueMutations(mutations = []) {
+  const seen = new Map();
+  for (const mutation of Array.isArray(mutations) ? mutations : []) {
+    const id = normalizeText(mutation?.mutation_id || mutation?.mutationId);
+    if (!id) {
+      continue;
+    }
+    seen.set(id, mutation);
+  }
+  return Array.from(seen.values());
+}
+
+function readJsonlDir(dir, maxFiles = 30) {
+  try {
+    const files = fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .sort()
+      .slice(-Math.max(1, Number(maxFiles) || 30));
+    const rows = [];
+    for (const fileName of files) {
+      const filePath = path.join(dir, fileName);
+      const raw = fs.readFileSync(filePath, "utf8");
+      raw.split(/\n+/).forEach((line) => {
+        const text = line.trim();
+        if (!text) {
+          return;
+        }
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            rows.push(parsed);
+          }
+        } catch {
+          // Ignore one damaged JSONL row; the append-only ledger should keep later rows usable.
+        }
+      });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonFileAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, filePath);
+}
+
+function hashStableJson(value) {
+  return crypto.createHash("sha256")
+    .update(stableStringify(value))
+    .digest("hex");
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+}
+
+function compactMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const output = {};
+  Object.entries(value).slice(0, 24).forEach(([key, item]) => {
+    if (item === null || ["string", "number", "boolean"].includes(typeof item)) {
+      output[key] = item;
+      return;
+    }
+    if (Array.isArray(item)) {
+      output[key] = item.map((entry) => (
+        entry === null || ["string", "number", "boolean"].includes(typeof entry)
+          ? entry
+          : normalizeText(entry?.id || entry?.name || entry?.title)
+      )).slice(0, 12);
+    }
+  });
+  return output;
 }
 
 function summarizeAttempt(attempt = null) {

@@ -38,6 +38,18 @@ async function main() {
 
   const memory = new AsherieMemoryService({ config });
   const diary = new DiaryService({ config });
+  const metabolism = new MemoryMetabolismService({
+    config: {
+      ...config,
+      startWithDreaming: true,
+      dreamingPollIntervalMinutes: 1,
+      dreamingQuietMinutes: 1,
+      dreamingRetryMinutes: 1,
+      dreamingMinSourceRecords: 1,
+      dreamingMaxSourceRecords: 8,
+    },
+    memoryService: memory,
+  });
   const runId = `chain-smoke-${Date.now()}`;
 
   const warm = await memory.writeWarmMaterial({
@@ -152,19 +164,7 @@ async function main() {
       ],
     }],
   }, null, 2)}\n`, "utf8");
-  const captureImport = await importDailyCaptureTarget(captureBundlePath, { memoryService: memory });
-  const metabolism = new MemoryMetabolismService({
-    config: {
-      ...config,
-      startWithDreaming: true,
-      dreamingPollIntervalMinutes: 1,
-      dreamingQuietMinutes: 1,
-      dreamingRetryMinutes: 1,
-      dreamingMinSourceRecords: 1,
-      dreamingMaxSourceRecords: 8,
-    },
-    memoryService: memory,
-  });
+  const captureImport = await importDailyCaptureTarget(captureBundlePath, { memoryService: memory, memoryMetabolism: metabolism });
   const dreamingQueue = [];
   const dreaming = metabolism.maybeQueueDreaming({
     accountId: "smoke-account",
@@ -193,11 +193,11 @@ async function main() {
       summary: "Smoke verified the dreaming completion gate without promoting durable memory.",
       mutation_count: 0,
       source_record_ids: dreaming.source_record_ids,
-      mutations: [{
-        target: "no_op",
-        action: "no_op",
-        summary: "No durable promotion needed for the smoke record.",
-      }],
+      source_dispositions: dreaming.source_record_ids.map((sourceId) => ({
+        source_id: sourceId,
+        status: "rejected_as_noise",
+        reason: "Smoke source verifies the scheduler and receipt gate; no durable user memory should be promoted.",
+      })),
     });
   }
   const dreamingCompletion = dreaming?.queued

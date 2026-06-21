@@ -160,8 +160,10 @@ function buildSystemTriggerGuidance({ kind = "", priority = "", toolProfile = ""
       "Review the source digest and the attached memory context. Promote only grounded, reusable material into Mossbridge's local brain: warm cards, ongoing tracks, observation journal, episode journal, case index, cold-root patches, or a solitude note.",
       "Keep the mutation small and auditable. Prefer updating an existing memory object over duplicating it when the source clearly continues the same thread.",
       "Store shareable memory outcomes and evidence. Keep raw hidden chain-of-thought, credentials, operational quota/failure noise, vague guesses, and front-stage voice rules outside memory mutations.",
-      "After successful mutations, call mossbridge_memory_metabolism_receipt_write with the attempt id, source record ids, mutation_count, mutation summaries, and a concise shareable summary. If no durable memory belongs here, call that receipt tool with status=no_op and mutation_count=0.",
-      "The bridge treats a final JSON without a metabolism receipt as incomplete and will retry this same attempt later.",
+      "When writing memory, pass metabolism_attempt_id and the exact source_record_ids/source_ids to the memory write tool so the bridge can generate a server-side mutation ledger.",
+      "After reviewing every source, call mossbridge_memory_metabolism_receipt_write with the attempt id, examined source_record_ids, and one source_disposition per source id. Use promoted, evaluated, rejected_as_noise, deferred, conflict_open, or failed_retryable with a short shareable reason.",
+      "The bridge verifies the real mutation ledger; mutation_count or self-reported mutation summaries are only hints. A no_op without per-source reasons is incomplete.",
+      "The bridge treats a final JSON without a verified metabolism receipt as incomplete and will retry this same attempt later.",
       "Usually return {\"action\":\"silent\"}. Send a WeChat message only for a timely obligation that cannot safely wait.",
     ];
   }

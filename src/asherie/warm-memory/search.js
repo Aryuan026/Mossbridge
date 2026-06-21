@@ -221,7 +221,7 @@ function buildWarmMemoryRecallPacket(
     materialTypes = [],
     recallMode = "user_triggered",
     config = {},
-    trackRetrieval = true,
+    trackRetrieval = false,
   } = {},
 ) {
   const normalizedQuery = normalizeText(query);
@@ -325,13 +325,15 @@ function buildWarmMemoryRecallPacket(
     ? hits.filter((hit) => shouldApplyWarmRecallFeedback(hit, recallGate)).map((hit) => ({
       material_id: hit.material_id,
       recalled_at: recalledAt,
+      feedback_stage: "retrieved",
       storage_boost: Math.min(
         Number(resolvedConfig.maxStorageBoost) || 2.5,
         Math.max(Number(hit.activation_score) || 0, Number(hit.score) || 0) + 1,
       ),
     }))
     : [];
-  if (trackRetrieval && feedbackRows.length && typeof store.applyRecallFeedback === "function") {
+  const shouldReinforce = ["reinforce", "used", "confirmed"].includes(normalizeText(trackRetrieval).toLowerCase());
+  if (shouldReinforce && feedbackRows.length && typeof store.applyRecallFeedback === "function") {
     store.applyRecallFeedback(scope, feedbackRows);
   }
 

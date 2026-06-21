@@ -8,6 +8,7 @@ const dotenv = require("dotenv");
 const { readConfig } = require("../src/core/config");
 const { importDailyCaptureTarget } = require("../src/importers/app-daily-capture");
 const { AsherieMemoryService } = require("../src/services/asherie-memory-service");
+const { MemoryMetabolismService } = require("../src/services/memory-metabolism-service");
 
 async function main(argv = process.argv.slice(2)) {
   loadEnv();
@@ -30,7 +31,8 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   const memoryService = new AsherieMemoryService({ config });
-  const result = await importDailyCaptureTarget(targetPath, { memoryService });
+  const memoryMetabolism = new MemoryMetabolismService({ config, memoryService });
+  const result = await importDailyCaptureTarget(targetPath, { memoryService, memoryMetabolism });
   printResult({
     ok: result.ok,
     imported: result.imported === true,

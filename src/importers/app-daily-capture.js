@@ -149,6 +149,7 @@ function stageDailyCaptureTarget(targetPath, { appDailyCaptureDir = "" } = {}) {
 
 async function importDailyCaptureTarget(targetPath, {
   memoryService,
+  memoryMetabolism = null,
   appDailyCaptureDir = "",
   scopeArgs = {},
 } = {}) {
@@ -221,6 +222,19 @@ async function importDailyCaptureTarget(targetPath, {
       tags: ["web_ai_capture", sourceClient],
       provenance_refs: provenanceRefs,
     });
+    recordCaptureSourceEvent(memoryMetabolism, {
+      source_type: "hot_upstream_capture",
+      source_id: `${stageRef}:thread:${threadId || title}`,
+      source_label: sourceClient,
+      object_id: threadId || title,
+      action: "upsert_package",
+      userId: scopes.resolvedUserId,
+      scopedUserId,
+      ts_utc: rows[rows.length - 1]?.created_at || staged.summary.captured_at,
+      summary: `Captured hot context package: ${title}`,
+      content: summarizeConversation(conversation),
+      metadata: { stageRef, threadId, title, endpointId, sourceClient },
+    });
     stats.upstream_packages += 1;
     headSignals.activeChannels.push(channelId);
     if (threadId) {
@@ -262,7 +276,7 @@ async function importDailyCaptureTarget(targetPath, {
         stats.conversation_cache_skipped += 1;
         continue;
       }
-      memoryService.conversationCache.append({
+      const appended = memoryService.conversationCache.append({
         record_id: recordId,
         ts_utc: pair.user?.created_at || pair.assistant?.created_at || new Date().toISOString(),
         endpoint: "/capture/import",
@@ -287,6 +301,22 @@ async function importDailyCaptureTarget(targetPath, {
         },
         incoming_messages: pair.user ? [rowToRuntimeMessage(pair.user)] : [],
         outbound_messages: pair.assistant ? [rowToRuntimeMessage(pair.assistant)] : [],
+      });
+      recordCaptureSourceEvent(memoryMetabolism, {
+        source_type: "app_daily_capture_pair",
+        source_id: recordId,
+        source_label: sourceClient,
+        object_id: threadId,
+        action: "append_conversation_pair",
+        userId: scopes.resolvedUserId,
+        scopedUserId,
+        ts_utc: pair.user?.created_at || pair.assistant?.created_at || new Date().toISOString(),
+        summary: summarizePair(pair, title),
+        content: [
+          pair.user ? `user: ${messageContent(pair.user)}` : "",
+          pair.assistant ? `assistant: ${messageContent(pair.assistant)}` : "",
+        ].filter(Boolean).join("\n"),
+        metadata: { stageRef, threadId, title, endpointId, recordPath: appended?.path },
       });
       stats.conversation_cache_written += 1;
     }
@@ -813,6 +843,17 @@ function buildResult({ errors = [], warnings = [], summary = {} } = {}) {
     warnings,
     summary,
   };
+}
+
+function recordCaptureSourceEvent(memoryMetabolism, event = {}) {
+  if (!memoryMetabolism || typeof memoryMetabolism.recordSourceEvent !== "function") {
+    return null;
+  }
+  try {
+    return memoryMetabolism.recordSourceEvent(event);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeText(value) {

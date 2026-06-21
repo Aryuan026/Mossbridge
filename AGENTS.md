@@ -88,6 +88,16 @@ Route memory-like material with this simple map:
 
 Foreground turns may write a self-warning or resident warm card when the continuity value is immediate. If exact source is not available yet, the warm card must be marked source-pending / dreaming-review-required so the next metabolism pass can bind source refs and decide whether exact facts should sediment into cold memory.
 
+## Memory Metabolism Protocol
+
+Dreaming/metabolism must be auditable. Do not add a new memory source by only teaching the model a prompt. New source adapters should write append-only source events through `MemoryMetabolismService.recordSourceEvent()` with stable source ids, source type, content hash, and scoped user id.
+
+Memory-writing tools used during a dreaming attempt must pass `metabolism_attempt_id` and the exact `source_record_ids`/`source_ids` that ground the mutation. The tool host then writes the server-generated mutation ledger under `storage/memory_metabolism_mutation_ledger/`; the model's final receipt is only judgment, not proof.
+
+`mossbridge_memory_metabolism_receipt_write` must provide one disposition per source id. Valid terminal dispositions are `promoted`, `evaluated`, and `rejected_as_noise`; `deferred`, `conflict_open`, and `failed_retryable` keep the source open for retry. A batch `no_op` without per-source reasons is not complete.
+
+Warm recall should not reinforce itself just because a card was retrieved. Retrieval may emit `feedback_rows` for audit, but only future used/confirmed/corrected feedback should change strength, boost, or conflict state.
+
 ## Public Tool Boundary
 
 Mossbridge does not ship private external executors. Do not add tool names, prompts, docs, or tests that imply built-in access to private account/device/permission systems.

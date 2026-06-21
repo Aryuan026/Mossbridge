@@ -12,6 +12,32 @@ const TOOL_PROFILE_FULL = "full";
 const TOOL_PROFILE_FOREGROUND = "foreground";
 const TOOL_PROFILE_TASK = "task";
 const TOOL_PROFILE_CHECKIN_LITE = "checkin_lite";
+const METABOLISM_META_PROPERTIES = {
+  metabolism_attempt_id: { type: "string", description: "Dreaming/metabolism attempt id. Use only during a memory-metabolism system turn so the bridge can verify real mutations." },
+  dreaming_attempt_id: { type: "string", description: "Alias for metabolism_attempt_id." },
+  source_record_ids: { type: "array", items: { type: "string" }, description: "Attempt source ids this mutation is grounded in." },
+  source_ids: { type: "array", items: { type: "string" }, description: "Alias for source_record_ids." },
+};
+const METABOLISM_META_KEYS = new Set(Object.keys(METABOLISM_META_PROPERTIES));
+const MEMORY_MUTATION_TOOL_NAMES = new Set([
+  "mossbridge_diary_append",
+  "mossbridge_memory_warm_write",
+  "mossbridge_memory_warm_update",
+  "mossbridge_memory_warm_delete",
+  "mossbridge_memory_ongoing_upsert",
+  "mossbridge_memory_ongoing_close",
+  "mossbridge_memory_episode_upsert",
+  "mossbridge_memory_episode_append",
+  "mossbridge_memory_case_upsert",
+  "mossbridge_memory_case_append",
+  "mossbridge_memory_case_artifact",
+  "mossbridge_memory_case_close",
+  "mossbridge_memory_observation_append",
+  "mossbridge_memory_observation_update",
+  "mossbridge_memory_cold_patch",
+  "mossbridge_memory_cold_upsert",
+  "mossbridge_solitude_journal_write",
+]);
 
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
@@ -25,7 +51,7 @@ class ProjectToolHost {
     const builtIn = PROJECT_TOOLS.map((tool) => ({
       name: tool.name,
       description: buildToolDescription(tool),
-      inputSchema: tool.inputSchema,
+      inputSchema: buildEffectiveInputSchema(tool),
     }));
     const extra = this.extraToolHosts.flatMap((host) => host.listTools());
     return filterToolsByProfile([...builtIn, ...extra], normalizedToolProfile);
@@ -39,13 +65,31 @@ class ProjectToolHost {
     const spec = PROJECT_TOOLS.find((candidate) => candidate.name === toolName);
     const normalizedArgs = args && typeof args === "object" ? args : {};
     if (spec) {
-      validateSchema(spec.inputSchema, normalizedArgs, toolName, "input");
+      const inputSchema = buildEffectiveInputSchema(spec);
+      validateSchema(inputSchema, normalizedArgs, toolName, "input");
       const resolvedContext = this.resolveContext(context);
-      return await spec.handler({
+      const metabolismMeta = extractMetabolismMeta(normalizedArgs);
+      const handlerArgs = isMemoryMutationTool(toolName)
+        ? stripMetabolismMeta(normalizedArgs)
+        : normalizedArgs;
+      const before = isMemoryMutationTool(toolName)
+        ? await readMemoryMutationBefore(this.services, toolName, handlerArgs, resolvedContext)
+        : null;
+      const result = await spec.handler({
         services: this.services,
-        args: normalizedArgs,
+        args: handlerArgs,
         context: resolvedContext,
       });
+      this.recordMemoryMetabolismSideEffects({
+        toolName,
+        args: handlerArgs,
+        rawArgs: normalizedArgs,
+        metabolismMeta,
+        result,
+        before,
+        context: resolvedContext,
+      });
+      return result;
     }
     for (const host of this.extraToolHosts) {
       if (host.listTools().some((tool) => tool.name === toolName)) {
@@ -53,6 +97,76 @@ class ProjectToolHost {
       }
     }
     throw new Error(`Unknown tool: ${toolName}`);
+  }
+
+  recordMemoryMetabolismSideEffects({
+    toolName = "",
+    args = {},
+    rawArgs = {},
+    metabolismMeta = {},
+    result = null,
+    before = null,
+    context = {},
+  } = {}) {
+    const service = this.services.memoryMetabolism;
+    if (!service) {
+      return;
+    }
+    const attemptId = normalizeText(metabolismMeta.metabolism_attempt_id || metabolismMeta.dreaming_attempt_id);
+    if (toolName === "mossbridge_diary_append" && !attemptId && typeof service.recordSourceEvent === "function") {
+      const data = result?.data || {};
+      service.recordSourceEvent({
+        source_type: "notebook",
+        source_id: normalizeText(data.filePath),
+        source_label: "mossbridge_diary_append",
+        object_id: normalizeText(data.filePath),
+        action: "append",
+        userId: resolveBoundUserId(rawArgs, context),
+        ts_utc: buildNotebookEventTimestamp(data),
+        content: data.body || args.text,
+        summary: args.title || "Notebook entry appended",
+        metadata: { filePath: data.filePath, date: data.date, time: data.time },
+      });
+      return;
+    }
+    if (isToolResultFailure(result)) {
+      return;
+    }
+    const mutation = buildMemoryMutationDescriptor(toolName, args, result);
+    if (!mutation.target || !mutation.object_id || !mutation.action) {
+      return;
+    }
+    const sourceIds = normalizeStringList(metabolismMeta.source_record_ids || metabolismMeta.source_ids);
+    if (attemptId && typeof service.recordMutation === "function") {
+      const ledgerResult = service.recordMutation({
+        attempt_id: attemptId,
+        tool_name: toolName,
+        source_ids: sourceIds,
+        target: mutation.target,
+        object_id: mutation.object_id,
+        action: mutation.action,
+        before,
+        after: mutation.after,
+        summary: mutation.summary,
+      });
+      if (ledgerResult?.ok !== true) {
+        throw new Error(`Memory mutation ledger rejected ${toolName}: ${ledgerResult?.error || "unknown error"}`);
+      }
+      return;
+    }
+    if (typeof service.recordSourceEvent === "function") {
+      service.recordSourceEvent({
+        source_type: `memory_mutation:${mutation.target}`,
+        source_id: mutation.object_id,
+        source_label: toolName,
+        object_id: mutation.object_id,
+        action: mutation.action,
+        userId: resolveBoundUserId(rawArgs, context),
+        content: mutation.summary || JSON.stringify(mutation.after || {}),
+        summary: mutation.summary || `${mutation.action} ${mutation.target}`,
+        metadata: { toolName, sourceIds },
+      });
+    }
   }
 
   resolveContext(context = {}) {
@@ -80,6 +194,46 @@ function listProjectToolNames({ toolProfile = "" } = {}) {
   ];
   const normalizedToolProfile = normalizeToolProfile(toolProfile);
   return names.filter((name) => isToolAllowedInProfile(name, normalizedToolProfile));
+}
+
+function buildEffectiveInputSchema(tool = {}) {
+  const schema = tool.inputSchema && typeof tool.inputSchema === "object"
+    ? tool.inputSchema
+    : {};
+  if (!isMemoryMutationTool(tool.name)) {
+    return schema;
+  }
+  return {
+    ...schema,
+    properties: {
+      ...(schema.properties || {}),
+      ...METABOLISM_META_PROPERTIES,
+    },
+  };
+}
+
+function isMemoryMutationTool(toolName = "") {
+  return MEMORY_MUTATION_TOOL_NAMES.has(normalizeText(toolName));
+}
+
+function extractMetabolismMeta(args = {}) {
+  const meta = {};
+  for (const key of METABOLISM_META_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) {
+      meta[key] = args[key];
+    }
+  }
+  return meta;
+}
+
+function stripMetabolismMeta(args = {}) {
+  const output = {};
+  Object.entries(args || {}).forEach(([key, value]) => {
+    if (!METABOLISM_META_KEYS.has(key)) {
+      output[key] = value;
+    }
+  });
+  return output;
 }
 
 const PROJECT_TOOLS = [
@@ -418,8 +572,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_metabolism_receipt_write",
-    description: "Write the completion receipt for a quiet dreaming/memory-metabolism pass. Use this after any warm/ongoing/episode/case/observation/cold/no-op decision so the bridge can mark the dreaming attempt complete; without this receipt the attempt is retried.",
-    shortHint: "Record dreaming mutations or an explicit no-op for the completion gate.",
+    description: "Write the judgment receipt for a quiet dreaming/memory-metabolism pass. The bridge verifies real memory writes from the server-side mutation ledger; this tool must give a per-source disposition for every examined source id. Without verified dispositions and, for promoted sources, real tool mutations tied to the attempt, the attempt is retried.",
+    shortHint: "Record per-source dreaming dispositions for the completion gate.",
     topics: ["memory", "maintenance", "dreaming"],
     inputSchema: {
       type: "object",
@@ -428,10 +582,26 @@ const PROJECT_TOOLS = [
         attempt_id: { type: "string", description: "Dreaming attempt id from the system trigger." },
         status: { type: "string", description: "mutated, no_op, or failed." },
         summary: { type: "string", description: "Short shareable summary of what changed or why no mutation was needed." },
-        mutation_count: { type: "integer", description: "Number of successful memory mutations; use 0 for no_op." },
-        source_record_ids: { type: "array", items: { type: "string" }, description: "Conversation-cache record ids examined by this pass." },
+        mutation_count: { type: "integer", description: "Legacy hint only; the bridge verifies actual mutation count from the server ledger." },
+        source_record_ids: { type: "array", items: { type: "string" }, description: "Attempt source ids examined by this pass." },
+        source_dispositions: {
+          type: "array",
+          description: "One disposition per source id. Required for every source_record_id.",
+          items: {
+            type: "object",
+            required: ["source_id", "status", "reason"],
+            properties: {
+              source_id: { type: "string" },
+              status: { type: "string", description: "promoted, evaluated, rejected_as_noise, deferred, conflict_open, or failed_retryable." },
+              reason: { type: "string", description: "Short shareable reason. No hidden chain-of-thought." },
+              target_refs: { type: "array", items: { type: "string" }, description: "Optional ids of memory objects affected." },
+            },
+            additionalProperties: false,
+          },
+        },
         mutations: {
           type: "array",
+          description: "Legacy summary only. Real mutations are verified from the server ledger produced by memory tools.",
           items: {
             type: "object",
             properties: {
@@ -1949,6 +2119,150 @@ const PROJECT_TOOLS = [
   },
 ];
 
+async function readMemoryMutationBefore(services = {}, toolName = "", args = {}, context = {}) {
+  const memory = services.asherieMemory;
+  if (!memory) {
+    return null;
+  }
+  try {
+    if (toolName === "mossbridge_memory_warm_update" || toolName === "mossbridge_memory_warm_delete") {
+      return await memory.readWarmMaterial({
+        material_id: args.material_id,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+    if (toolName === "mossbridge_memory_ongoing_upsert" || toolName === "mossbridge_memory_ongoing_close") {
+      const trackId = normalizeText(args.track_id || args.trackId);
+      if (!trackId) return null;
+      return await memory.readOngoingTrack({
+        track_id: trackId,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+    if (toolName === "mossbridge_memory_episode_upsert" || toolName === "mossbridge_memory_episode_append") {
+      const episodeId = normalizeText(args.episode_id || args.episodeId);
+      if (!episodeId) return null;
+      return await memory.readEpisode({
+        episode_id: episodeId,
+        include_entries: true,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+    if (toolName.startsWith("mossbridge_memory_case_")) {
+      const caseId = normalizeText(args.case_id || args.caseId);
+      if (!caseId) return null;
+      return await memory.readCase({
+        case_id: caseId,
+        include_events: true,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+    if (toolName === "mossbridge_memory_observation_update") {
+      return await memory.readObservation({
+        observation_id: args.observation_id,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+    if (toolName === "mossbridge_memory_cold_patch") {
+      return await memory.readColdRoot({
+        root_key: args.root_key,
+        version: args.version,
+        userId: resolveBoundUserId(args, context),
+      });
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function buildMemoryMutationDescriptor(toolName = "", args = {}, result = {}) {
+  const data = result?.data && typeof result.data === "object" ? result.data : {};
+  const record = data.record && typeof data.record === "object" ? data.record : {};
+  const entry = data.entry && typeof data.entry === "object" ? data.entry : {};
+  const event = data.event && typeof data.event === "object" ? data.event : {};
+  const artifact = data.artifact && typeof data.artifact === "object" ? data.artifact : {};
+  if (toolName === "mossbridge_diary_append") {
+    return buildMutation("notebook", "append", data.filePath, data, args.title || "Notebook entry appended");
+  }
+  if (toolName === "mossbridge_memory_warm_write") {
+    return buildMutation("warm_memory", "write", record.material_id, record, record.title);
+  }
+  if (toolName === "mossbridge_memory_warm_update") {
+    return buildMutation("warm_memory", "update", record.material_id || args.material_id, record, record.title);
+  }
+  if (toolName === "mossbridge_memory_warm_delete") {
+    return buildMutation("warm_memory", "delete", data.deleted_material_id || data.material_id || args.material_id, data, data.error || "Warm memory deleted");
+  }
+  if (toolName === "mossbridge_memory_ongoing_upsert") {
+    return buildMutation("ongoing_track", "upsert", record.track_id || args.track_id, record, record.title);
+  }
+  if (toolName === "mossbridge_memory_ongoing_close") {
+    return buildMutation("ongoing_track", "close", record.track_id || data.track_id || args.track_id, record || data, record.title || args.closure_summary);
+  }
+  if (toolName === "mossbridge_memory_episode_upsert") {
+    return buildMutation("episode_journal", "upsert", record.episode_id || args.episode_id, record, record.title);
+  }
+  if (toolName === "mossbridge_memory_episode_append") {
+    return buildMutation("episode_journal", "append", data.episode_id || args.episode_id, { record, entry }, entry.summary || entry.text || args.text);
+  }
+  if (toolName === "mossbridge_memory_case_upsert") {
+    return buildMutation("case_index", "upsert", record.case_id || args.case_id, record, record.title);
+  }
+  if (toolName === "mossbridge_memory_case_append") {
+    return buildMutation("case_index", "append", data.case_id || args.case_id, { record, event }, event.summary || args.summary);
+  }
+  if (toolName === "mossbridge_memory_case_artifact") {
+    return buildMutation("case_index", "link_artifact", data.case_id || args.case_id, { record, artifact }, artifact.title || artifact.path || args.title);
+  }
+  if (toolName === "mossbridge_memory_case_close") {
+    return buildMutation("case_index", "close", record.case_id || data.case_id || args.case_id, record || data, record.title || args.closure_summary);
+  }
+  if (toolName === "mossbridge_memory_observation_append") {
+    return buildMutation("observation_journal", "append", record.observation_id || data.observation_id, record || data, record.observation || args.observation);
+  }
+  if (toolName === "mossbridge_memory_observation_update") {
+    return buildMutation("observation_journal", "update", record.observation_id || data.observation_id || args.observation_id, record || data, record.observation || args.observation || args.correction_note);
+  }
+  if (toolName === "mossbridge_memory_cold_patch") {
+    return buildMutation("cold_root", normalizeText(args.mode) || "patch", data.root_key || data.previous_root_key || args.root_key, data, data.root_key || args.root_key);
+  }
+  if (toolName === "mossbridge_memory_cold_upsert") {
+    return buildMutation("cold_version", "upsert", data.version, data, `Cold version ${data.version || ""}`.trim());
+  }
+  if (toolName === "mossbridge_solitude_journal_write") {
+    return buildMutation("solitude_journal", "append", record.solitude_id || data.solitude_id, record || data, record.summary || args.summary);
+  }
+  return {};
+}
+
+function buildMutation(target, action, objectId, after, summary = "") {
+  return {
+    target: normalizeText(target),
+    action: normalizeText(action),
+    object_id: normalizeText(objectId),
+    after,
+    summary: normalizeText(summary),
+  };
+}
+
+function isToolResultFailure(result = {}) {
+  const data = result?.data;
+  if (data && typeof data === "object" && data.ok === false) {
+    return true;
+  }
+  return Boolean(result?.isError);
+}
+
+function buildNotebookEventTimestamp(data = {}) {
+  const date = normalizeText(data.date);
+  const time = normalizeText(data.time);
+  if (date && time) {
+    return `${date}T${time}:00+08:00`;
+  }
+  return new Date().toISOString();
+}
+
 const TOOL_VOICE_BOUNDARY = "Operational only; front-stage voice, style, and length still come from the current conversation.";
 
 const FOREGROUND_TOOL_NAMES = new Set([
@@ -2056,6 +2370,14 @@ function createExtraToolHosts(services = {}) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeText).filter(Boolean);
+  }
+  const normalized = normalizeText(value);
+  return normalized ? [normalized] : [];
 }
 
 function buildBridgeStatusSnapshot(
