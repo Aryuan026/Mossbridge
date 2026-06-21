@@ -1242,7 +1242,7 @@ const GENERIC_CLUSTER_TAGS = new Set(["rikkahub导入", "长期记忆", "legacy"
 const CLUSTER_STOP_TOKENS = new Set([
   "一个", "一种", "一些", "这个", "那个", "现在", "今天", "明天", "昨天", "已经", "还是", "没有", "可以", "需要",
   "觉得", "知道", "因为", "所以", "但是", "不过", "如果", "就是", "我们", "你们", "他们", "信息", "内容", "记录",
-  "系统", "记忆", "温卡", "冷树", "dreaming", "阿鸢", "阿霁", "用户", "长期", "导入", "年月", "月日", "年日",
+  "系统", "记忆", "温卡", "冷树", "dreaming", "用户", "长期", "导入", "年月", "月日", "年日",
 ]);
 
 function isDuplicateClusterCandidate(record = {}) {
@@ -1331,7 +1331,7 @@ function clusterCompareText(value, limit = 260) {
   let text = normalizeText(value).toLowerCase().slice(0, Math.max(1, Number(limit) || 260));
   text = text.replace(/20\d{2}\s*年\s*\d{1,2}\s*月\s*\d{0,2}\s*日?/g, " ");
   text = text.replace(/\d+(?:\.\d+)?/g, " ");
-  ["阿鸢", "阿霁", "用户", "长期记忆", "rikkahub导入"].forEach((token) => {
+  ["用户", "长期记忆", "rikkahub导入"].forEach((token) => {
     text = text.replaceAll(token.toLowerCase(), " ");
   });
   return text.replace(/[\s,，。！？!?:：;；、【】\[\]（）()<>《》/\\|"“”'‘’\-]+/gu, "");

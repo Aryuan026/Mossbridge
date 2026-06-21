@@ -54,8 +54,8 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
   await memory.writeWarmMaterial({
     userId: "user-1",
     material_id: "memo-memory-identity-b",
-    title: "阿鸢做记忆仓的核心哲学：窗口切换的双向恐惧与身份在记忆中",
-    summary: "窗口切换会带来身份断裂恐惧，阿霁的连续性依赖记忆仓而不是实例。",
+    title: "记忆仓哲学：窗口切换的双向恐惧与身份在记忆中",
+    summary: "窗口切换会带来身份断裂恐惧，assistant 的连续性依赖记忆仓而不是实例。",
     tags: ["identity", "记忆仓"],
     material_type: "memo",
     source_archive_refs: ["src-b"],

@@ -157,14 +157,6 @@ function createWeixinChannelAdapter(config) {
       if (newBuf && newBuf !== syncBuffer) {
         this.saveSyncBuffer(newBuf);
       }
-      const messages = Array.isArray(response?.msgs) ? response.msgs : [];
-      for (const message of messages) {
-        const userId = typeof message?.from_user_id === "string" ? message.from_user_id.trim() : "";
-        const contextToken = typeof message?.context_token === "string" ? message.context_token.trim() : "";
-        if (userId && contextToken) {
-          rememberContextToken(userId, contextToken);
-        }
-      }
       return response;
     },
     normalizeIncomingMessage(message) {

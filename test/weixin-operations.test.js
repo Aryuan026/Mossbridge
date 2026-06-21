@@ -46,7 +46,7 @@ test("weixin operations allows evidence-based assistant preferences without priv
   assert.match(memorySection, /revisable self-continuity note\/card/i);
   assert.match(memorySection, /current assistant\/persona rather than \{\{USER_NAME\}\}/i);
   assert.match(memorySection, /momentary reaction, tentative preference, and settled preference/i);
-  assert.doesNotMatch(memorySection, /Aji|阿霁|AsherieBridge/i);
+  assert.doesNotMatch(memorySection, /private bridge|private persona/i);
 });
 
 test("weixin operations front-stage guidance allows fuller replies without forcing a question ending", () => {

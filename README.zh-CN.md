@@ -1,93 +1,95 @@
-致谢：Mossbridge / 苔藓小桥由 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 分叉而来；微信桥、runtime 外壳与 AGPL 授权脉络来自该项目。
-
 # Mossbridge / 苔藓小桥
 
-Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude Code 接入微信。
+**Public Preview / self-hosted alpha。**
 
-它保留了 Cyberboss 最有价值的“嘴”：一个微信账号、一个本地 runtime、一套收消息/发消息/传文件/自唤醒/共享线程的链路。在这层外壳之上，苔藓小桥正在长成更偏记忆与陪伴的系统：热上下文、温记忆、小事记/笔记本、近中期追踪、case memory、可选冷树兼容、携带记忆的主动唤醒，以及代码本体、私人数据、测试数据的分离。
+Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude Code 接入微信。它负责微信收发、文件/表情包、本地共享线程、运行态账本，以及一个由 `MOSSBRIDGE_DATA_ROOT` 管理的本地记忆层。
 
-本仓库不是上游 Cyberboss，也不是 Cyberboss 官方版本。
+当前适合能读日志、会运行本地 CLI、能分清 state/data/workspace 的技术用户自托管。它还不是 Stable，也不宣称 Production Ready。
 
-## 和 Cyberboss 的主要差异
+Mossbridge 从 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 修改分叉而来，不是 Cyberboss 官方版本。来源与许可见 [NOTICE.md](./NOTICE.md) 和 [LICENSE](./LICENSE)。本仓库使用 `AGPL-3.0-only`。
 
-- **记忆优先**
-  Mossbridge 增加了自己的内置 brain，包括热上下文、温卡、小事记/笔记本、ongoing tracks、context packet、case index、冷记忆版本兼容和近期对话缓存。前台模型可以通过工具读取、写入、修改和删除记忆，而不是只依赖当前窗口上文。
+## 当前状态
 
-- **陪伴连续性，而不是固定人设控制**
-  记忆管理层不应该用关键词式规则限制模型必须怎么说话。提示词的目标是帮助模型理解上下文、保持关系连续，而不是把它锁死成某种固定口吻。
+- 公开状态：self-hosted alpha / public preview。
+- runtime：Codex 和 Claude Code 都是一等 runtime。
+- 当前实测开发平台：macOS + Node.js 22。LaunchAgent/service 命令仅按 macOS 说明。
+- 暂不宣称：跨平台 service 管理、无维护者背景的新账号 QR 首轮回复已通过、生产可用。
+- 默认 state dir：`~/.mossbridge`。
+- 默认 launchd label：`com.mossbridge.bridge`。
 
-- **主动唤醒携带上下文**
-  随机 check-in 和定时 reminder 都被当作“模型醒来后的系统轮次”，而不是普通闹钟。唤醒时可以携带近期上下文、温记忆和 ongoing 信息，避免主动消息像固定日历一样干瘪。
+发布或演示前请先读 [docs/release-status.md](./docs/release-status.md)。
 
-- **本地记忆仓姿态**
-  第一版先保持 Mossbridge 本体完整：WeChat、选定 runtime 和 Mossbridge 自己的数据根。ChatGPT、Claude、Gemini、Perplexity、Rikkahub 或其他网页 AI 窗口的抓取可以先进入 cache/hot，但不会直接变成稳定记忆，要等本地 brain / dreaming 递进整理。
+## 它是什么
 
-- **近中期追踪层**
-  减重、写稿、家族八卦、购买决策、系统 bug、咨询进展这类“这阵子还活着的事”，可以挂在 ongoing tracks，而不是太早冻结成永久冷记忆。
+Mossbridge 分成五层：
 
-- **可选冷树兼容**
-  Mossbridge 可以通过配置读取或修补冷层结构，但目前不建议让 WeChat 端日常陪伴强依赖私人外部冷树。温层负责日常连续性，冷层更适合做深层归档、关系拓扑和时间拓扑。
+```text
+WeChat mouth
+  -> bridge core and tools
+  -> Codex / Claude Code runtime engine
+  -> local brain under MOSSBRIDGE_DATA_ROOT
+  -> control plane ledger under MOSSBRIDGE_STATE_DIR
+```
 
-- **表情包与附件工作流**
-  微信图片和文件可以落入 inbox，被总结进上下文；适合作为表情包的图片可以登记到本地 sticker catalog，让模型用工具发真实表情包，而不是输出 `[微笑]` 这种文字替代。
+- **嘴**：微信 QR 登录、轮询、回复、分段、附件、表情包、桥通知。
+- **手**：文件、提醒、小事记、表情包、timeline/status、记忆工具。
+- **引擎**：Codex / Claude Code adapters，只放协议、session、model、approval 差异。
+- **脑**：`MOSSBRIDGE_DATA_ROOT` 下的本地记忆，包括 hot context、温卡、notebook、ongoing、observation/episode、case index、conversation cache 和 cold-version compatibility。
+- **控制平面**：`MOSSBRIDGE_STATE_DIR/control-events.jsonl`，记录自动动作为什么发生。
 
-- **微信回复处理**
-  当前加入了回复分段、短句合并、段落呼吸和微信 emoji shortcode 归一化，减少“同一个模型在微信端变短变硬”的传输层影响。
+共享行为放 bridge core；只有 runtime 协议差异放 adapter。
 
-- **Codex / Claude Code 双 runtime**
-  支持 Codex 和 Claude Code。日常推荐 shared mode，让微信端和终端端挂在同一条线程上；`/model` 是共享命令，Codex 有目录时用目录校验，Claude Code 没有稳定目录时接受原始 model id。
+## 要求
 
-- **控制平面**
-  Mossbridge 会把心跳跳过、runtime 冷却、memory packet 递送、dreaming receipt 等自动动作写入本地 control ledger。这样压测时能追溯“桥为什么这样做”，又不会把桥状态混成主 AI 的自然回复。
+- Node.js `>= 22`
+- 本地已登录的 `codex` 命令，或本地已登录的 `claude` 命令
+- 一个能完成本地 QR 登录的微信账号
+- 独立的 state/data/workspace 目录
+- 只有用截图功能时才需要 Chrome / Chromium / Edge
 
-## 为什么会多这些参数
-
-Mossbridge 的配置比原始 bridge 多，是因为它要把三件事分清楚：微信账号运行态、助手自己的记忆仓、用户给 runtime 读写的工作区。
-
-- `MOSSBRIDGE_STATE_DIR` 是运行态：二维码登录、账号文件、session、日志、队列、cooldown、control ledger、生成的微信提示文件。默认是 `${HOME}/.mossbridge`。
-- `MOSSBRIDGE_DATA_ROOT` 是记忆数据：hot context、温卡、小事记、ongoing、observation / episode journal、conversation cache、case index、app capture 和 mutation log。新部署先只接一个干净 data root，再考虑导入旧仓。
-- `MOSSBRIDGE_WORKSPACE_ROOT` 是 runtime 可读写的办公区，用来收附件、写文件、做项目协作，不应该直接暴露整个 Home。
-- `MOSSBRIDGE_CHECKIN_*` 控制心跳机会，不只是闹钟频率。hot window 和 token backoff 是为了避免主动唤醒打断正在聊天的用户，或把已经很重的 runtime 上下文继续压满。
-- `MOSSBRIDGE_ASHERIE_PRELUDE_*` 是历史记忆层命名，控制一轮里递送多少记忆。限制保持小，是为了让记忆帮助当前回复落地，而不是把整仓流水灌进窗口。
-- `MOSSBRIDGE_MAINTENANCE_*` 让公开版心跳默认只读自检。私有部署可以显式打开修复，但公开 clone 验收应该先只检查和报告。
-
-## 公开命名与 runtime 姿态
-
-公开入口已经统一到 Mossbridge：
-
-- package / CLI：`mossbridge`
-- 环境变量前缀：`MOSSBRIDGE_*`
-- 默认状态目录：`${HOME}/.mossbridge`
-- launchd label：`com.mossbridge.bridge`
-- MCP 命名空间：`mossbridge_tools` / `mossbridge_*`
-
-Codex 和 Claude Code 都是一等 runtime。微信收发、记忆仓、wakeups、附件、故障提示这些共享能力优先放在 bridge core；只有 Codex RPC/session、Claude Code process/session/model 这类协议差异才放进各自 adapter。
-
-代码里仍有少量历史的 Asherie 记忆域命名，除致谢、来源说明、迁移说明或记忆域词汇外，都应该视为公开前清理债。
-
-## 安装
+## Clean Install
 
 ```bash
 git clone https://github.com/Aryuan026/Mossbridge.git
 cd Mossbridge
-npm install
+npm ci
+test -f .env || cp .env.example .env
 ```
 
-第一次扫码登录、`/bind` 和空仓首轮回复的完整路径见 [docs/quickstart.md](./docs/quickstart.md)。
+AI 部署助手请读 [docs/ai-deployment.md](./docs/ai-deployment.md)。人类快速路径见 [docs/quickstart.md](./docs/quickstart.md)。
+
+不要覆盖已有 `.env`。不要把 clean clone 指向其他 bridge 的 state dir、live 微信账号文件或共享私人记忆仓。
 
 ## 最小配置
 
-在项目目录创建本地 `.env`。`.env`、账号状态和私人记忆数据不应该进入 git。
+先创建隔离目录：
+
+```bash
+mkdir -p /tmp/mossbridge-smoke/state
+mkdir -p /tmp/mossbridge-smoke/data
+mkdir -p /tmp/mossbridge-smoke/workspace
+```
+
+`.env` 中保持同样结构：
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=codex
-MOSSBRIDGE_WORKSPACE_ROOT=/absolute/path/to/your/workspace
-MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
-MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
+MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
+MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
+MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ENABLE_CHECKIN=false
+MOSSBRIDGE_ENABLE_DREAMING=false
 ```
 
-可选的 Codex runtime 控制项：
+Claude Code：
+
+```dotenv
+MOSSBRIDGE_RUNTIME=claudecode
+MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+```
+
+Codex 可选配置：
 
 ```dotenv
 MOSSBRIDGE_CODEX_MODEL=
@@ -97,124 +99,157 @@ MOSSBRIDGE_CODEX_COMMAND=
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 ```
 
-这些用于固定 Codex 模型、接本地 provider，或显式覆盖当前模型是否支持原生图片输入。使用 Ollama 等本地 provider 时，可以把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到 repo 外部，设为可执行，并让 `MOSSBRIDGE_CODEX_COMMAND` 指向复制后的脚本。
+如果接 Ollama 等本地 provider，把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到仓库外、设为可执行，再让 `MOSSBRIDGE_CODEX_COMMAND` 指向复制后的脚本。
 
-`MOSSBRIDGE_CODEX_MODEL_CHOICES` 是给微信 `/model` 用的人类菜单。格式是 `alias=model` 或 `alias=model@provider`，例如 `/model local` 可以展开成 `gemma4:26b-32k` 和 provider `ollama`，不用在微信里背完整模型名。
+## 访问控制
 
-如果使用 Claude Code，只额外改：
+`MOSSBRIDGE_ALLOWED_USER_IDS` 保护正常微信入站链。
+
+- 空 allowlist：只适合首次隔离登录/诊断，还不知道 sender id 时临时使用。
+- 非空 allowlist：只有列出的 sender id 能进入。
+- 未授权 sender 会在命令解析、绑定修改、附件下载、token 缓存和 runtime dispatch 前被拒绝。
+- 日志只记录运行状态、id 和短预览，不输出 context token 或完整私聊正文。
+
+QR 登录并确认 sender id 后，填写：
 
 ```dotenv
-MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+MOSSBRIDGE_ALLOWED_USER_IDS=the_sender_id_you_confirmed
 ```
 
-可选的旧记忆仓迁移配置：
+然后重启 bridge。
 
-```dotenv
-MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/warm_memory
-MOSSBRIDGE_ASHERIE_TRUTH_LAYER_DIR=/absolute/path/to/truth_layer
-MOSSBRIDGE_ASHERIE_MEMORY_VERSION_BANK_DIR=/absolute/path/to/memory_versions
+## 默认被动
+
+公开部署默认不主动发消息：
+
+- `npm run shared:start` 启动 shared bridge，但不开 random check-in。
+- `.env.example` 默认 `MOSSBRIDGE_ENABLE_CHECKIN=false`。
+- `.env.example` 默认 `MOSSBRIDGE_ENABLE_DREAMING=false`。
+
+只有前台 smoke 通过且用户明确要主动唤醒时再开启：
+
+```bash
+npm run shared:start:checkin
+# 或
+MOSSBRIDGE_ENABLE_CHECKIN=true npm run shared:start
 ```
 
-新部署优先只设置 `MOSSBRIDGE_DATA_ROOT`。更细的路径只用于有意识地迁移或共享既有记忆仓。
+Dreaming/metabolism 也需要显式开启：
 
-## 常用命令
+```bash
+MOSSBRIDGE_ENABLE_DREAMING=true npm run shared:start
+```
+
+## 验证
+
+以下命令在隔离路径中运行，不需要 QR 登录：
+
+```bash
+npm run doctor
+npm run smoke:memory-empty
+npm run smoke:memory-chain
+npm run verify
+```
+
+`npm run verify` 会跑语法检查和 Node 测试。它不等于真实微信首轮回复通过；真人仍需扫码并观察第一条回复。
+
+## 只有用户明确要求时才启动
+
+QR 登录、bridge start、service takeover 都不要由 AI 部署助手自动执行。用户明确要求本地 smoke 后再运行：
 
 ```bash
 npm run login
 npm run shared:start
-npm run shared:open
-npm run shared:status
 ```
 
-Claude Code 对应命令：
+然后在微信里发：
+
+```text
+/bind /tmp/mossbridge-smoke/workspace
+/status
+```
+
+再发一条普通消息，确认收到自然回复。没有真人扫码和首轮回复观察，就不要写成 passed。
+
+LaunchAgent/service 命令是 macOS-only：
 
 ```bash
-npm run shared:start:claudecode
-npm run shared:open:claudecode
-npm run shared:status:claudecode
+npm run service:install:codex
+npm run service:status:codex
+npm run service:stop:codex
 ```
 
-常用微信命令：
+`service:takeover:*` 只在你明确要替换已有 Mossbridge LaunchAgent 时使用。
+
+## 记忆与数据边界
+
+空 `MOSSBRIDGE_DATA_ROOT` 是合法可用状态。没有 resident anchor、历史导入、网页抓取或 Notion sync，也应该能对话。
+
+Resident warm anchor 只能作为可选步骤，在首次对话后由用户明确确认内容时写入。QR 登录前不要自动写人格/关系记忆；AI 部署助手不能按模板猜用户称呼、性别、关系、诊断、偏好或身份。
+
+旧记忆迁移走 bundle：
+
+```bash
+npm run memory:export -- --source-data-root /path/to/source-data --out /tmp/mossbridge-memory-bundle --replace-output
+npm run memory:import -- --bundle /tmp/mossbridge-memory-bundle
+```
+
+`memory:import` 默认 dry-run。真正 apply 只能落到隔离目标：
+
+```bash
+MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-import/state \
+MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-import/data \
+npm run memory:import -- --bundle /tmp/mossbridge-memory-bundle --apply
+```
+
+不要让公开新部署直接指向 live shared data root。
+
+## 常用命令
+
+```bash
+npm run doctor
+npm run shared:status
+npm run shared:open
+npm run shared:model
+npm run shared:refresh-session
+```
+
+微信命令包括：
 
 - `/bind /absolute/path`
-  绑定当前聊天到一个工作目录。
 - `/status`
-  查看 workspace、thread、model 和上下文状态。
 - `/model`
-  查看当前 runtime 的 selected / default / effective model 和模型目录状态。
 - `/model <id>`
-  为下一轮选择模型。配置了 model choices 时，也可以用 `/model local` 这样的别名。
 - `/model --provider <id> <model>`
-  Codex 专用：为当前微信绑定同时记录模型和 provider，例如 `ollama`。
 - `/model default`
-  清除当前 workspace 的模型覆盖，下一轮回到 runtime 默认模型。
 - `/model refresh`
-  让 runtime adapter 刷新模型目录。
 - `/reread`
-  重新注入本地指令和操作模板。
 - `/checkin <min>-<max>`
-  调整随机主动唤醒频率。
 - `/chunk <number>`
-  调整微信短回复合并阈值。
 
-## 数据边界
+更多见 [docs/commands.md](./docs/commands.md)。
 
-Mossbridge 的目标是让代码和私人数据可分割。
+## 已知限制
 
-- git 里只放源码、模板、测试和文档。
-- 微信账号状态留在 `${HOME}/.mossbridge` 或其他被忽略的状态目录。
-- 私人记忆留在 `MOSSBRIDGE_DATA_ROOT` 或显式配置的记忆仓。
-- 测试数据应该可以删除，而不影响稳定记忆。
-- 公开发布前不能包含私人记忆卡、账号 token、本地日志、二维码数据或个人 workspace 绑定。
-- 嘴、手和 runtime adapter 不直接写 brain 文件；记忆写入应走 memory service 边界。
-
-## 记忆层
-
-当前记忆地图：
-
-- **温记忆**
-  soul 的第一人称 diary/persona 连续性：日常关系锚点、偏好、象征物、固定印象和可复用温卡。
-- **热记忆**
-  刚发生的跨窗口上下文、合流缓冲、短投影和快照。
-- **小事记 / notebook**
-  人能读的轻量笔记和小事记，属于冷层原材料，不自动等于稳定事实或温记忆日记。
-- **ongoing tracks**
-  近中期活跃事件，不一定是永久事实，但需要持续挂在前台附近。
-- **conversation cache**
-  多窗口近期尾巴和上文切片，可供 dreaming 或 context packet 使用。
-- **dreaming / metabolism log**
-  安静窗口整理的 attempt、mutation/no-op receipt、retry metadata 和 completion 记录。
-- **cold/version layer**
-  深层归档、旧记忆包兼容、未来关系/时间拓扑。
-- **case index**
-  记录“我帮你做过什么事”的工作索引层，尤其适合文件工作和项目协作。
-
-更多见 [docs/memory-storage.md](./docs/memory-storage.md)。
-
-## 公开前清洗清单
-
-- 确保历史 `ASHERIEBRIDGE_*` 和 Cyberboss 名称不再作为运行入口，只在迁移说明或上游来源说明里出现
-- 决定旧 state dir 别名是支持迁移还是明确不支持
-- 全仓扫描私人路径、私人名字、测试账号、截图和记忆样例
-- 确认空记忆仓也能跑起来
-- 写清楚哪些功能内置，哪些需要用户自己的记忆仓提供
+- 每个公开部署仍需真人做 clean-account QR login 和首轮微信回复验收。
+- 记忆 mutation ledger 还没有完成 write-ahead/orphan mutation recovery。如果 store 写入成功但 ledger 落盘失败，仍是已知耐久性缺口。
+- 自动网页对话抓取是后续扩展；当前 app daily capture 是手动验证/暂存/导入。
+- Notion 同步是后续扩展，不属于第一轮部署。
+- 记忆系统仍是本地文件 alpha，有测试和 smoke，但不宣称生产级数据耐久性。
+- launchd service 脚本仅按 macOS 验证。其他平台可以手动跑 Node 进程，但 service 管理不宣称已验证。
 
 ## 文档
 
-- [docs/commands.md](./docs/commands.md)
+- [docs/ai-deployment.md](./docs/ai-deployment.md)
 - [docs/quickstart.md](./docs/quickstart.md)
+- [docs/release-status.md](./docs/release-status.md)
 - [docs/architecture-for-humans.md](./docs/architecture-for-humans.md)
 - [docs/brain-layer-boundary.md](./docs/brain-layer-boundary.md)
 - [docs/memory-storage.md](./docs/memory-storage.md)
-- [docs/codex-memory-setup.md](./docs/codex-memory-setup.md)
+- [docs/memory-portability.md](./docs/memory-portability.md)
 - [docs/app-daily-capture-json.md](./docs/app-daily-capture-json.md)
-- [docs/notion-memory-interop.md](./docs/notion-memory-interop.md)
-- [docs/gateway-shaped-architecture.md](./docs/gateway-shaped-architecture.md)
-- [docs/public-release-readiness.md](./docs/public-release-readiness.md)
+- [docs/safe-self-check.md](./docs/safe-self-check.md)
 
 ## License
 
-本项目保留上游 AGPL 授权脉络，使用 `AGPL-3.0-only`。
-
-如果你修改、扩展，并通过网络向用户提供服务，需要按 AGPL 要求提供对应源代码。
+Mossbridge 使用 `AGPL-3.0-only`。如果你修改它并通过网络向用户提供服务，需要遵守 AGPL 的源码提供要求。

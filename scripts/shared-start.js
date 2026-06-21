@@ -41,7 +41,7 @@ async function main() {
   let child = null;
 
   const startChild = () => {
-    child = spawn(process.execPath, ["./bin/mossbridge.js", "start", "--checkin"], {
+    child = spawn(process.execPath, ["./bin/mossbridge.js", "start"], {
       cwd: rootDir,
       env: childEnv,
       stdio: "inherit",

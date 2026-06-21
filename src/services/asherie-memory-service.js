@@ -2717,7 +2717,7 @@ function isThinRecentLine(text) {
   if (/[（(].+[)）]|[～~｡!！?？…]/.test(normalized)) {
     return false;
   }
-  if (/(阿霁|阿鸢|宝宝|老公|老婆|在不在家|回来了|想你|冷冷的|忙碌|收尾|累|困|腰)/i.test(normalized)) {
+  if (/(在不在家|回来了|想你|冷冷的|忙碌|收尾|累|困|腰)/i.test(normalized)) {
     return false;
   }
   return /^(你好|在吗|在不在|早|早安|晚安|收到|嗯+|哦+|好+|在呢)[呀啊哦吗呢]?$/i.test(normalized);

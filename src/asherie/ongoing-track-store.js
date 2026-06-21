@@ -39,7 +39,6 @@ const QUERY_STOP_TERMS = new Set([
   "哪里",
   "多久",
   "好多",
-  "宝宝",
   "已经",
   "应该",
   "弄长",

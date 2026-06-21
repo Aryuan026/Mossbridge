@@ -478,6 +478,20 @@ class MossbridgeApp {
       return;
     }
 
+    if (!this.isAuthorizedInboundSender(normalized.senderId)) {
+      this.recordWeixinInboundAudit({
+        stage: "rejected_unauthorized",
+        rawMessage: message,
+        normalized,
+        includeTextPreview: false,
+      });
+      return;
+    }
+
+    if (typeof this.channelAdapter.rememberContextToken === "function") {
+      this.channelAdapter.rememberContextToken(normalized.senderId, normalized.contextToken);
+    }
+
     this.recordWeixinInboundAudit({
       stage: "accepted",
       rawMessage: message,
@@ -501,6 +515,20 @@ class MossbridgeApp {
       });
       throw error;
     }
+  }
+
+  isAuthorizedInboundSender(senderId = "") {
+    const normalizedSenderId = normalizeText(senderId);
+    if (!normalizedSenderId) {
+      return false;
+    }
+    const allowed = Array.isArray(this.config?.allowedUserIds)
+      ? this.config.allowedUserIds.map((item) => normalizeText(item)).filter(Boolean)
+      : [];
+    if (!allowed.length) {
+      return true;
+    }
+    return allowed.includes(normalizedSenderId);
   }
 
   recordWeixinPollAudit({ response, messages, syncBufferBefore }) {
@@ -543,8 +571,8 @@ class MossbridgeApp {
     );
   }
 
-  recordWeixinInboundAudit({ stage = "", rawMessage = null, normalized = null, error = null } = {}) {
-    const textPreview = normalized
+  recordWeixinInboundAudit({ stage = "", rawMessage = null, normalized = null, error = null, includeTextPreview = true } = {}) {
+    const textPreview = includeTextPreview && normalized
       ? (normalizeText(normalized.originalText) || normalizeText(normalized.text))
       : "";
     const event = this.weixinIngressAuditStore?.recordInbound?.({
@@ -3614,18 +3642,12 @@ class MossbridgeApp {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: [
-        "⭐️ Liked this project? Throw me a star on GitHub!",
-        "It really means a lot to an indie dev working on passion projects 💖",
+        "Liked Mossbridge? Star the public repo on GitHub:",
         "",
-        "https://github.com/WenXiaoWendy/cyberboss",
+        "https://github.com/Aryuan026/Mossbridge",
       ].join("\n"),
       contextToken: normalized.contextToken,
     });
-    await this.channelAdapter.sendFile({
-      userId: normalized.senderId,
-      filePath: path.join(__dirname, "../../assets/star-guide.jpg"),
-      contextToken: normalized.contextToken,
-    }).catch(() => {});
   }
 
   async handleHelpCommand(normalized) {

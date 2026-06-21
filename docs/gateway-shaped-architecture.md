@@ -36,9 +36,9 @@ capability is needed for public use, it should be implemented as
 Mossbridge-native bridge core or as a clearly optional adapter with its own
 public config and permission boundary.
 
-Private AsherieBridge can keep private executor adapters where that is useful
-for live pressure testing. Public Mossbridge should share data contracts and
-import formats with that world, not inherit its private executor surface.
+Private forks can keep private executor adapters where that is useful for live
+pressure testing. Public Mossbridge should share data contracts and import
+formats with that world, not inherit its private executor surface.
 
 ## Current block map
 

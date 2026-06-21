@@ -22,7 +22,7 @@ test("runtime notice shield recognizes common Claude capacity notices", () => {
 });
 
 test("runtime notice shield avoids natural-language false positives", () => {
-  assert.equal(classifyRuntimeNotice("宝宝我今天真的有点到极限了，想早点睡。"), "");
+  assert.equal(classifyRuntimeNotice("朋友我今天真的有点到极限了，想早点睡。"), "");
   assert.equal(classifyRuntimeNotice("这个接口要限制输出长度，不然微信会分片。"), "");
 });
 

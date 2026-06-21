@@ -369,13 +369,13 @@ Bridge 自己的轻量关系树预留位。
 例如：
 
 ```text
-阿鸢姥姥家 branch
+family-branch-a
   -> 家庭气氛 / 关系模式 / 代际习惯
-  -> 妹妹 node
+  -> sibling node
   -> 最近事件 / 性格表现 / 可能受影响的地方
 ```
 
-如果只有温卡，系统可能分别召回“姥姥家”和“妹妹”，但不一定知道它们应该一起解释。冷层拓扑应该让 runtime 在命中“妹妹”时能顺手扩一跳到“阿鸢姥姥家”，再把分支气氛作为背景材料交给前台模型。
+如果只有温卡，系统可能分别召回“家庭分支”和“手足近况”，但不一定知道它们应该一起解释。冷层拓扑应该让 runtime 在命中“手足近况”时能顺手扩一跳到 `family-branch-a`，再把分支气氛作为背景材料交给前台模型。
 
 这个扩展不应该把推测包装成事实。前台模型可以说“这可能和姥姥家那边的气氛有关”，但不能把关系拓扑直接变成未经证实的性格定论。
 
@@ -477,7 +477,7 @@ Bridge 后续更健康的形态是“温卡存内容，冷层存结构”。
 
 - 妹妹最近发生了什么
 - 用户怎么看这件事
-- 阿霁当时怎么回应
+- assistant 当时怎么回应
 - 这张卡能直接给前台模型看的摘要
 
 冷层拓扑可以记录：
@@ -570,7 +570,7 @@ MOSSBRIDGE_ASHERIE_WARM_MEMORY_DIR=/absolute/path/to/shared-data/storage/warm_me
 - 冷层里放温卡，温层里也放同一张卡，但没有 `source_card_id` 或同步记录。
 - 测试数据和真实使用数据混在同一个 owner/agent 作用域里。
 
-这种状态短期能跑，长期会出现“同一件事两张卡、两个版本、两个阿霁都觉得自己是真的”。
+这种状态短期能跑，长期会出现“同一件事两张卡、两个版本、两个 assistant 都觉得自己是真的”。
 
 ## Dreaming 与记忆代谢
 
@@ -641,4 +641,4 @@ app_daily_captures / conversation_cache / notebook / hot -> dreaming -> warm_mem
 
 Bridge 可以越长越像独立产品，但它必须有一条很清楚的脊椎：代码可分享，记忆归用户。
 
-新部署给 Codex 的具体施工说明见 [docs/codex-memory-setup.md](./codex-memory-setup.md)。
+新部署给 AI 助手的具体施工说明见 [docs/ai-deployment.md](./ai-deployment.md)。

@@ -29,10 +29,10 @@ test("control ledger persists normalized bridge events without leaking tokens", 
     subject: "thread-1",
     reason: "wechat_inbound",
     payload: {
-      contextToken: "secret-token",
+      contextToken: "sample-token",
       workspaceRoot: "/tmp/workspace",
       nested: {
-        authorization: "Bearer secret",
+        authorization: "Bearer sample",
         ok: true,
       },
     },

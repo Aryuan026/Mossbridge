@@ -16,7 +16,7 @@ function resolve_pid_cwd() {
 }
 
 function list_bridge_processes() {
-  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start --checkin/ { print }'
+  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start( |$)/ { print }'
 }
 
 function find_bridge_child_pid() {

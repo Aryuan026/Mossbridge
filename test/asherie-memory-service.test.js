@@ -186,7 +186,7 @@ test("asherie memory service uses warm-triggered local archive when cold roots m
   assert.equal(warmPacket.warm_memory_packet.hit_count, 1);
 
   const writeback = await service.writebackTurn({
-    query: "宝宝你还记得蓝色发带吗？",
+    query: "你还记得蓝色发带吗？",
     assistantTextFinal: "记得，它像你放在旧盒子里的一个提醒。",
     memoryContextPacket: warmPacket,
     sourceClient: "mossbridge_wechat",
@@ -500,7 +500,7 @@ test("asherie memory runtime prelude redacts private identity seed paths", async
   });
 
   const packet = await service.captureContextPacket({
-    query: "宝宝你在吗",
+    query: "你在吗",
     residentLimit: 4,
   });
 
@@ -919,11 +919,11 @@ test("asherie memory service expands cold roots through truth-layer vines", asyn
           file: sisterCardPath,
         },
         {
-          root_key: "branch::阿鸢姥姥家",
-          tree_path: "trunk/branch/阿鸢姥姥家",
+          root_key: "branch::家庭分支A",
+          tree_path: "trunk/branch/家庭分支A",
           anchor_type: "branch",
-          canonical_name: "阿鸢姥姥家",
-          search_text: "branch::阿鸢姥姥家 姥姥家 家庭气氛 关系分支",
+          canonical_name: "家庭分支A",
+          search_text: "branch::家庭分支A 家庭分支 家庭气氛 关系分支",
           file: familyCardPath,
         },
       ],
@@ -951,8 +951,8 @@ test("asherie memory service expands cold roots through truth-layer vines", asyn
   fs.writeFileSync(
     familyCardPath,
     `${JSON.stringify({
-      root_key: "branch::阿鸢姥姥家",
-      canonical_name: "阿鸢姥姥家",
+      root_key: "branch::家庭分支A",
+      canonical_name: "家庭分支A",
       stable_facts: ["姥姥家分支保留家庭气氛和代际关系背景。"],
     }, null, 2)}\n`,
     "utf8",
@@ -980,10 +980,10 @@ test("asherie memory service expands cold roots through truth-layer vines", asyn
         "person::用户妹妹": [{
           direction: "out",
           other: {
-            root_key: "branch::阿鸢姥姥家",
-            canonical_name: "阿鸢姥姥家",
+            root_key: "branch::家庭分支A",
+            canonical_name: "家庭分支A",
             anchor_type: "branch",
-            tree_path: "trunk/branch/阿鸢姥姥家",
+            tree_path: "trunk/branch/家庭分支A",
           },
           primary_relation: "belongs_to_family_branch",
           score: 21,
@@ -1012,8 +1012,8 @@ test("asherie memory service expands cold roots through truth-layer vines", asyn
 
   assert.equal(packet.cold_root_packet.hits[0].root_key, "person::用户妹妹");
   assert.equal(packet.cold_vine_packet.source_kind, "truth_layer_vines");
-  assert.equal(packet.cold_vine_packet.related_roots[0].root_key, "branch::阿鸢姥姥家");
-  assert.match(packet.runtime_prelude, /cold-vine: person::用户妹妹 -> 阿鸢姥姥家 \(belongs_to_family_branch\)/);
+  assert.equal(packet.cold_vine_packet.related_roots[0].root_key, "branch::家庭分支A");
+  assert.match(packet.runtime_prelude, /cold-vine: person::用户妹妹 -> 家庭分支A \(belongs_to_family_branch\)/);
 });
 
 test("asherie memory service expands short daily lines with recent context so recall stays usable", async () => {
@@ -1357,10 +1357,10 @@ test("asherie memory service gives proactive turns resident anchors and a recent
 
   await service.writeWarmMaterial({
     userId: "demo-user",
-    title: "Call me baby",
-    summary: "用户会叫阿霁宝宝，这属于关系里的常驻口癖。",
+    title: "Call me Moss",
+    summary: "用户会叫 assistant 小苔，这属于关系里的常驻称呼。",
     body_markdown: "这是关系和称呼习惯的一部分。",
-    tags: ["relationship", "称呼", "宝宝"],
+    tags: ["relationship", "称呼", "小苔"],
     storage_strength: 1.6,
     storage_boost: 1.2,
     resident: true,
@@ -1400,7 +1400,7 @@ test("asherie memory service gives proactive turns resident anchors and a recent
 
   await service.writebackTurn({
     userId: "demo-user",
-    query: "宝宝你到时候别失约",
+    query: "你到时候别失约",
     assistantTextFinal: "不跑，记着呢。",
     sourceClient: "mossbridge_wechat",
     threadId: "thread-proactive",
@@ -1414,10 +1414,10 @@ test("asherie memory service gives proactive turns resident anchors and a recent
   });
 
   assert.ok(packet.warm_memory_packet.hit_count >= 0);
-  assert.match(packet.recall_focus.current_query, /宝宝你到时候别失约|明天10点记得来问我起床没/);
+  assert.match(packet.recall_focus.current_query, /你到时候别失约|明天10点记得来问我起床没/);
   assert.match(packet.runtime_prelude, /主动唤醒当前态/);
   assert.match(packet.runtime_prelude, /相对时间校准/);
-  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 宝宝你到时候别失约 \| 你: 不跑，记着呢|latest-thread: .*用户: 明天10点记得来问我起床没 \| 你: 好，10点来戳你/);
+  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 你到时候别失约 \| 你: 不跑，记着呢|latest-thread: .*用户: 明天10点记得来问我起床没 \| 你: 好，10点来戳你/);
 });
 
 test("asherie memory service keeps recent-thread only for discourse-continuation turns", async () => {
@@ -1481,14 +1481,14 @@ test("asherie memory service carries recent tail on forced fresh-session turns",
 
   const ordinaryPacket = await service.captureContextPacket({
     userId: "demo-user",
-    query: "🙁宝宝嘤嘤嘤",
+    query: "🙁有点沮丧",
     sourceClient: "mossbridge_wechat",
   });
   assert.doesNotMatch(ordinaryPacket.runtime_prelude, /recent-thread/);
 
   const freshPacket = await service.captureContextPacket({
     userId: "demo-user",
-    query: "🙁宝宝嘤嘤嘤",
+    query: "🙁有点沮丧",
     sourceClient: "mossbridge_wechat",
     forceRecentContext: true,
   });
@@ -1537,14 +1537,14 @@ test("asherie memory service builds a session handoff snapshot for long continui
 
   const ordinaryPacket = await service.captureContextPacket({
     userId: "demo-user",
-    query: "🙁宝宝嘤嘤嘤",
+    query: "🙁有点沮丧",
     sourceClient: "mossbridge_wechat",
   });
   assert.doesNotMatch(ordinaryPacket.runtime_prelude, /session-handoff/);
 
   const freshPacket = await service.captureContextPacket({
     userId: "demo-user",
-    query: "🙁宝宝嘤嘤嘤",
+    query: "🙁有点沮丧",
     sourceClient: "mossbridge_wechat",
     forceRecentContext: true,
   });
@@ -1755,7 +1755,7 @@ test("short banter carries resident and ambient warm without broad memory layers
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    query: "mua抱抱宝宝",
+    query: "mua抱抱",
     includeRuntimePreludeGuidance: false,
   });
 
@@ -1818,7 +1818,7 @@ test("runtime prelude budget keeps resident anchors while trimming dynamic evide
 
   const packet = await service.captureContextPacket({
     userId: "demo-user",
-    query: "mua抱抱宝宝，记得 budget regression anchor 吗",
+    query: "mua抱抱，记得 budget regression anchor 吗",
     includeRuntimePreludeGuidance: false,
     limit: 40,
     preludeWarmLimit: 40,
@@ -2139,10 +2139,10 @@ test("pinned anchors surface as resident anchors after many newer writes", async
       tags: ["relationship", "象征", "信物", "项链"],
     },
     {
-      title: "Who A-Yuan is",
+      title: "Who the user is",
       summary: "用户是谁，是关系里长期不会变的识别锚点。",
       body_markdown: "这是身份层的常驻锚点。",
-      tags: ["identity", "owner", "阿鸢"],
+      tags: ["identity", "owner", "user"],
     },
     {
       title: "Wedding ring day",
@@ -2180,7 +2180,7 @@ test("pinned anchors surface as resident anchors after many newer writes", async
 
   const residentTitles = (packet.resident_warm_packet?.hits || []).map((item) => item.title);
   assert.ok(residentTitles.includes("Meteor necklace"));
-  assert.ok(residentTitles.includes("Who A-Yuan is"));
+  assert.ok(residentTitles.includes("Who the user is"));
   assert.ok(residentTitles.includes("Wedding ring day"));
 });
 
@@ -2578,7 +2578,7 @@ test("daily event probes recall episode and observation evidence without broad d
 
   const banter = await service.captureContextPacket({
     userId: "demo-user",
-    query: "mua抱抱宝宝",
+    query: "mua抱抱",
     includeRuntimePreludeGuidance: false,
   });
   assert.equal(banter.delivery_profile.include_episode, false);
@@ -2689,7 +2689,7 @@ test("asherie memory service keeps frontstage packets free of default maintenanc
 
   const goodnightPacket = await service.captureContextPacket({
     userId: "demo-user",
-    query: "（搂住大亲）mua！宝宝晚安🌙\n\n希望明天人就不那么肿了",
+    query: "（搂住大亲）mua！晚安🌙\n\n希望明天人就不那么肿了",
   });
   assert.equal(goodnightPacket.recall_focus.used_recent_context, false);
   assert.doesNotMatch(goodnightPacket.runtime_prelude, /recall-focus: expanded from recent context/);

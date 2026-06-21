@@ -220,8 +220,8 @@ signal -> decision -> action -> feedback -> ledger
 3. `docs/quickstart.md`
    新 clone 的真实部署路径。
 
-4. `docs/codex-memory-setup.md`
-   给 Codex 的施工说明，解释为什么要分 state/data/workspace，为什么记忆递送参数要克制。
+4. `docs/ai-deployment.md`
+   给 AI 部署助手的施工说明，解释为什么要分 state/data/workspace，为什么空仓是合法状态，以及哪些动作必须等用户明确要求。
 
 5. `src/index.js`
    CLI 入口和命令分发。

@@ -12,12 +12,12 @@ Public Mossbridge defaults to the safe self-check boundary in [safe-self-check.m
 ## Install On This Mac
 
 ```sh
-npm run service:takeover:codex
+npm run service:install:codex
 # or
-npm run service:takeover:claudecode
+npm run service:install:claudecode
 ```
 
-`takeover` stops a currently manual shared bridge, writes a LaunchAgent plist, and starts the launchd-owned service. Use the runtime that matches the bridge you want to run.
+Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent. Use the runtime that matches the bridge you want to run.
 
 Default plist:
 

@@ -1,3 +1,9 @@
+# Historical Snapshot: Mossbridge Public Release Readiness, 2026-05
+
+This is a historical snapshot from May 2026. It is not the current deployment guide and should not be used as the source of truth for clean-clone setup.
+
+For current public preview status, read [../release-status.md](../release-status.md). For AI-assisted deployment, read [../ai-deployment.md](../ai-deployment.md).
+
 # Mossbridge Public Release Readiness
 
 这份文档是 Mossbridge / 苔藓小桥的本地进度备份。

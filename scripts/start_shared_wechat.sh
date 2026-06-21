@@ -13,7 +13,7 @@ function resolve_pid_cwd() {
 }
 
 function list_bridge_processes() {
-  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start --checkin/ { print }'
+  ps -ax -o pid=,ppid=,command= | awk '/node \.\/bin\/mossbridge\.js start( |$)/ { print }'
 }
 
 function find_bridge_child_pid() {
@@ -98,7 +98,7 @@ function shutdown_bridge() {
 trap shutdown_bridge EXIT INT TERM
 cd "${ROOT_DIR}"
 export MOSSBRIDGE_CODEX_ENDPOINT="ws://127.0.0.1:${PORT}"
-node ./bin/mossbridge.js start --checkin &
+node ./bin/mossbridge.js start &
 BRIDGE_PID="$!"
 echo "${BRIDGE_PID}" > "${PID_FILE}"
 wait "${BRIDGE_PID}"

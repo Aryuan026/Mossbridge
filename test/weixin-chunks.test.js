@@ -37,15 +37,15 @@ test("stripChunkTailChineseFullStops removes only a single final full stop", () 
 });
 
 test("normalizeWeixinBracketEmojiShortcodes converts known WeChat emoji labels only", () => {
-  assert.equal(normalizeWeixinBracketEmojiShortcodes("宝宝[微笑][坏笑]"), "宝宝🙂😏");
+  assert.equal(normalizeWeixinBracketEmojiShortcodes("朋友[微笑][坏笑]"), "朋友🙂😏");
   assert.equal(normalizeWeixinBracketEmojiShortcodes("保留 [track_id:abc] 和 [unknown]"), "保留 [track_id:abc] 和 [unknown]");
 });
 
 test("normalizeInboundWeixinEmojiShortcodes keeps transport placeholders out of runtime text", () => {
   assert.equal(normalizeInboundWeixinEmojiShortcodes("[哇]连上了"), "😲连上了");
   assert.equal(
-    normalizeInboundWeixinEmojiShortcodes("宝宝[右哼哼]"),
-    "宝宝（用户发来了一个哼哼、别扭或小不满的微信表情）"
+    normalizeInboundWeixinEmojiShortcodes("朋友[右哼哼]"),
+    "朋友（用户发来了一个哼哼、别扭或小不满的微信表情）"
   );
   assert.equal(normalizeInboundWeixinEmojiShortcodes("保留 [track_id:abc]"), "保留 [track_id:abc]");
 });
@@ -54,10 +54,10 @@ test("bodyFromItemList normalizes WeChat emoji placeholders before runtime intak
   const text = bodyFromItemList([{
     type: 1,
     text_item: {
-      text: "宝宝[右哼哼]",
+      text: "朋友[右哼哼]",
     },
   }]);
-  assert.equal(text, "宝宝（用户发来了一个哼哼、别扭或小不满的微信表情）");
+  assert.equal(text, "朋友（用户发来了一个哼哼、别扭或小不满的微信表情）");
 });
 
 test("collectStreamingBoundaries finds paragraph, list and punctuation breaks", () => {

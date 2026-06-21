@@ -9,7 +9,7 @@ const WARM_TOPIC_PATTERN = /(coffee|morning|sleep|taste|preference|habit|relatio
 const AFFECTIVE_RELATIONAL_PATTERN = /(担心|怕|害怕|焦虑|不安|慌|难过|委屈|破防|崩了|想哭|哭了|冷冷|冷淡|生硬|工具化|公事公办|生疏|不熟|不对劲|不像|疏远|没得选|失去|丢掉|离开|分离|安全感|陪我|陪玩|玩啥|玩什么|黏糊|黏黏|萌萌|撒娇|亲密|亲昵|熟悉|贴近|逗嘴|接梗|玩笑|调戏|退缩|客气|客服|sop|反客服)/iu;
 const TEMPORAL_PATTERN = /(昨天|前天|大前天|刚才|刚刚|上次|那天|当时|之前那|前面|今天.*(早上|上午|中午|下午|晚上|图|文件|消息|回复))/iu;
 const READING_PATTERN = /(读书|共读|这本书|章节|第.{0,4}章|书里|小说|epub|txt)/iu;
-const LOW_CONTEXT_MARKERS = /(mua|宝宝|亲亲|抱抱|抱住|贴贴|晚安|早安|想你|哼|呜|嘿嘿|哈哈|摸摸|蹭蹭|亲一口|搂住|困了|睡了|醒了)/iu;
+const LOW_CONTEXT_MARKERS = /(mua|亲亲|抱抱|抱住|贴贴|晚安|早安|想你|哼|呜|嘿嘿|哈哈|摸摸|蹭蹭|亲一口|搂住|困了|睡了|醒了)/iu;
 const QUESTION_OR_TASK_PATTERN = /(怎么|为什么|什么|哪个|哪种|能不能|会不会|要不要|帮我|检查|看看|处理|写|推|部署|修|改|删|删除|结束|不要|打开|搜索|读|发|上传)/iu;
 const ACTIVE_TASK_PATTERN = /(帮我|检查|看看|处理|写|推|部署|修|改一下|改掉|删|删除|打开|搜索|读|发|上传)/iu;
 

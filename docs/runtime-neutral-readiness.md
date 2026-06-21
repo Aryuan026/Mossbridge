@@ -21,9 +21,9 @@ cannot be configured and audited as Mossbridge-native adapters.
 
 | Area | Shared expectation | Codex runtime | Claude Code runtime |
 | --- | --- | --- | --- |
-| Install | `npm install` succeeds on a clean clone | `codex` command is available and authenticated | `claude` command is available and authenticated |
-| Start | shared bridge starts with `--checkin` support | `npm run shared:start` or `MOSSBRIDGE_RUNTIME=codex npm run shared:start` | `npm run shared:start:claudecode` |
-| Local guard | launchd can supervise the same shared-start wrapper | `npm run service:takeover:codex` | `npm run service:takeover:claudecode` |
+| Install | `npm ci` succeeds on a clean clone | `codex` command is available and authenticated | `claude` command is available and authenticated |
+| Start | shared bridge starts passively by default; check-in is opt-in | `npm run shared:start` or `MOSSBRIDGE_RUNTIME=codex npm run shared:start` | `npm run shared:start:claudecode` |
+| Local guard | macOS launchd can supervise the same shared-start wrapper after foreground smoke works | `npm run service:install:codex` | `npm run service:install:claudecode` |
 | Status | one status surface shows runtime, pid, workspace, thread, and context health | `npm run shared:status` / `npm run service:status:codex` | `npm run shared:status:claudecode` / `npm run service:status:claudecode` |
 | WeChat login | QR login and allowed-user binding are runtime-independent | same account store | same account store |
 | Workspace bind | `/bind` maps WeChat to a workspace | Codex thread stored in session store | Claude Code session stored in session store |
@@ -41,8 +41,8 @@ Use a new state directory, new data directory, and disposable workspace. Do not 
 ```bash
 git clone https://github.com/Aryuan026/Mossbridge.git
 cd Mossbridge
-npm install
-cp .env.example .env
+npm ci
+test -f .env || cp .env.example .env
 ```
 
 Fill only the neutral essentials first:
@@ -53,6 +53,8 @@ MOSSBRIDGE_WORKSPACE_ROOT=/absolute/path/to/mossbridge-workspace
 MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
 MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ENABLE_CHECKIN=false
+MOSSBRIDGE_ENABLE_DREAMING=false
 MOSSBRIDGE_IDENTITY_USER_ID=owner
 MOSSBRIDGE_IDENTITY_REALM_ID=default
 MOSSBRIDGE_IDENTITY_AGENT_ID=moss
@@ -81,7 +83,16 @@ MOSSBRIDGE_RUNTIME=claudecode
 MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
 ```
 
-Then run the same smoke twice, once per runtime:
+Before QR login, run isolated checks:
+
+```bash
+npm run doctor
+npm run smoke:memory-empty
+npm run smoke:memory-chain
+npm run verify
+```
+
+Then, only when the user asks for real WeChat validation, run the same foreground smoke twice, once per runtime:
 
 ```bash
 npm run login
@@ -114,14 +125,21 @@ Pass criteria:
 - Core memory delivery works from an empty local data root: context packet, hot context, notebook, warm memory, ongoing tracks, observation/episode journals, case index, and cold-version compatibility do not require a private external warehouse.
 - If dreaming is enabled, the quiet-window scheduler must queue a `dreaming_opportunity`, require `mossbridge_memory_metabolism_receipt_write`, and retry the same attempt on missing receipt/runtime failure.
 
+Random check-ins and dreaming are not part of the passive first start. Enable them only after foreground smoke works:
+
+```bash
+npm run shared:start:checkin
+MOSSBRIDGE_ENABLE_DREAMING=true npm run shared:start
+```
+
 ## Service Smoke
 
-The local service guard should work for both runtimes. Only one default LaunchAgent label should be active at a time unless the user deliberately sets distinct labels.
+The local service guard is macOS-only. Use it after foreground smoke works. Only one default LaunchAgent label should be active at a time unless the user deliberately sets distinct labels.
 
 Codex:
 
 ```bash
-npm run service:takeover:codex
+npm run service:install:codex
 npm run service:status:codex
 npm run service:restart:codex
 ```
@@ -129,10 +147,12 @@ npm run service:restart:codex
 Claude Code:
 
 ```bash
-npm run service:takeover:claudecode
+npm run service:install:claudecode
 npm run service:status:claudecode
 npm run service:restart:claudecode
 ```
+
+Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent.
 
 Pass criteria:
 

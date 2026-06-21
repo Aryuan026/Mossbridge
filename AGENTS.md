@@ -43,7 +43,7 @@ Compared with the upstream Cyberboss shape, Mossbridge adds two public incubator
 
 Keep these layers runtime-neutral. Codex and Claude Code should receive the same bridge intent and memory contract, with only protocol/session/model differences kept in adapters.
 
-For fresh deployments, `pinned` warm cards and `certainty_state: anchor` cards are resident anchors by default. Use `resident:false` only for important cards that should stay searchable but not sit in every turn.
+For fresh deployments, do not seed resident anchors before the first user-confirmed conversation content. When a user-confirmed warm card exists, `pinned` warm cards and `certainty_state: anchor` cards are resident anchors by default. Use `resident:false` only for important cards that should stay searchable but not sit in every turn.
 
 For token hygiene, ordinary user turns may receive stable opening guidance once per runtime thread, but system wakeups must stay lean without waking empty. Heartbeat, reminder, and dreaming system turns should not re-send the full WeChat opening prompt; they should carry a short soul/identity wake anchor, the trigger, scoped memory packet, safe action envelope, and any small diagnostics needed for writeback. Bridge status reports remain `[Mossbridge]` notices, not front-stage assistant speech.
 
@@ -109,8 +109,8 @@ If a capability cannot work from Mossbridge's own public config, state/data root
 For a clean clone:
 
 ```bash
-npm install
-cp .env.example .env
+npm ci
+test -f .env || cp .env.example .env
 npm run smoke:memory-empty
 npm run smoke:memory-chain
 npm run doctor
@@ -130,6 +130,7 @@ Useful checks:
 ```bash
 npm run smoke:memory-empty
 npm run smoke:memory-chain
+npm run verify
 npm run check
 node --test
 npm run shared:status
@@ -137,6 +138,8 @@ npm run service:status:codex
 ```
 
 Only run `npm run login`, `npm run shared:start`, service install/restart/takeover commands, or QR flows when the user explicitly asks for a local deployment or smoke run.
+
+The current AI deployment entry is `docs/ai-deployment.md`; `docs/codex-memory-setup.md` is only a compatibility redirect.
 
 ## Deferred Capture Import Boundary
 

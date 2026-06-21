@@ -1,6 +1,6 @@
 # Mossbridge Quickstart
 
-This guide is the clean-clone path: new state directory, new data directory, disposable workspace, and either Codex or Claude Code as the runtime.
+This guide is the human clean-clone path: new state directory, new data directory, disposable workspace, and either Codex or Claude Code as the runtime.
 
 Do not reuse another bridge's state directory, launchd label, account files, memory warehouse, or workspace while running this smoke. The whole point is to prove Mossbridge can stand up from an empty little patch of ground.
 
@@ -18,8 +18,8 @@ Mossbridge has its own local brain and a small control plane. During this quicks
 ```bash
 git clone https://github.com/Aryuan026/Mossbridge.git
 cd Mossbridge
-npm install
-cp .env.example .env
+npm ci
+test -f .env || cp .env.example .env
 ```
 
 ## 3. Create Isolated Paths
@@ -40,6 +40,8 @@ MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ENABLE_CHECKIN=false
+MOSSBRIDGE_ENABLE_DREAMING=false
 MOSSBRIDGE_IDENTITY_USER_ID=owner
 MOSSBRIDGE_IDENTITY_REALM_ID=default
 MOSSBRIDGE_IDENTITY_AGENT_ID=moss
@@ -64,8 +66,10 @@ Why these paths matter:
 Before QR login, you can verify the empty memory warehouse skeleton:
 
 ```bash
+npm run doctor
 npm run smoke:memory-empty
 npm run smoke:memory-chain
+npm run verify
 ```
 
 The first smoke creates the local storage/cache directories and checks that an empty context packet can be built without touching any external memory warehouse. The second writes a disposable warm card, ongoing track, observation, episode, case, solitude note, notebook entry, conversation-cache record, local web AI capture import, sticker catalog, and dreaming receipt into the isolated data/state roots, then verifies the bridge can recall the core context and complete the quiet-window metabolism gate.
@@ -86,7 +90,7 @@ For a private deployment, put the user id into `.env`:
 MOSSBRIDGE_ALLOWED_USER_IDS=the_user_id_from_login_or_status
 ```
 
-For an isolated smoke test, it is acceptable to leave it empty until you confirm which user id arrives from WeChat.
+For an isolated smoke test, it is acceptable to leave it empty until you confirm which user id arrives from WeChat. After you know the sender id, fill it and restart the bridge. A non-empty allowlist rejects other senders before commands, attachment downloads, token caching, and runtime dispatch.
 
 ## 5. Start The Shared Bridge
 
@@ -149,25 +153,39 @@ Pass criteria:
 
 ## 8. Optional Service Guard
 
-Only use the service guard after the foreground smoke works.
+Only use the service guard after the foreground smoke works. These LaunchAgent commands are macOS-only.
 
 Codex:
 
 ```bash
-npm run service:takeover:codex
+npm run service:install:codex
 npm run service:status:codex
 ```
 
 Claude Code:
 
 ```bash
-npm run service:takeover:claudecode
+npm run service:install:claudecode
 npm run service:status:claudecode
 ```
 
-The default LaunchAgent label is `com.mossbridge.bridge`. Use a custom `MOSSBRIDGE_LAUNCHD_LABEL` if you intentionally run multiple isolated deployments on one Mac.
+The default LaunchAgent label is `com.mossbridge.bridge`. Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent. Use a custom `MOSSBRIDGE_LAUNCHD_LABEL` if you intentionally run multiple isolated deployments on one Mac.
 
-## 9. Codex As Deployment Helper
+## 9. Optional Proactive Features
+
+The public default is passive. Enable proactive check-ins only after the foreground smoke works and the user wants them:
+
+```bash
+npm run shared:start:checkin
+```
+
+Dreaming/metabolism is also explicit opt-in:
+
+```bash
+MOSSBRIDGE_ENABLE_DREAMING=true npm run shared:start
+```
+
+## 10. Codex As Deployment Helper
 
 Codex can help a new maintainer run these checks, inspect logs, and patch local setup issues. That is separate from Codex as a runtime: `MOSSBRIDGE_RUNTIME=codex` means WeChat messages are handled by the local Codex runtime through the bridge.
 

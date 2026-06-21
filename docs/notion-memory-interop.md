@@ -235,7 +235,7 @@ topic_id exact match
 
 它不应该每轮注入前台模型，但可以用于：
 
-- 初始化一个空 Mossbridge 的 resident anchors。
+- 在用户确认后辅助生成可选的 resident-anchor 候选；空 Mossbridge 不需要预置 resident anchor 才能对话。
 - 给官方 app 端通过 Notion 工具读取“当前稳定印象”。
 - 给 Codex 做月度导入和冲突比对。
 - 给公开/迁移时做脱敏后的 starter memory。
