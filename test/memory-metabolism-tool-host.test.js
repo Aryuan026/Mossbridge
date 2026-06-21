@@ -22,6 +22,7 @@ test("memory mutation tools strip metabolism meta and record server ledger", asy
         attempt_id: "dream-1",
         status: "dispatched",
         created_at: new Date().toISOString(),
+        thread_id: "thread-dream",
         source_record_ids: ["source-1"],
         source_records: [{
           record_id: "source-1",
@@ -93,6 +94,7 @@ test("memory mutation tools validate metabolism meta before changing stores", as
         attempt_id: "dream-1",
         status: "dispatched",
         created_at: new Date().toISOString(),
+        thread_id: "thread-dream",
         source_record_ids: ["source-1"],
         source_records: [{
           record_id: "source-1",
@@ -132,9 +134,16 @@ test("memory mutation tools validate metabolism meta before changing stores", as
     await host.invokeTool("mossbridge_memory_warm_write", {
       title: "Missing attempt",
       body_markdown: "I remember this, but forgot the metabolism attempt id.",
-    }, { senderId: "user-1" });
+    }, { senderId: "user-1", threadId: "thread-dream" });
   }, /metabolism_attempt_id/);
   assert.equal(writes, 0);
+
+  const foreground = await host.invokeTool("mossbridge_memory_warm_write", {
+    title: "Foreground memory",
+    body_markdown: "I can still save ordinary foreground continuity outside the dreaming thread.",
+  }, { senderId: "user-1", threadId: "thread-foreground" });
+  assert.equal(foreground.data.record.material_id, "memo-1");
+  assert.equal(writes, 1);
 
   await assert.rejects(async () => {
     await host.invokeTool("mossbridge_memory_warm_write", {
@@ -144,7 +153,7 @@ test("memory mutation tools validate metabolism meta before changing stores", as
       source_record_ids: ["source-missing"],
     }, { senderId: "user-1" });
   }, /do not belong to attempt/);
-  assert.equal(writes, 0);
+  assert.equal(writes, 1);
 
   await assert.rejects(async () => {
     await host.invokeTool("mossbridge_memory_warm_write", {
@@ -153,5 +162,5 @@ test("memory mutation tools validate metabolism meta before changing stores", as
       metabolism_attempt_id: "dream-1",
     }, { senderId: "user-1" });
   }, /source_record_ids are required/);
-  assert.equal(writes, 0);
+  assert.equal(writes, 1);
 });

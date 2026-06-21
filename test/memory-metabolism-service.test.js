@@ -403,6 +403,26 @@ test("memory metabolism completes promoted sources and retries only deferred sou
     after: { material_id: "warm-1", title: "Promoted source" },
   });
   assert.equal(mutation.ok, true);
+  const badReceipt = service.recordReceipt({
+    attempt_id: queued.attempt_id,
+    status: "mutated",
+    summary: "This tries to hide a committed mutation behind a deferred disposition.",
+    source_record_ids: queued.source_record_ids,
+    source_dispositions: [
+      {
+        source_id: first.event_id,
+        status: "deferred",
+        reason: "This source already has a mutation and cannot remain deferred.",
+      },
+      {
+        source_id: second.event_id,
+        status: "rejected_as_noise",
+        reason: "No durable candidate.",
+      },
+    ],
+  });
+  assert.equal(badReceipt.ok, false);
+  assert.match(badReceipt.receipt.error, /must be marked promoted/);
   const receipt = service.recordReceipt({
     attempt_id: queued.attempt_id,
     status: "mutated",
@@ -457,6 +477,17 @@ test("memory metabolism completes promoted sources and retries only deferred sou
     .filter((attempt) => attempt.parent_attempt_id === queued.attempt_id);
   assert.equal(retryAttempts.length, 1);
   assert.deepEqual(retryAttempts[0].source_record_ids, [second.event_id]);
+
+  const retryState = service.readState();
+  const retryAttempt = Object.values(retryState.attempts)
+    .find((attempt) => attempt.parent_attempt_id === queued.attempt_id);
+  retryAttempt.retry_after = new Date(Date.now() - 1000).toISOString();
+  retryState.retry_after_ms = Date.now() - 1000;
+  service.writeState(retryState);
+  const requeued = queueDreaming(service, config, Date.now() + 1000);
+  assert.equal(requeued.queued, true);
+  assert.equal(requeued.requeued, true);
+  assert.deepEqual(requeued.source_record_ids, [second.event_id]);
 });
 
 test("memory metabolism source statuses exclude terminal records beyond completed id cap", () => {
@@ -533,6 +564,38 @@ test("wechat writeback enters append-only metabolism source events beyond the 24
   assert.equal(source.records.length, 1);
   assert.equal(source.records[0].source_type, "conversation_writeback");
   assert.match(source.records[0].content, /二十五小时前/);
+});
+
+test("conversation cache and writeback source event dedupe by canonical source id", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-metabolism-writeback-dedupe-"));
+  const config = buildMetabolismTestConfig(root, {
+    dreamingMinSourceRecords: 1,
+    dreamingMaxSourceRecords: 4,
+  });
+  const memory = new AsherieMemoryService({ config });
+  const metabolism = new MemoryMetabolismService({ config, memoryService: memory });
+  const domains = createServiceDomains({
+    asherieMemory: memory,
+    memoryMetabolism: metabolism,
+  });
+  const writeback = await domains.memory.writebackTurn({
+    userId: "user-1",
+    senderId: "user-1",
+    query: "这是一条刚发生的普通微信对话。",
+    incomingMessages: [{ role: "user", content: "这是一条刚发生的普通微信对话。" }],
+    assistantTextFinal: "它会同时写 cache 和 source event，但 digest 只能算一条。",
+    sourceClient: "mossbridge_wechat",
+    transportId: "weixin",
+    runtimeId: "codex",
+    threadId: "thread-now",
+  });
+  assert.equal(writeback.ok, true);
+  assert.equal(writeback.source_event_write.ok, true);
+
+  const source = metabolism.collectSourceRecords({ userId: "user-1", nowMs: Date.now() });
+  assert.equal(source.records.length, 1);
+  assert.equal(source.records[0].source_type, "conversation_cache");
+  assert.equal(source.records[0].record_id, writeback.appended_record.record_id);
 });
 
 function buildMetabolismTestConfig(root, overrides = {}) {

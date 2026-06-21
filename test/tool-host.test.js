@@ -927,15 +927,16 @@ test("tool host exposes structured warm-memory lookup and exact-card mutation to
   const writeTool = tools.find((tool) => tool.name === "mossbridge_memory_warm_write");
   const updateTool = tools.find((tool) => tool.name === "mossbridge_memory_warm_update");
   assert.match(writeTool.description, /diary\/persona continuity/);
-  assert.match(writeTool.description, /first-person inner note/);
-  assert.match(writeTool.description, /future assistant should use it next time/);
+  assert.match(writeTool.description, /future self should use it/);
   assert.match(writeTool.description, /The user prefers/);
-  assert.match(writeTool.inputSchema.properties.body_markdown.description, /source is missing but continuity value is urgent/);
+  assert.match(writeTool.inputSchema.properties.body_markdown.description, /future-use cue/);
+  assert.equal(writeTool.inputSchema.properties.body_markdown.description.length < 220, true);
+  assert.equal(updateTool.inputSchema.properties.body_markdown.description.length < 180, true);
   assert.equal(writeTool.inputSchema.properties.resident.type, "boolean");
   assert.equal(updateTool.inputSchema.properties.resident.type, "boolean");
   assert.match(writeTool.inputSchema.properties.pinned.description, /may enter resident delivery/);
   assert.match(writeTool.inputSchema.properties.resident.description, /Explicit every-turn resident/);
-  assert.match(updateTool.inputSchema.properties.body_markdown.description, /generic summary/);
+  assert.match(updateTool.inputSchema.properties.body_markdown.description, /evidence\/source/);
   assert.equal(updateTool.inputSchema.properties.resident_kind, undefined);
 
   const search = await host.invokeTool("mossbridge_memory_warm_search", {

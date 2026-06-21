@@ -112,19 +112,6 @@ class MemoryMetabolismService {
       return { queued: false, reason: "missing_system_queue" };
     }
 
-    const source = this.collectSourceRecords({
-      userId: senderId,
-      nowMs: normalizedNowMs,
-    });
-    if (source.records.length < this.getMinSourceRecords()) {
-      return {
-        queued: false,
-        reason: "insufficient_source_records",
-        source_count: source.records.length,
-        min_source_records: this.getMinSourceRecords(),
-      };
-    }
-
     const state = this.readState();
     const activeAttempt = findActiveAttempt(state, normalizedNowMs);
     if (activeAttempt) {
@@ -162,6 +149,19 @@ class MemoryMetabolismService {
         message: queued,
         source_record_count: normalizeStringList(retryableAttempt.source_record_ids).length,
         source_record_ids: normalizeStringList(retryableAttempt.source_record_ids),
+      };
+    }
+
+    const source = this.collectSourceRecords({
+      userId: senderId,
+      nowMs: normalizedNowMs,
+    });
+    if (source.records.length < this.getMinSourceRecords()) {
+      return {
+        queued: false,
+        reason: "insufficient_source_records",
+        source_count: source.records.length,
+        min_source_records: this.getMinSourceRecords(),
       };
     }
 
@@ -656,6 +656,21 @@ class MemoryMetabolismService {
 
   hasActiveAttempt(nowMs = Date.now()) {
     return Boolean(findActiveAttempt(this.readState(), nowMs));
+  }
+
+  hasActiveAttemptForContext({
+    threadId = "",
+    nowMs = Date.now(),
+  } = {}) {
+    const active = findActiveAttempt(this.readState(), nowMs);
+    if (!active) {
+      return false;
+    }
+    const currentThreadId = normalizeText(threadId);
+    if (currentThreadId && normalizeText(active.thread_id) === currentThreadId) {
+      return true;
+    }
+    return false;
   }
 
   recordReceipt(args = {}) {
@@ -1532,10 +1547,12 @@ function mergeSourceRecords(...groups) {
   const output = [];
   for (const record of groups.flat()) {
     const id = normalizeText(record?.record_id);
-    if (!id || seen.has(id)) {
+    const canonicalId = normalizeText(record?.source_id) || id;
+    const key = canonicalId ? `source:${canonicalId}` : `record:${id}`;
+    if (!id || seen.has(key)) {
       continue;
     }
-    seen.add(id);
+    seen.add(key);
     output.push(record);
   }
   return output;
@@ -1774,11 +1791,22 @@ function verifyReceipt({
         sourceDispositions: normalizedDispositions,
       });
     }
+    const ledgerSourceIdList = Array.from(ledgerSourceIds);
     const unprovenPromotedIds = promotedSourceIds.filter((id) => !ledgerSourceIds.has(id));
     if (unprovenPromotedIds.length) {
       return buildReceiptVerification({
         ok: false,
         error: `promoted source ids have no matching mutation ledger entry: ${unprovenPromotedIds.join(", ")}`,
+        status,
+        sourceRecordIds,
+        sourceDispositions: normalizedDispositions,
+      });
+    }
+    const unpromotedLedgerSourceIds = ledgerSourceIdList.filter((id) => !promotedSourceIds.includes(id));
+    if (unpromotedLedgerSourceIds.length) {
+      return buildReceiptVerification({
+        ok: false,
+        error: `mutation ledger source ids must be marked promoted: ${unpromotedLedgerSourceIds.join(", ")}`,
         status,
         sourceRecordIds,
         sourceDispositions: normalizedDispositions,

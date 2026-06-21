@@ -19,18 +19,7 @@ const METABOLISM_META_PROPERTIES = {
   source_ids: { type: "array", items: { type: "string" }, description: "Alias for source_record_ids." },
 };
 const METABOLISM_META_KEYS = new Set(Object.keys(METABOLISM_META_PROPERTIES));
-const WARM_MEMORY_WRITE_GUIDANCE = [
-  "Warm memory is diary/persona continuity, not a generic user profile, summary card, debug note, fake tag bucket, task report, or response-policy sheet.",
-  "For relationship continuity, self-axis, expression/voice, preference, future self-warning, repair learning, or resident anchors, write body_markdown as the current assistant/persona's first-person inner note: I remember..., I felt/learned..., Next time I should....",
-  "A usable body_markdown must answer in natural prose: what happened or was corrected, why it matters to the current assistant/persona or the thread, what concrete evidence/date/object/source grounds it, and how the future assistant should use it next time.",
-  "If the draft is only a list of objects/names or a generic summary, it is not a warm card yet; add meaning, evidence, and a future-use cue before writing, or store the raw scene in episode/observation instead.",
-  "For photos, gifts, symbols, shared objects, or custom artifacts, preserve who chose/named it, the visible evidence, the relationship meaning, and any correction history.",
-  "Do not write cards that read like 'The user prefers...' or 'the assistant should...' unless intentionally patching a legacy card; convert them into grounded first-person diary material and keep concrete evidence.",
-  "Use summary only as a short recall key. Put concrete people/objects/projects in entities or aliases; use episode_refs/case_refs/source references when available.",
-  "If exact source is missing but continuity value is urgent, set source_backfill_required and dreaming_review_required so dreaming can bind source evidence later.",
-  "Do not store tool policy, wakeup policy, temporary task status, or server/debug SOP as resident warm cards; use prompts, runbooks, ongoing tracks, episode/observation/case, or cold/source structure instead.",
-  "Do not add visible repair headings such as Inner Memory, How To Use, or generic scaffold labels into body_markdown.",
-].join(" ");
+const WARM_MEMORY_WRITE_GUIDANCE = "Warm cards are first-person diary/persona continuity for the current assistant/persona: what happened or was corrected, why it matters, what evidence/source grounds it, and how future self should use it. Do not write generic user profiles, tag lists, task/debug reports, tool policy, or cards phrased as 'The user prefers...' / 'the assistant should...'.";
 const MEMORY_MUTATION_TOOL_NAMES = new Set([
   "mossbridge_diary_append",
   "mossbridge_memory_warm_write",
@@ -84,6 +73,7 @@ class ProjectToolHost {
       const mutationMetaValidation = this.validateMemoryMutationMeta({
         toolName,
         metabolismMeta,
+        context: resolvedContext,
       });
       if (!mutationMetaValidation.ok) {
         throw new Error(mutationMetaValidation.error || `Invalid memory metabolism metadata for ${toolName}`);
@@ -118,7 +108,7 @@ class ProjectToolHost {
     throw new Error(`Unknown tool: ${toolName}`);
   }
 
-  validateMemoryMutationMeta({ toolName = "", metabolismMeta = {} } = {}) {
+  validateMemoryMutationMeta({ toolName = "", metabolismMeta = {}, context = {} } = {}) {
     if (!isMemoryMutationTool(toolName)) {
       return { ok: true };
     }
@@ -144,10 +134,17 @@ class ProjectToolHost {
         error: "metabolism_attempt_id is required when source_record_ids are provided",
       };
     }
-    if (typeof service.hasActiveAttempt === "function" && service.hasActiveAttempt()) {
+    if (
+      typeof service.hasActiveAttemptForContext === "function"
+      && service.hasActiveAttemptForContext({
+        threadId: context.threadId,
+        workspaceRoot: context.workspaceRoot,
+        senderId: context.senderId,
+      })
+    ) {
       return {
         ok: false,
-        error: "metabolism_attempt_id and source_record_ids are required while a dreaming attempt is active",
+        error: "metabolism_attempt_id and source_record_ids are required inside the active dreaming thread",
       };
     }
     return { ok: true };
@@ -948,7 +945,7 @@ const PROJECT_TOOLS = [
       required: ["title", "body_markdown"],
       properties: {
         title: { type: "string", description: "Short stable title for the card; avoid fake category/tag titles." },
-        body_markdown: { type: "string", description: `Main first-person card body. ${WARM_MEMORY_WRITE_GUIDANCE}` },
+        body_markdown: { type: "string", description: "First-person diary/persona body. Include event/correction, meaning, evidence/source, and future-use cue; avoid profile, policy, tag-list, or report language." },
         summary: { type: "string", description: "Short recall key only; do not use summary as the whole memory card." },
         material_type: { type: "string", description: "Prefer diary/journal/preference/relationship_symbol/ongoing_story for warm continuity; avoid fake maintenance labels." },
         tags: { type: "array", items: { type: "string" }, description: "Broad routing categories only. Keep concrete nouns in entities/aliases instead of turning tags into a fake taxonomy." },
@@ -1070,7 +1067,7 @@ const PROJECT_TOOLS = [
   },
   {
     name: "mossbridge_memory_warm_update",
-    description: `Update an existing warm-memory card by material_id for the current user. Use search/read first when the target card needs confirmation. Apply the same warm-card writing standard as new cards. ${WARM_MEMORY_WRITE_GUIDANCE} NOTE: material_id is the permanent immutable key and stays stable even when title is updated; always reference cards by material_id rather than display title.`,
+    description: `Update an existing warm-memory card by material_id for the current user. Use search/read first when the target card needs confirmation. ${WARM_MEMORY_WRITE_GUIDANCE} NOTE: material_id is the permanent immutable key and stays stable even when title is updated; always reference cards by material_id rather than display title.`,
     shortHint: "Update one exact warm-memory card by material_id. material_id is immutable; title is the display name.",
     topics: ["memory"],
     inputSchema: {
@@ -1079,7 +1076,7 @@ const PROJECT_TOOLS = [
       properties: {
         material_id: { type: "string" },
         title: { type: "string" },
-        body_markdown: { type: "string", description: `Replacement first-person card body. ${WARM_MEMORY_WRITE_GUIDANCE}` },
+        body_markdown: { type: "string", description: "Replacement first-person diary/persona body with event/correction, meaning, evidence/source, and future-use cue." },
         summary: { type: "string", description: "Short recall key only; do not use summary as the whole memory card." },
         material_type: { type: "string", description: "Warm continuity type such as diary, journal, preference, relationship_symbol, or ongoing_story." },
         tags: { type: "array", items: { type: "string" }, description: "Broad routing categories only." },
