@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const { AsherieMemoryService } = require("../src/services/asherie-memory-service");
+const { createServiceDomains } = require("../src/services/service-domains");
 const { MemoryMetabolismService } = require("../src/services/memory-metabolism-service");
 
 test("memory metabolism queues quiet dreaming and completes only after a receipt", async () => {
@@ -319,3 +320,258 @@ test("memory metabolism source events require per-source no-op dispositions", ()
   assert.deepEqual(state.completed_record_ids, [event.event_id]);
   assert.equal(state.source_record_statuses[event.event_id].status, "rejected_as_noise");
 });
+
+test("memory metabolism failed receipts never complete attempts", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-metabolism-failed-"));
+  const config = buildMetabolismTestConfig(root, {
+    dreamingMinSourceRecords: 1,
+    dreamingMaxSourceRecords: 4,
+  });
+  const memory = new AsherieMemoryService({ config });
+  const service = new MemoryMetabolismService({ config, memoryService: memory });
+  const event = service.recordSourceEvent({
+    event_id: "src-failed-receipt",
+    source_type: "notebook",
+    userId: "user-1",
+    content: "A source that should not be consumed by a failed receipt.",
+    reason: "unit",
+    ts_utc: new Date(Date.now() - 10 * 60_000).toISOString(),
+  });
+  const queued = queueDreaming(service, config);
+  assert.equal(queued.queued, true);
+  assert.deepEqual(queued.source_record_ids, [event.event_id]);
+
+  const receipt = service.recordReceipt({
+    attempt_id: queued.attempt_id,
+    status: "failed",
+    summary: "The model says it failed after looking.",
+    source_record_ids: queued.source_record_ids,
+    source_dispositions: [{
+      source_id: event.event_id,
+      status: "evaluated",
+      reason: "Even terminal dispositions cannot make a failed receipt complete.",
+    }],
+  });
+  assert.equal(receipt.ok, false);
+  assert.match(receipt.receipt.error, /failed receipt cannot complete/);
+
+  const completed = service.completeRuntimeAttempt({
+    systemTurn: {
+      trigger_kind: "dreaming_opportunity",
+      metadata: { dreamingAttemptId: queued.attempt_id },
+    },
+    eventType: "runtime.turn.completed",
+    assistantTextFinal: "{\"action\":\"silent\"}",
+    writebackResult: { ok: true },
+  });
+  assert.equal(completed.ok, false);
+  assert.equal(completed.reason, "missing_metabolism_receipt");
+});
+
+test("memory metabolism completes promoted sources and retries only deferred sources", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-metabolism-partial-"));
+  const config = buildMetabolismTestConfig(root, {
+    dreamingMinSourceRecords: 2,
+    dreamingMaxSourceRecords: 4,
+  });
+  const memory = new AsherieMemoryService({ config });
+  const service = new MemoryMetabolismService({ config, memoryService: memory });
+  const first = service.recordSourceEvent({
+    event_id: "src-promoted",
+    source_type: "conversation_writeback",
+    userId: "user-1",
+    content: "A source worth promoting.",
+    ts_utc: new Date(Date.now() - 20 * 60_000).toISOString(),
+  });
+  const second = service.recordSourceEvent({
+    event_id: "src-deferred",
+    source_type: "conversation_writeback",
+    userId: "user-1",
+    content: "A source that needs more evidence.",
+    ts_utc: new Date(Date.now() - 10 * 60_000).toISOString(),
+  });
+  const queued = queueDreaming(service, config);
+  assert.equal(queued.queued, true);
+  assert.deepEqual(queued.source_record_ids, [first.event_id, second.event_id]);
+  const mutation = service.recordMutation({
+    attempt_id: queued.attempt_id,
+    target: "warm_memory",
+    action: "write",
+    object_id: "warm-1",
+    source_ids: [first.event_id],
+    before: null,
+    after: { material_id: "warm-1", title: "Promoted source" },
+  });
+  assert.equal(mutation.ok, true);
+  const receipt = service.recordReceipt({
+    attempt_id: queued.attempt_id,
+    status: "mutated",
+    summary: "One promoted source, one retry source.",
+    source_record_ids: queued.source_record_ids,
+    source_dispositions: [
+      {
+        source_id: first.event_id,
+        status: "promoted",
+        reason: "This source was written to warm-1.",
+        target_refs: ["warm-1"],
+      },
+      {
+        source_id: second.event_id,
+        status: "deferred",
+        reason: "Needs another source before it can be judged.",
+      },
+    ],
+  });
+  assert.equal(receipt.ok, true);
+  assert.deepEqual(receipt.receipt.completed_source_record_ids, [first.event_id]);
+  assert.deepEqual(receipt.receipt.retry_source_record_ids, [second.event_id]);
+  const lateMutation = service.recordMutation({
+    attempt_id: queued.attempt_id,
+    target: "warm_memory",
+    action: "write",
+    object_id: "warm-late",
+    source_ids: [first.event_id],
+    before: null,
+    after: { material_id: "warm-late" },
+  });
+  assert.equal(lateMutation.ok, false);
+  assert.match(lateMutation.error, /verified receipt|completion/);
+
+  const completed = service.completeRuntimeAttempt({
+    systemTurn: {
+      trigger_kind: "dreaming_opportunity",
+      metadata: { dreamingAttemptId: queued.attempt_id },
+    },
+    eventType: "runtime.turn.completed",
+    assistantTextFinal: "{\"action\":\"silent\"}",
+    writebackResult: { ok: true },
+  });
+  assert.equal(completed.ok, true);
+
+  const state = service.readState();
+  assert.equal(state.attempts[queued.attempt_id].status, "completed_partial");
+  assert.deepEqual(state.completed_record_ids, [first.event_id]);
+  assert.equal(state.source_record_statuses[first.event_id].status, "promoted");
+  assert.equal(state.source_record_statuses[second.event_id].status, "deferred");
+  const retryAttempts = Object.values(state.attempts)
+    .filter((attempt) => attempt.parent_attempt_id === queued.attempt_id);
+  assert.equal(retryAttempts.length, 1);
+  assert.deepEqual(retryAttempts[0].source_record_ids, [second.event_id]);
+});
+
+test("memory metabolism source statuses exclude terminal records beyond completed id cap", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-metabolism-statuses-"));
+  const config = buildMetabolismTestConfig(root, {
+    dreamingMinSourceRecords: 1,
+    dreamingMaxSourceRecords: 8,
+  });
+  const memory = new AsherieMemoryService({ config });
+  const service = new MemoryMetabolismService({ config, memoryService: memory });
+  const statuses = {};
+  for (let index = 0; index < 501; index += 1) {
+    const id = `src-terminal-${String(index).padStart(3, "0")}`;
+    service.recordSourceEvent({
+      event_id: id,
+      source_type: "conversation_writeback",
+      userId: "user-1",
+      content: `terminal source ${index}`,
+      ts_utc: new Date(Date.now() - (600 - index) * 60_000).toISOString(),
+    });
+    statuses[id] = {
+      status: "evaluated",
+      reason: "already terminal",
+      updated_at: new Date().toISOString(),
+    };
+  }
+  const open = service.recordSourceEvent({
+    event_id: "src-open-after-501",
+    source_type: "conversation_writeback",
+    userId: "user-1",
+    content: "only this open source should remain",
+    ts_utc: new Date(Date.now() - 5 * 60_000).toISOString(),
+  });
+  service.writeState({
+    completed_record_ids: Object.keys(statuses).slice(-500),
+    source_record_statuses: statuses,
+  });
+
+  const source = service.collectSourceRecords({ userId: "user-1", nowMs: Date.now() });
+  assert.deepEqual(source.records.map((record) => record.record_id), [open.event_id]);
+});
+
+test("wechat writeback enters append-only metabolism source events beyond the 24 hour window", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-metabolism-writeback-source-"));
+  const config = buildMetabolismTestConfig(root, {
+    dreamingMinSourceRecords: 1,
+    dreamingMaxSourceRecords: 4,
+    dreamingWindowHours: 24,
+  });
+  const memory = new AsherieMemoryService({ config });
+  const metabolism = new MemoryMetabolismService({ config, memoryService: memory });
+  const domains = createServiceDomains({
+    asherieMemory: memory,
+    memoryMetabolism: metabolism,
+  });
+  const oldTs = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+  const writeback = await domains.memory.writebackTurn({
+    userId: "user-1",
+    senderId: "user-1",
+    query: "这是二十五小时前的普通微信对话。",
+    tsUtc: oldTs,
+    incomingMessages: [{ role: "user", content: "这是二十五小时前的普通微信对话。", timestamp: oldTs }],
+    assistantTextFinal: "它仍然应该进入 append-only 代谢水管。",
+    outboundMessages: [{ role: "assistant", content: "它仍然应该进入 append-only 代谢水管。", timestamp: oldTs }],
+    sourceClient: "mossbridge_wechat",
+    transportId: "weixin",
+    runtimeId: "codex",
+    threadId: "thread-old",
+  });
+  assert.equal(writeback.ok, true);
+  assert.equal(writeback.source_event_write.ok, true);
+
+  const source = metabolism.collectSourceRecords({ userId: "user-1", nowMs: Date.now() });
+  assert.equal(source.records.length, 1);
+  assert.equal(source.records[0].source_type, "conversation_writeback");
+  assert.match(source.records[0].content, /二十五小时前/);
+});
+
+function buildMetabolismTestConfig(root, overrides = {}) {
+  return {
+    stateDir: path.join(root, "state"),
+    asherieDataRoot: path.join(root, "data"),
+    workspaceRoot: path.join(root, "workspace"),
+    runtime: "codex",
+    identityUserId: "event-user",
+    identityRealmId: "public",
+    identityAgentId: "moss",
+    memoryMetabolismStateFile: path.join(root, "state", "memory-metabolism-state.json"),
+    startWithDreaming: true,
+    dreamingPollIntervalMinutes: 1,
+    dreamingQuietMinutes: 1,
+    dreamingRetryMinutes: 1,
+    dreamingWindowHours: 24,
+    dreamingMinSourceRecords: 1,
+    dreamingMaxSourceRecords: 4,
+    ...overrides,
+  };
+}
+
+function queueDreaming(service, config, nowMs = Date.now()) {
+  fs.mkdirSync(config.workspaceRoot, { recursive: true });
+  service.lastPollAtMs = 0;
+  return service.maybeQueueDreaming({
+    accountId: "account-1",
+    senderId: "user-1",
+    workspaceRoot: config.workspaceRoot,
+    contextToken: "ctx-1",
+    queue: {
+      enqueue(message) {
+        return message;
+      },
+    },
+    queueHasPending: false,
+    runtimeCooldown: null,
+    lastActivityAt: nowMs - 10 * 60_000,
+    nowMs,
+  });
+}

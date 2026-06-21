@@ -190,9 +190,13 @@ async function importDailyCaptureTarget(targetPath, {
     hot_turns_written: 0,
     hot_turns_skipped: 0,
     upstream_packages: 0,
+    source_events_written: 0,
+    source_events_skipped: 0,
+    source_events_failed: 0,
     conversation_count: staged.conversations.length,
     message_count: staged.rows.length,
   };
+  const warnings = [];
   const headSignals = {
     lastUserAt: "",
     lastAssistantAt: "",
@@ -222,7 +226,7 @@ async function importDailyCaptureTarget(targetPath, {
       tags: ["web_ai_capture", sourceClient],
       provenance_refs: provenanceRefs,
     });
-    recordCaptureSourceEvent(memoryMetabolism, {
+    noteSourceEventResult(recordCaptureSourceEvent(memoryMetabolism, {
       source_type: "hot_upstream_capture",
       source_id: `${stageRef}:thread:${threadId || title}`,
       source_label: sourceClient,
@@ -234,7 +238,7 @@ async function importDailyCaptureTarget(targetPath, {
       summary: `Captured hot context package: ${title}`,
       content: summarizeConversation(conversation),
       metadata: { stageRef, threadId, title, endpointId, sourceClient },
-    });
+    }), stats, warnings);
     stats.upstream_packages += 1;
     headSignals.activeChannels.push(channelId);
     if (threadId) {
@@ -302,7 +306,7 @@ async function importDailyCaptureTarget(targetPath, {
         incoming_messages: pair.user ? [rowToRuntimeMessage(pair.user)] : [],
         outbound_messages: pair.assistant ? [rowToRuntimeMessage(pair.assistant)] : [],
       });
-      recordCaptureSourceEvent(memoryMetabolism, {
+      noteSourceEventResult(recordCaptureSourceEvent(memoryMetabolism, {
         source_type: "app_daily_capture_pair",
         source_id: recordId,
         source_label: sourceClient,
@@ -317,7 +321,7 @@ async function importDailyCaptureTarget(targetPath, {
           pair.assistant ? `assistant: ${messageContent(pair.assistant)}` : "",
         ].filter(Boolean).join("\n"),
         metadata: { stageRef, threadId, title, endpointId, recordPath: appended?.path },
-      });
+      }), stats, warnings);
       stats.conversation_cache_written += 1;
     }
 
@@ -358,6 +362,7 @@ async function importDailyCaptureTarget(targetPath, {
   return {
     ok: true,
     imported: true,
+    warnings,
     staged_dir: staged.staged_dir,
     stage_ref: stageRef,
     scope: hotScope.toJSON(),
@@ -847,12 +852,34 @@ function buildResult({ errors = [], warnings = [], summary = {} } = {}) {
 
 function recordCaptureSourceEvent(memoryMetabolism, event = {}) {
   if (!memoryMetabolism || typeof memoryMetabolism.recordSourceEvent !== "function") {
-    return null;
+    return { ok: false, skipped: true, reason: "memory metabolism source-event service is not configured" };
   }
   try {
-    return memoryMetabolism.recordSourceEvent(event);
-  } catch {
-    return null;
+    const recorded = memoryMetabolism.recordSourceEvent(event);
+    return { ok: true, event: recorded };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `memory metabolism source-event write failed: ${normalizeText(error?.message) || String(error || "unknown error")}`,
+    };
+  }
+}
+
+function noteSourceEventResult(result, stats, warnings) {
+  if (!result) {
+    return;
+  }
+  if (result.ok) {
+    stats.source_events_written += 1;
+    return;
+  }
+  if (result.skipped) {
+    stats.source_events_skipped += 1;
+    return;
+  }
+  stats.source_events_failed += 1;
+  if (result.error) {
+    warnings.push(result.error);
   }
 }
 

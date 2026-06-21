@@ -69,7 +69,18 @@ function createServiceDomains(services = {}) {
       return await requireService(asherieMemory, "memory.captureContextPacket").captureContextPacket(args);
     },
     async writebackTurn(args = {}) {
-      return await requireService(asherieMemory, "memory.writebackTurn").writebackTurn(args);
+      const result = await requireService(asherieMemory, "memory.writebackTurn").writebackTurn(args);
+      const sourceEvent = recordWritebackSourceEvent(memoryMetabolism, result, args);
+      if (sourceEvent) {
+        return {
+          ...result,
+          source_event_write: sourceEvent,
+          warnings: sourceEvent.ok === false && sourceEvent.error
+            ? [...(Array.isArray(result.warnings) ? result.warnings : []), sourceEvent.error]
+            : result.warnings,
+        };
+      }
+      return result;
     },
     async writeWarmMaterial(args = {}) {
       return await requireService(asherieMemory, "memory.writeWarmMaterial").writeWarmMaterial(args);
@@ -237,6 +248,76 @@ function requireService(service, label) {
     return service;
   }
   throw new Error(`${label} service is not configured`);
+}
+
+function recordWritebackSourceEvent(memoryMetabolism, result = {}, args = {}) {
+  if (!memoryMetabolism || typeof memoryMetabolism.recordSourceEvent !== "function") {
+    return null;
+  }
+  if (!result || result.ok === false) {
+    return null;
+  }
+  const sourceClient = normalizeText(args.source_client || args.sourceClient) || "mossbridge_wechat";
+  const transportId = normalizeText(args.transport_id || args.transportId);
+  const sourceClientLower = sourceClient.toLowerCase();
+  if (sourceClientLower.includes("system_turn") || sourceClientLower.includes("diagnostic") || transportId === "system") {
+    return null;
+  }
+  const appended = result.appended_record || result.appendedRecord || {};
+  const recordId = normalizeText(appended.record_id || appended.recordId);
+  if (!recordId) {
+    return null;
+  }
+  const userId = normalizeText(args.user_id || args.userId || args.sender_id || args.senderId);
+  const query = normalizeText(args.query || args.incoming_text || args.text);
+  const assistant = normalizeText(args.assistant_text_final || args.assistantTextFinal || args.reply_text || args.replyText);
+  const tsUtc = normalizeText(args.ts_utc || args.tsUtc)
+    || normalizeText(firstMessageTimestamp(args.incoming_messages || args.incomingMessages))
+    || new Date().toISOString();
+  try {
+    const event = memoryMetabolism.recordSourceEvent({
+      source_type: "conversation_writeback",
+      source_id: recordId,
+      source_label: sourceClient,
+      object_id: normalizeText(args.thread_id || args.threadId),
+      action: "append_conversation_turn",
+      userId,
+      scopedUserId: normalizeText(result.scoped_user_id || result.scopedUserId),
+      ts_utc: tsUtc,
+      summary: query || assistant || "Conversation turn writeback",
+      content: [
+        query ? `user: ${query}` : "",
+        assistant ? `assistant: ${assistant}` : "",
+      ].filter(Boolean).join("\n"),
+      metadata: {
+        recordId,
+        recordPath: normalizeText(appended.path),
+        routeId: normalizeText(args.route_id || args.routeId),
+        runtimeId: normalizeText(args.runtime_id || args.runtimeId),
+        endpointId: normalizeText(args.endpoint_id || args.endpointId),
+      },
+    });
+    return { ok: true, event_id: event.event_id, source_id: event.source_id };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `memory metabolism source-event write failed: ${formatErrorMessage(error)}`,
+    };
+  }
+}
+
+function firstMessageTimestamp(messages) {
+  const source = Array.isArray(messages) ? messages : [];
+  const first = source.find((item) => item && typeof item === "object");
+  return first?.timestamp || first?.ts_utc || first?.tsUtc || "";
+}
+
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function formatErrorMessage(error) {
+  return normalizeText(error?.message) || String(error || "unknown error");
 }
 
 module.exports = { createServiceDomains };

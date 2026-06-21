@@ -168,6 +168,35 @@ test("imports source-neutral web AI capture into conversation cache and hot cont
   assert.equal(second.stats.conversation_cache_skipped, 1);
 });
 
+test("capture import reports source-event write failures as warnings", async () => {
+  const dir = tempDir();
+  const filePath = path.join(dir, "capture.json");
+  fs.writeFileSync(filePath, JSON.stringify(validBundle()), "utf8");
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: path.join(dir, "state"),
+      asherieDataRoot: path.join(dir, "data"),
+      runtime: "codex",
+      identityUserId: "owner",
+      identityRealmId: "default",
+      identityAgentId: "moss",
+    },
+  });
+
+  const result = await importDailyCaptureTarget(filePath, {
+    memoryService: service,
+    memoryMetabolism: {
+      recordSourceEvent() {
+        throw new Error("ledger disk unavailable");
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stats.source_events_failed > 0, true);
+  assert.match(result.warnings.join("\n"), /ledger disk unavailable/);
+});
+
 test("rejects invalid role and missing text or attachments", () => {
   const bundle = validBundle();
   bundle.conversations[0].messages[0].role = "external_executor";

@@ -12,7 +12,7 @@ const DEFAULT_MIN_SOURCE_RECORDS = 2;
 const ACTIVE_ATTEMPT_MAX_AGE_MS = 6 * 60 * 60_000;
 const MAX_STORED_ATTEMPTS = 120;
 const MAX_STORED_COMPLETED_RECORD_IDS = 500;
-const MAX_SOURCE_EVENT_FILES = 45;
+const MAX_SOURCE_EVENT_FILES = 0;
 const MAX_LEDGER_FILES = 45;
 const COMPLETED_SOURCE_DISPOSITIONS = new Set(["promoted", "evaluated", "rejected_as_noise"]);
 const RETRY_SOURCE_DISPOSITIONS = new Set(["deferred", "conflict_open", "failed_retryable"]);
@@ -266,11 +266,13 @@ class MemoryMetabolismService {
   }
 
   collectSourceRecords({ userId = "", nowMs = Date.now() } = {}) {
+    const state = this.readState();
+    const closedSourceIds = buildClosedSourceIdSet(state);
     if (!this.memoryService?.conversationCache || typeof this.memoryService.resolveScopes !== "function") {
       const eventRecords = this.collectSourceEventRecords({
         userId,
         nowMs,
-        completedIds: new Set(this.readState().completed_record_ids || []),
+        completedIds: closedSourceIds,
       });
       return {
         records: eventRecords.slice(-this.getMaxSourceRecords()),
@@ -281,26 +283,24 @@ class MemoryMetabolismService {
       };
     }
     const scopes = this.memoryService.resolveScopes({ userId });
-    const state = this.readState();
     const windowStartMs = normalizeNowMs(nowMs) - (this.getWindowHours() * 60 * 60_000);
     const cutoffMs = windowStartMs;
-    const fetchLimit = Math.max(this.getMaxSourceRecords() * 4, this.getMaxSourceRecords());
+    const fetchLimit = Math.max(this.getMaxSourceRecords() * 20, 500);
     const recent = this.memoryService.conversationCache.listRecent(
       scopes.scopedUserId,
       "",
       fetchLimit,
       true,
     );
-    const completedIds = new Set(Array.isArray(state.completed_record_ids) ? state.completed_record_ids : []);
     const conversationRecords = (recent.records || [])
-      .filter((record) => isMetabolizableRecord(record, { cutoffMs, nowMs, completedIds }))
+      .filter((record) => isMetabolizableRecord(record, { cutoffMs, nowMs, completedIds: closedSourceIds }))
       .sort(compareRecordAsc)
       .map(compactSourceRecord);
     const eventRecords = this.collectSourceEventRecords({
       userId,
       scopedUserId: scopes.scopedUserId,
       nowMs,
-      completedIds,
+      completedIds: closedSourceIds,
     });
     const records = mergeSourceRecords(conversationRecords, eventRecords)
       .sort(compareRecordAsc)
@@ -565,24 +565,17 @@ class MemoryMetabolismService {
 
   recordMutation(args = {}) {
     const attemptId = normalizeText(args.attempt_id || args.attemptId);
-    if (!attemptId) {
-      return { ok: false, error: "attempt_id is required for mutation ledger entries" };
+    const sourceIds = normalizeStringList(args.source_ids || args.sourceIds || args.source_record_ids || args.sourceRecordIds);
+    const validation = this.validateMutation({
+      attempt_id: attemptId,
+      source_ids: sourceIds,
+      require_source_ids: true,
+    });
+    if (!validation.ok) {
+      return validation;
     }
     const state = this.readState();
     const attempt = state.attempts[attemptId] || null;
-    if (!attempt) {
-      return { ok: false, error: `attempt not found: ${attemptId}` };
-    }
-    const attemptSourceIds = new Set(normalizeStringList(attempt.source_record_ids));
-    const sourceIds = normalizeStringList(args.source_ids || args.sourceIds || args.source_record_ids || args.sourceRecordIds);
-    const invalidSourceIds = sourceIds.filter((id) => !attemptSourceIds.has(id));
-    if (invalidSourceIds.length) {
-      return {
-        ok: false,
-        error: `mutation source ids do not belong to attempt: ${invalidSourceIds.join(", ")}`,
-        invalid_source_ids: invalidSourceIds,
-      };
-    }
     const nowIso = new Date().toISOString();
     const target = normalizeText(args.target);
     const action = normalizeText(args.action);
@@ -593,7 +586,7 @@ class MemoryMetabolismService {
       || hashStableJson(args.after === undefined ? null : args.after);
     const mutation = {
       mutation_id: normalizeText(args.mutation_id || args.mutationId)
-        || `mut_${hashStableJson({ attemptId, target, action, objectId, sourceIds, beforeHash, afterHash, nowIso }).slice(0, 18)}`,
+        || `mut_${hashStableJson({ attemptId, target, action, objectId, sourceIds, beforeHash, afterHash }).slice(0, 18)}`,
       attempt_id: attemptId,
       target,
       object_id: objectId,
@@ -626,6 +619,43 @@ class MemoryMetabolismService {
       ts_utc: nowIso,
     });
     return { ok: true, mutation, attempt: summarizeAttempt(attempt) };
+  }
+
+  validateMutation(args = {}) {
+    const attemptId = normalizeText(args.attempt_id || args.attemptId);
+    if (!attemptId) {
+      return { ok: false, error: "metabolism_attempt_id is required for memory mutations during dreaming" };
+    }
+    const state = this.readState();
+    const attempt = state.attempts[attemptId] || null;
+    if (!attempt) {
+      return { ok: false, error: `attempt not found: ${attemptId}` };
+    }
+    const status = normalizeText(attempt.status);
+    if (["receipt_verified", "completed", "completed_partial"].includes(status)) {
+      return { ok: false, error: `attempt already has a verified receipt or completion: ${attemptId}` };
+    }
+    if (!["queued", "dispatched", "mutation_seen", "receipt_failed"].includes(status)) {
+      return { ok: false, error: `attempt is not open for memory mutation: ${status || "(unknown)"}` };
+    }
+    const sourceIds = normalizeStringList(args.source_ids || args.sourceIds || args.source_record_ids || args.sourceRecordIds);
+    if (args.require_source_ids !== false && !sourceIds.length) {
+      return { ok: false, error: "source_record_ids are required for memory mutations during dreaming" };
+    }
+    const attemptSourceIds = new Set(normalizeStringList(attempt.source_record_ids));
+    const invalidSourceIds = sourceIds.filter((id) => !attemptSourceIds.has(id));
+    if (invalidSourceIds.length) {
+      return {
+        ok: false,
+        error: `mutation source ids do not belong to attempt: ${invalidSourceIds.join(", ")}`,
+        invalid_source_ids: invalidSourceIds,
+      };
+    }
+    return { ok: true, attempt: summarizeAttempt(attempt) };
+  }
+
+  hasActiveAttempt(nowMs = Date.now()) {
+    return Boolean(findActiveAttempt(this.readState(), nowMs));
   }
 
   recordReceipt(args = {}) {
@@ -746,9 +776,35 @@ class MemoryMetabolismService {
         nowMs: normalizedNowMs,
       });
     }
+    const latestLedger = this.readMutationLedgerForAttempt(attemptId, attempt);
+    if (latestLedger.length !== Number(receipt.mutation_count || 0)) {
+      return this.markAttemptFailed(state, attempt, "stale_metabolism_receipt", {
+        eventType,
+        assistantTextFinal,
+        writebackError,
+        nowMs: normalizedNowMs,
+      });
+    }
+    const completionVerification = verifyReceipt({
+      attempt,
+      status: receipt.status,
+      ledger: latestLedger,
+      requestedSourceIds: receipt.source_record_ids,
+      dispositions: receipt.source_dispositions,
+    });
+    if (!completionVerification.ok) {
+      return this.markAttemptFailed(state, attempt, completionVerification.error || "metabolism_receipt_failed_reverification", {
+        eventType,
+        assistantTextFinal,
+        writebackError,
+        nowMs: normalizedNowMs,
+      });
+    }
 
     const completedAt = new Date(normalizedNowMs).toISOString();
-    attempt.status = "completed";
+    const completedSourceIds = normalizeStringList(receipt.completed_source_record_ids);
+    const retrySourceIds = normalizeStringList(receipt.retry_source_record_ids);
+    attempt.status = retrySourceIds.length ? "completed_partial" : "completed";
     attempt.completed_at = completedAt;
     attempt.completion = {
       event_type: normalizeText(eventType),
@@ -756,16 +812,14 @@ class MemoryMetabolismService {
       status: receipt.status,
       mutation_count: receipt.mutation_count,
       summary: receipt.summary,
-      completed_source_record_ids: normalizeStringList(receipt.completed_source_record_ids),
-      retry_source_record_ids: normalizeStringList(receipt.retry_source_record_ids),
+      completed_source_record_ids: completedSourceIds,
+      retry_source_record_ids: retrySourceIds,
     };
     attempt.last_error = "";
     state.last_success_at = completedAt;
-    const completedSourceIds = normalizeStringList(receipt.completed_source_record_ids);
     state.last_successful_record_ts_utc = maxRecordTimestamp(
       filterRecordsByIds(attempt.source_records, completedSourceIds),
     ) || completedAt;
-    state.retry_after_ms = 0;
     state.completed_record_ids = mergeCompletedRecordIds(
       state.completed_record_ids,
       completedSourceIds,
@@ -774,6 +828,17 @@ class MemoryMetabolismService {
       state.source_record_statuses,
       receipt.source_dispositions,
     );
+    if (retrySourceIds.length) {
+      const retryAttempt = this.createRetryAttempt({
+        attempt,
+        retrySourceIds,
+        nowMs: normalizedNowMs,
+      });
+      state.attempts[retryAttempt.attempt_id] = retryAttempt;
+      state.retry_after_ms = Date.parse(retryAttempt.retry_after || "") || 0;
+    } else {
+      state.retry_after_ms = 0;
+    }
     this.writeState(pruneState(state));
     this.appendLog({
       event: "attempt_completed",
@@ -782,7 +847,7 @@ class MemoryMetabolismService {
       status: receipt.status,
       mutation_count: receipt.mutation_count,
       source_record_ids: completedSourceIds,
-      retry_source_record_ids: normalizeStringList(receipt.retry_source_record_ids),
+      retry_source_record_ids: retrySourceIds,
       ts_utc: completedAt,
     });
     return {
@@ -790,6 +855,41 @@ class MemoryMetabolismService {
       ok: true,
       attempt: summarizeAttempt(attempt),
       receipt,
+    };
+  }
+
+  createRetryAttempt({ attempt = {}, retrySourceIds = [], nowMs = Date.now() } = {}) {
+    const normalizedNowMs = normalizeNowMs(nowMs);
+    const sourceIds = normalizeStringList(retrySourceIds);
+    const sourceSet = new Set(sourceIds);
+    const sourceRecords = (Array.isArray(attempt.source_records) ? attempt.source_records : [])
+      .filter((record) => sourceSet.has(normalizeText(record.record_id)));
+    const retryAfterMs = normalizedNowMs + this.getRetryDelayMs();
+    const retryCount = Math.max(0, Number(attempt.retry_count) || 0) + 1;
+    const sourceTimestamps = sourceRecords
+      .map((record) => Date.parse(record.ts_utc || ""))
+      .filter(Number.isFinite);
+    return {
+      attempt_id: `${normalizeText(attempt.attempt_id) || "dream"}-retry-${retryCount}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`,
+      parent_attempt_id: normalizeText(attempt.attempt_id),
+      status: "retrying",
+      account_id: normalizeText(attempt.account_id),
+      sender_id: normalizeText(attempt.sender_id),
+      workspace_root: normalizeText(attempt.workspace_root),
+      created_at: new Date(normalizedNowMs).toISOString(),
+      retry_after: new Date(retryAfterMs).toISOString(),
+      retry_count: retryCount,
+      last_error: "source_retry_pending",
+      source_window_start_utc: sourceTimestamps.length
+        ? new Date(Math.min(...sourceTimestamps)).toISOString()
+        : normalizeText(attempt.source_window_start_utc),
+      source_window_end_utc: maxRecordTimestamp(sourceRecords) || normalizeText(attempt.source_window_end_utc),
+      source_record_ids: sourceIds,
+      source_records: sourceRecords,
+      warm_duplicate_clusters: Array.isArray(attempt.warm_duplicate_clusters) ? attempt.warm_duplicate_clusters : [],
+      warm_review_candidates: Array.isArray(attempt.warm_review_candidates) ? attempt.warm_review_candidates : [],
+      receipts: [],
+      mutation_ledger: [],
     };
   }
 
@@ -1342,7 +1442,7 @@ function findActiveAttempt(state, nowMs = Date.now()) {
       const retryAfterMs = Date.parse(attempt.retry_after || "") || 0;
       return retryAfterMs > normalizedNowMs;
     }
-  if (!["queued", "dispatched", "mutation_seen", "receipt_verified"].includes(status)) {
+  if (!["queued", "dispatched", "mutation_seen", "receipt_verified", "receipt_failed"].includes(status)) {
       return false;
     }
     const createdAtMs = Date.parse(attempt.created_at || "") || 0;
@@ -1564,6 +1664,20 @@ function verifyReceipt({
       status,
     });
   }
+  if (status === "failed") {
+    return buildReceiptVerification({
+      ok: false,
+      error: "failed receipt cannot complete a metabolism attempt",
+      status,
+    });
+  }
+  if (!["mutated", "no_op"].includes(status)) {
+    return buildReceiptVerification({
+      ok: false,
+      error: `unsupported receipt status: ${status || "(empty)"}`,
+      status,
+    });
+  }
   const attemptSourceIds = normalizeStringList(attempt.source_record_ids);
   const attemptSourceSet = new Set(attemptSourceIds);
   const sourceRecordIds = normalizeStringList(requestedSourceIds).length
@@ -1632,16 +1746,6 @@ function verifyReceipt({
   const retrySourceIds = normalizedDispositions
     .filter((item) => RETRY_SOURCE_DISPOSITIONS.has(item.status) || item.status === "pending")
     .map((item) => item.source_id);
-  if (retrySourceIds.length) {
-    return buildReceiptVerification({
-      ok: false,
-      error: `receipt leaves retryable source ids open: ${retrySourceIds.join(", ")}`,
-      status,
-      sourceRecordIds,
-      retrySourceIds,
-      sourceDispositions: normalizedDispositions,
-    });
-  }
   const completedSourceIds = normalizedDispositions
     .filter((item) => COMPLETED_SOURCE_DISPOSITIONS.has(item.status))
     .map((item) => item.source_id);
@@ -1695,7 +1799,7 @@ function verifyReceipt({
     status,
     sourceRecordIds,
     completedSourceIds,
-    retrySourceIds: [],
+    retrySourceIds,
     sourceDispositions: normalizedDispositions,
   });
 }
@@ -1777,6 +1881,19 @@ function mergeCompletedRecordIds(existing = [], next = []) {
   return Array.from(merged).slice(-MAX_STORED_COMPLETED_RECORD_IDS);
 }
 
+function buildClosedSourceIdSet(state = {}) {
+  const normalized = normalizeState(state);
+  const closed = new Set(normalized.completed_record_ids);
+  Object.entries(normalized.source_record_statuses || {}).forEach(([id, record]) => {
+    const sourceId = normalizeText(id);
+    const status = normalizeText(record?.status || record).toLowerCase();
+    if (sourceId && COMPLETED_SOURCE_DISPOSITIONS.has(status)) {
+      closed.add(sourceId);
+    }
+  });
+  return closed;
+}
+
 function mergeSourceRecordStatuses(existing = {}, dispositions = []) {
   const output = existing && typeof existing === "object" && !Array.isArray(existing) ? { ...existing } : {};
   for (const disposition of Array.isArray(dispositions) ? dispositions : []) {
@@ -1807,10 +1924,13 @@ function uniqueMutations(mutations = []) {
 
 function readJsonlDir(dir, maxFiles = 30) {
   try {
-    const files = fs.readdirSync(dir)
+    let files = fs.readdirSync(dir)
       .filter((name) => name.endsWith(".jsonl"))
-      .sort()
-      .slice(-Math.max(1, Number(maxFiles) || 30));
+      .sort();
+    const limit = Number(maxFiles);
+    if (Number.isFinite(limit) && limit > 0) {
+      files = files.slice(-Math.max(1, limit));
+    }
     const rows = [];
     for (const fileName of files) {
       const filePath = path.join(dir, fileName);

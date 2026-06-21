@@ -13,6 +13,17 @@ test("weixin operations memory guidance stays operational instead of styling the
   assert.match(memorySection, /front-stage wording, persona, and behavior style still come from the living context/i);
   assert.match(memorySection, /Treat proactive surfacing as a starting hint/i);
   assert.match(memorySection, /broad basis but a narrower landing point/i);
+  assert.match(memorySection, /not a generic user profile, summary-card box, fake tag bucket/i);
+  assert.match(memorySection, /first-person inner note/i);
+  assert.match(memorySection, /future assistant directly continue/i);
+  assert.match(memorySection, /only a list of objects, names, or scene labels/i);
+  assert.match(memorySection, /visible evidence/i);
+  assert.match(memorySection, /correction history/i);
+  assert.match(memorySection, /The user prefers/i);
+  assert.match(memorySection, /visible repair headings/i);
+  assert.match(memorySection, /`pinned` and `resident` are related but not identical/i);
+  assert.match(memorySection, /tool policy, wakeup policy/i);
+  assert.match(memorySection, /repair the matching prompt, runbook, ongoing track, case, or cold\/source structure/i);
   assert.match(memorySection, /Use observation journal notes for revisable companionship patterns/i);
   assert.match(memorySection, /write a note proactively and silently/i);
   assert.match(memorySection, /status: rejected/i);
