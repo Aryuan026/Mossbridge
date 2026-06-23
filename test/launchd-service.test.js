@@ -1,10 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const os = require("node:os");
 
 const {
+  assertPersistentServicePaths,
   buildLaunchdConfig,
   buildPlist,
   escapeXml,
+  isEphemeralPath,
 } = require("../scripts/launchd-service");
 
 test("launchd service plist points at shared-start with claudecode runtime", () => {
@@ -19,6 +22,8 @@ test("launchd service plist points at shared-start with claudecode runtime", () 
   assert.match(plist, /<string>\/opt\/node<\/string>/);
   assert.match(plist, /scripts\/shared-start\.js<\/string>/);
   assert.match(plist, /<key>MOSSBRIDGE_RUNTIME<\/key>\n\s+<string>claudecode<\/string>/);
+  assert.match(plist, /<key>MOSSBRIDGE_DATA_ROOT<\/key>/);
+  assert.match(plist, /<key>MOSSBRIDGE_WORKSPACE_ROOT<\/key>/);
   assert.match(plist, /<key>MOSSBRIDGE_SHARED_SUPERVISE<\/key>\n\s+<string>1<\/string>/);
   assert.match(plist, /<key>RunAtLoad<\/key>\n\s+<true\/>/);
   assert.match(plist, /<key>SuccessfulExit<\/key>\n\s+<false\/>/);
@@ -26,4 +31,37 @@ test("launchd service plist points at shared-start with claudecode runtime", () 
 
 test("launchd service plist escapes XML-sensitive values", () => {
   assert.equal(escapeXml("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
+});
+
+test("launchd service rejects ephemeral state data or workspace by default", () => {
+  const config = buildLaunchdConfig({
+    label: "com.example.mossbridge",
+    runtime: "codex",
+    node: "/opt/node",
+    dataRoot: "/private/tmp/mossbridge-data",
+    workspaceRoot: "/Users/example/mossbridge-workspace",
+  });
+
+  assert.equal(isEphemeralPath("/tmp/mossbridge-state"), true);
+  assert.equal(isEphemeralPath("/private/tmp/mossbridge-data"), true);
+  assert.equal(isEphemeralPath(os.tmpdir()), true);
+  assert.throws(() => assertPersistentServicePaths({
+    stateDir: "/tmp/mossbridge-state",
+    dataRoot: "/Users/example/mossbridge-data",
+    workspaceRoot: "/Users/example/mossbridge-workspace",
+  }), /Refusing to install\/start launchd service with ephemeral path/);
+  assert.throws(() => assertPersistentServicePaths(config), /Refusing to install\/start launchd service with ephemeral path/);
+});
+
+test("launchd service permits ephemeral paths only with explicit override", () => {
+  const config = buildLaunchdConfig({
+    label: "com.example.mossbridge",
+    runtime: "codex",
+    node: "/opt/node",
+    dataRoot: "/private/tmp/mossbridge-data",
+    workspaceRoot: "/tmp/mossbridge-workspace",
+  });
+  config.allowEphemeral = true;
+
+  assert.doesNotThrow(() => assertPersistentServicePaths(config));
 });

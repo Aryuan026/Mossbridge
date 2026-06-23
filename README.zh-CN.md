@@ -62,7 +62,7 @@ AI 部署助手请读 [docs/ai-deployment.md](./docs/ai-deployment.md)。人类�
 
 ## 最小配置
 
-先创建隔离目录：
+先创建可删除的 smoke 目录：
 
 ```bash
 mkdir -p /tmp/mossbridge-smoke/state
@@ -78,15 +78,18 @@ MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 MOSSBRIDGE_ENABLE_CHECKIN=false
 MOSSBRIDGE_ENABLE_DREAMING=false
 ```
+
+`/tmp` 只用于可销毁 smoke。正式 QR 使用前，以及任何 `service:install:*` 或 `service:takeover:*` 前，必须换成用户自己选择的持久 state/data/workspace 路径。
 
 Claude Code：
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+# 可选：不设置 MOSSBRIDGE_CLAUDE_MODEL 时使用本地 Claude Code 默认模型。
 ```
 
 Codex 可选配置：
@@ -105,15 +108,17 @@ MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 
 `MOSSBRIDGE_ALLOWED_USER_IDS` 保护正常微信入站链。
 
-- 空 allowlist：只适合首次隔离登录/诊断，还不知道 sender id 时临时使用。
+- 空 allowlist 默认关闭：除非显式设置 `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true`，否则正常微信入站会被拒绝。
+- `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true` 只用于临时 enrollment，用来确认 sender id；确认后应关闭。
 - 非空 allowlist：只有列出的 sender id 能进入。
 - 未授权 sender 会在命令解析、绑定修改、附件下载、token 缓存和 runtime dispatch 前被拒绝。
 - 日志只记录运行状态、id 和短预览，不输出 context token 或完整私聊正文。
 
-QR 登录并确认 sender id 后，填写：
+优先使用 QR 登录输出的 `userId`，其次用 `npm run accounts` 获取 sender id。必要时才临时打开 enrollment。确认后填写：
 
 ```dotenv
 MOSSBRIDGE_ALLOWED_USER_IDS=the_sender_id_you_confirmed
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 ```
 
 然后重启 bridge。
@@ -169,6 +174,8 @@ npm run shared:start
 /status
 ```
 
+这条 `/bind /tmp/...` 只用于可销毁 smoke。正式使用请绑定持久 workspace。
+
 再发一条普通消息，确认收到自然回复。没有真人扫码和首轮回复观察，就不要写成 passed。
 
 LaunchAgent/service 命令是 macOS-only：
@@ -179,7 +186,7 @@ npm run service:status:codex
 npm run service:stop:codex
 ```
 
-`service:takeover:*` 只在你明确要替换已有 Mossbridge LaunchAgent 时使用。
+Claude Code 使用 `service:install:claudecode` 和 `service:status:claudecode`。`service:takeover:*` 只在你明确要替换已有 Mossbridge LaunchAgent 时使用。service install/start/restart 默认拒绝 `/tmp`、`/private/tmp` 或 `os.tmpdir()` 下的 state/data/workspace，只有一次性 service smoke 才能显式给 `scripts/launchd-service.js` 加 `--allow-ephemeral`。
 
 ## 记忆与数据边界
 

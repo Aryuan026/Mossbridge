@@ -1,6 +1,6 @@
 # Mossbridge Quickstart
 
-This guide is the human clean-clone path: new state directory, new data directory, disposable workspace, and either Codex or Claude Code as the runtime.
+This guide is the human clean-clone path: disposable smoke first, then persistent deployment paths before real QR use or service guard.
 
 Do not reuse another bridge's state directory, launchd label, account files, memory warehouse, or workspace while running this smoke. The whole point is to prove Mossbridge can stand up from an empty little patch of ground.
 
@@ -22,9 +22,9 @@ npm ci
 test -f .env || cp .env.example .env
 ```
 
-## 3. Create Isolated Paths
+## 3. Create Disposable Smoke Paths
 
-Use paths that are safe to delete after testing:
+Use `/tmp` paths only for a throwaway smoke that you can delete after testing:
 
 ```bash
 mkdir -p /tmp/mossbridge-smoke/workspace
@@ -40,6 +40,7 @@ MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 MOSSBRIDGE_ENABLE_CHECKIN=false
 MOSSBRIDGE_ENABLE_DREAMING=false
 MOSSBRIDGE_IDENTITY_USER_ID=owner
@@ -51,10 +52,18 @@ For Claude Code, change only:
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+# Optional: leave MOSSBRIDGE_CLAUDE_MODEL unset to use the local Claude Code default.
 ```
 
 Leave migration-only memory overrides unset for a first run.
+
+Before QR login for real use, and always before `service:install:*` or `service:takeover:*`, replace the `/tmp` paths with persistent paths chosen by the operator, for example:
+
+```dotenv
+MOSSBRIDGE_STATE_DIR=/Users/you/.mossbridge
+MOSSBRIDGE_DATA_ROOT=/Users/you/MossbridgeData
+MOSSBRIDGE_WORKSPACE_ROOT=/Users/you/MossbridgeWorkspace
+```
 
 Why these paths matter:
 
@@ -88,9 +97,10 @@ For a private deployment, put the user id into `.env`:
 
 ```dotenv
 MOSSBRIDGE_ALLOWED_USER_IDS=the_user_id_from_login_or_status
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 ```
 
-For an isolated smoke test, it is acceptable to leave it empty until you confirm which user id arrives from WeChat. After you know the sender id, fill it and restart the bridge. A non-empty allowlist rejects other senders before commands, attachment downloads, token caching, and runtime dispatch.
+Empty allowlist is closed by default. The bridge rejects normal WeChat inbound unless `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true` is explicitly set for temporary enrollment. Prefer the `userId` printed by QR login, then `npm run accounts`, as the sender-id source. If you must identify the sender from a first foreground message, enable open inbound only for that isolated enrollment window, then fill `MOSSBRIDGE_ALLOWED_USER_IDS`, set `MOSSBRIDGE_ALLOW_OPEN_INBOUND=false`, and restart.
 
 ## 5. Start The Shared Bridge
 
@@ -125,6 +135,8 @@ Send this in the WeChat chat that should control the bridge:
 ```text
 /bind /tmp/mossbridge-smoke/workspace
 ```
+
+Use `/tmp/mossbridge-smoke/workspace` only for disposable smoke. For persistent use, bind the persistent workspace path from `.env`.
 
 Then send:
 
@@ -170,6 +182,8 @@ npm run service:status:claudecode
 ```
 
 The default LaunchAgent label is `com.mossbridge.bridge`. Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent. Use a custom `MOSSBRIDGE_LAUNCHD_LABEL` if you intentionally run multiple isolated deployments on one Mac.
+
+Service install/start/restart refuses `/tmp`, `/private/tmp`, or `os.tmpdir()` state/data/workspace paths by default. For a disposable service smoke only, call `node ./scripts/launchd-service.js install --allow-ephemeral` directly after confirming that no real state or account data is involved.
 
 ## 9. Optional Proactive Features
 

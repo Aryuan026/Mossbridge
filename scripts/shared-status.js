@@ -22,12 +22,31 @@ async function main() {
   console.log(`listen=${listenUrl}`);
   printPidState("shared_app_server_pid", appServerPidFile);
   printPidState("shared_mossbridge_pid", bridgePidFile);
+  printInboundAccessState();
   if (!isCodex) {
     console.log(`readyz=skipped`);
   } else {
     console.log(`readyz=${await checkReadyz() ? "ok" : "down"}`);
   }
   printWeixinUpstreamState();
+}
+
+function printInboundAccessState() {
+  const allowed = String(process.env.MOSSBRIDGE_ALLOWED_USER_IDS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const openEnrollment = parseBool(process.env.MOSSBRIDGE_ALLOW_OPEN_INBOUND);
+  const status = allowed.length
+    ? "allowlist_configured"
+    : (openEnrollment ? "open_enrollment" : "closed_empty_allowlist");
+  console.log(`inbound_access=${status}`);
+  console.log(`inbound_allowed_user_count=${allowed.length}`);
+  if (!allowed.length && !openEnrollment) {
+    console.log("inbound_warning=MOSSBRIDGE_ALLOWED_USER_IDS is empty and MOSSBRIDGE_ALLOW_OPEN_INBOUND is false; normal WeChat inbound is rejected.");
+  } else if (!allowed.length && openEnrollment) {
+    console.log("inbound_warning=temporary open enrollment is enabled; identify the sender id, then fill MOSSBRIDGE_ALLOWED_USER_IDS and disable MOSSBRIDGE_ALLOW_OPEN_INBOUND.");
+  }
 }
 
 function resolveStatusRuntime() {
@@ -111,6 +130,11 @@ function parseTimestamp(value) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function parseBool(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  return ["1", "true", "yes", "on"].includes(normalized);
 }
 
 function checkReadyz() {

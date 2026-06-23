@@ -7,6 +7,17 @@ const path = require("path");
 const { MossbridgeApp } = require("../src/core/app");
 const { SystemMessageDispatcher } = require("../src/core/system-message-dispatcher");
 
+function callInboundAuthorization(config, senderId) {
+  return MossbridgeApp.prototype.resolveInboundAuthorization.call({ config }, senderId);
+}
+
+function callIsAuthorizedInboundSender(config, senderId) {
+  return MossbridgeApp.prototype.isAuthorizedInboundSender.call({
+    config,
+    resolveInboundAuthorization: MossbridgeApp.prototype.resolveInboundAuthorization,
+  }, senderId);
+}
+
 test("system messages bypass normal inbound wrapping", async () => {
   const prepared = await MossbridgeApp.prototype.prepareIncomingMessageForRuntime.call({
     async attachMemoryContextToPreparedText(normalized, runtimeText) {
@@ -50,7 +61,7 @@ test("wechat allowlist rejects unauthorized senders before commands attachments 
     receivedAt: "2026-06-21T08:00:00.000Z",
   };
   const appLike = {
-    config: { allowedUserIds: ["allowed-user"] },
+    config: { allowedUserIds: ["allowed-user"], allowOpenInbound: false },
     channelAdapter: {
       normalizeIncomingMessage() {
         return normalized;
@@ -67,6 +78,7 @@ test("wechat allowlist rejects unauthorized senders before commands attachments 
     },
     recordWeixinInboundAudit: MossbridgeApp.prototype.recordWeixinInboundAudit,
     isAuthorizedInboundSender: MossbridgeApp.prototype.isAuthorizedInboundSender,
+    resolveInboundAuthorization: MossbridgeApp.prototype.resolveInboundAuthorization,
     primeDeferredRepliesForSender() {
       primedDeferredReplies += 1;
     },
@@ -87,13 +99,21 @@ test("wechat allowlist rejects unauthorized senders before commands attachments 
   assert.equal(audits[0].textPreview, "");
 });
 
-test("wechat allowlist permits authorized senders and empty isolated allowlists", async () => {
-  assert.equal(MossbridgeApp.prototype.isAuthorizedInboundSender.call({
-    config: { allowedUserIds: [] },
+test("wechat allowlist stays closed when empty unless enrollment is explicit", () => {
+  const config = { allowedUserIds: [], allowOpenInbound: false };
+  assert.equal(callIsAuthorizedInboundSender(config, "first-login-user"), false);
+  assert.deepEqual(callInboundAuthorization(config, "first-login-user"), {
+    authorized: false,
+    mode: "closed_empty_allowlist",
+    allowedUserCount: 0,
+  });
+});
+
+test("wechat allowlist permits explicit open enrollment with empty allowlist", async () => {
+  assert.equal(callIsAuthorizedInboundSender({
+    allowedUserIds: [],
+    allowOpenInbound: true,
   }, "first-login-user"), true);
-  assert.equal(MossbridgeApp.prototype.isAuthorizedInboundSender.call({
-    config: { allowedUserIds: ["allowed-user"] },
-  }, "stranger-user"), false);
 
   const audits = [];
   const rememberedTokens = [];
@@ -103,16 +123,16 @@ test("wechat allowlist permits authorized senders and empty isolated allowlists"
     provider: "weixin",
     accountId: "wx-account",
     workspaceId: "default",
-    senderId: "allowed-user",
-    chatId: "allowed-user",
-    messageId: "msg-authorized",
+    senderId: "first-login-user",
+    chatId: "first-login-user",
+    messageId: "msg-open-enrollment",
     text: "hello bridge",
     attachments: [],
-    contextToken: "ctx-allowed",
+    contextToken: "ctx-open",
     receivedAt: "2026-06-21T08:01:00.000Z",
   };
   const appLike = {
-    config: { allowedUserIds: ["allowed-user"] },
+    config: { allowedUserIds: [], allowOpenInbound: true },
     channelAdapter: {
       normalizeIncomingMessage() {
         return normalized;
@@ -129,23 +149,51 @@ test("wechat allowlist permits authorized senders and empty isolated allowlists"
     },
     recordWeixinInboundAudit: MossbridgeApp.prototype.recordWeixinInboundAudit,
     isAuthorizedInboundSender: MossbridgeApp.prototype.isAuthorizedInboundSender,
+    resolveInboundAuthorization: MossbridgeApp.prototype.resolveInboundAuthorization,
     primeDeferredRepliesForSender(message) {
-      assert.equal(message.senderId, "allowed-user");
+      assert.equal(message.senderId, "first-login-user");
       primedDeferredReplies += 1;
     },
     async handlePreparedMessage(message, options) {
-      assert.equal(message.senderId, "allowed-user");
+      assert.equal(message.senderId, "first-login-user");
       assert.equal(options.allowCommands, true);
       handledPreparedMessages += 1;
     },
   };
 
-  await MossbridgeApp.prototype.handleIncomingMessage.call(appLike, { message_id: "msg-authorized" });
+  await MossbridgeApp.prototype.handleIncomingMessage.call(appLike, { message_id: "msg-open-enrollment" });
 
-  assert.deepEqual(rememberedTokens, [{ userId: "allowed-user", contextToken: "ctx-allowed" }]);
+  assert.deepEqual(rememberedTokens, [{ userId: "first-login-user", contextToken: "ctx-open" }]);
   assert.equal(primedDeferredReplies, 1);
   assert.equal(handledPreparedMessages, 1);
   assert.deepEqual(audits.map((item) => item.stage), ["accepted", "dispatched"]);
+});
+
+test("wechat allowlist permits authorized senders only after enrollment", async () => {
+  assert.equal(callIsAuthorizedInboundSender({
+    allowedUserIds: ["allowed-user"],
+    allowOpenInbound: false,
+  }, "allowed-user"), true);
+  assert.equal(callIsAuthorizedInboundSender({
+    allowedUserIds: ["allowed-user"],
+    allowOpenInbound: true,
+  }, "stranger-user"), false);
+  assert.deepEqual(callInboundAuthorization({
+    allowedUserIds: ["allowed-user"],
+    allowOpenInbound: false,
+  }, "allowed-user"), {
+    authorized: true,
+    mode: "authorized",
+    allowedUserCount: 1,
+  });
+  assert.deepEqual(callInboundAuthorization({
+    allowedUserIds: ["allowed-user"],
+    allowOpenInbound: true,
+  }, "stranger-user"), {
+    authorized: false,
+    mode: "unauthorized",
+    allowedUserCount: 1,
+  });
 });
 
 test("system turns ask memory for proactive recall instead of user-triggered recall", async () => {

@@ -18,6 +18,7 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_IDENTITY_AGENT_ID",
   "MOSSBRIDGE_MAINTENANCE_PROFILE",
   "MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR",
+  "MOSSBRIDGE_ALLOW_OPEN_INBOUND",
   "MOSSBRIDGE_MODEL_CHOICES",
   "MOSSBRIDGE_CODEX_MODEL_CHOICES",
   "MOSSBRIDGE_CLAUDE_MODEL_CHOICES",
@@ -118,6 +119,25 @@ test("readConfig defaults public bridge maintenance to safe self-check", () => {
 
     assert.equal(config.maintenanceProfile, "safe_self_check");
     assert.equal(config.maintenanceAllowSelfRepair, false);
+  });
+});
+
+test("readConfig keeps open inbound enrollment disabled by default", () => {
+  withBridgeEnv({ MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state" }, () => {
+    const config = readConfig();
+
+    assert.equal(config.allowOpenInbound, false);
+  });
+});
+
+test("readConfig enables open inbound enrollment only when explicitly requested", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_ALLOW_OPEN_INBOUND: "true",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.allowOpenInbound, true);
   });
 });
 

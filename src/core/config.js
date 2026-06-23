@@ -27,6 +27,7 @@ function readConfig() {
     userName: readBridgeTextEnv("USER_NAME") || "User",
     userGender: readBridgeTextEnv("USER_GENDER") || "neutral",
     allowedUserIds: readBridgeListEnv("ALLOWED_USER_IDS"),
+    allowOpenInbound: readBridgeBoolEnv("ALLOW_OPEN_INBOUND"),
     channel: readBridgeTextEnv("CHANNEL") || "weixin",
     runtime: readBridgeTextEnv("RUNTIME") || "codex",
     timelineCommand: readBridgeTextEnv("TIMELINE_COMMAND") || "timeline-for-agent",

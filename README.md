@@ -62,7 +62,7 @@ Do not overwrite an existing `.env`. Do not point a clean clone at another bridg
 
 ## Minimal Configuration
 
-Create isolated directories first:
+For a disposable smoke, create directories that are safe to delete:
 
 ```bash
 mkdir -p /tmp/mossbridge-smoke/state
@@ -78,15 +78,18 @@ MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 MOSSBRIDGE_ENABLE_CHECKIN=false
 MOSSBRIDGE_ENABLE_DREAMING=false
 ```
+
+`/tmp` is only for throwaway smoke checks. Before QR login for real use, and always before `service:install:*` or `service:takeover:*`, switch `MOSSBRIDGE_STATE_DIR`, `MOSSBRIDGE_DATA_ROOT`, and `MOSSBRIDGE_WORKSPACE_ROOT` to persistent paths chosen by the operator, such as directories under the user's home folder.
 
 For Claude Code:
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+# Optional: leave MOSSBRIDGE_CLAUDE_MODEL unset to use the local Claude Code default.
 ```
 
 Optional Codex runtime controls:
@@ -105,15 +108,17 @@ For local providers such as Ollama, copy [templates/codex-local-provider.sh](./t
 
 `MOSSBRIDGE_ALLOWED_USER_IDS` protects the normal WeChat inbound chain.
 
-- Empty allowlist: only acceptable for first isolated login/diagnostic, before you know the sender id.
+- Empty allowlist is closed by default: normal WeChat inbound is rejected unless `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true`.
+- `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true` is temporary enrollment only. Use it just long enough to identify the sender id, then turn it off.
 - Non-empty allowlist: only listed sender ids may enter the bridge.
 - Unauthorized senders are rejected before command parsing, binding changes, attachment download, token caching, and runtime dispatch.
 - Logs record presence/ids and short operational previews, not context tokens or full private message bodies.
 
-After QR login and first status inspection, fill:
+Prefer the `userId` printed by QR login, then `npm run accounts`, as the sender-id source. If the login output does not expose the sender you need, temporarily enable enrollment for one isolated foreground smoke and inspect `/status` or bridge status output. Then fill:
 
 ```dotenv
 MOSSBRIDGE_ALLOWED_USER_IDS=the_sender_id_you_confirmed
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 ```
 
 Then restart the bridge.
@@ -162,7 +167,7 @@ npm run login
 npm run shared:start
 ```
 
-Then, in WeChat:
+Then, in WeChat. For disposable smoke only:
 
 ```text
 /bind /tmp/mossbridge-smoke/workspace
@@ -170,6 +175,8 @@ Then, in WeChat:
 ```
 
 Send one ordinary message and confirm a normal reply. Do not call this passed until a human has scanned QR and observed the first reply.
+
+For persistent use, bind the persistent workspace path, not `/tmp`.
 
 LaunchAgent/service commands are macOS-only:
 
@@ -179,7 +186,7 @@ npm run service:status:codex
 npm run service:stop:codex
 ```
 
-Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent.
+Use `service:install:claudecode` and `service:status:claudecode` for Claude Code deployments. Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent. Service install/start/restart refuses `/tmp`, `/private/tmp`, or `os.tmpdir()` state/data/workspace paths unless `--allow-ephemeral` is passed directly to `scripts/launchd-service.js` for a disposable service smoke.
 
 ## Memory And Data Boundaries
 

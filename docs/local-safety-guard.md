@@ -19,6 +19,12 @@ npm run service:install:claudecode
 
 Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent. Use the runtime that matches the bridge you want to run.
 
+Before installing or taking over a LaunchAgent, move `MOSSBRIDGE_STATE_DIR`,
+`MOSSBRIDGE_DATA_ROOT`, and `MOSSBRIDGE_WORKSPACE_ROOT` to persistent
+operator-chosen paths. Service install/start/restart rejects `/tmp`,
+`/private/tmp`, and `os.tmpdir()` paths by default; `--allow-ephemeral` is only
+for disposable service smoke runs.
+
 Default plist:
 
 ```text

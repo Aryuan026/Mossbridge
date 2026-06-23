@@ -182,8 +182,10 @@ class MossbridgeApp {
   }
 
   printDoctor() {
+    const inboundAccess = this.describeInboundAccess();
     console.log(JSON.stringify({
       stateDir: this.config.stateDir,
+      inboundAccess,
       channel: this.channelAdapter.describe(),
       runtime: this.runtimeAdapter.describe(),
       timeline: this.timelineIntegration.describe(),
@@ -241,6 +243,7 @@ class MossbridgeApp {
     console.log(`[mossbridge] account=${account.accountId}`);
     console.log(`[mossbridge] baseUrl=${account.baseUrl}`);
     console.log(`[mossbridge] workspaceRoot=${this.config.workspaceRoot}`);
+    this.logInboundAccess();
     console.log(`[mossbridge] knownContextTokens=${knownContextTokens}`);
     console.log(`[mossbridge] syncBuffer=${syncBuffer ? "ready" : "empty"}`);
     console.log(`[mossbridge] runtimeEndpoint=${runtimeState.endpoint || runtimeState.command || "(spawn)"}`);
@@ -518,17 +521,52 @@ class MossbridgeApp {
   }
 
   isAuthorizedInboundSender(senderId = "") {
+    return this.resolveInboundAuthorization(senderId).authorized;
+  }
+
+  resolveInboundAuthorization(senderId = "") {
     const normalizedSenderId = normalizeText(senderId);
+    const allowed = normalizeAllowedUserIds(this.config?.allowedUserIds);
     if (!normalizedSenderId) {
-      return false;
+      return { authorized: false, mode: "missing_sender", allowedUserCount: allowed.length };
     }
-    const allowed = Array.isArray(this.config?.allowedUserIds)
-      ? this.config.allowedUserIds.map((item) => normalizeText(item)).filter(Boolean)
-      : [];
-    if (!allowed.length) {
-      return true;
+    if (allowed.length) {
+      const authorized = allowed.includes(normalizedSenderId.toLowerCase());
+      return {
+        authorized,
+        mode: authorized ? "authorized" : "unauthorized",
+        allowedUserCount: allowed.length,
+      };
     }
-    return allowed.includes(normalizedSenderId);
+    if (this.config?.allowOpenInbound) {
+      return { authorized: true, mode: "open_enrollment", allowedUserCount: 0 };
+    }
+    return { authorized: false, mode: "closed_empty_allowlist", allowedUserCount: 0 };
+  }
+
+  describeInboundAccess() {
+    const allowed = normalizeAllowedUserIds(this.config?.allowedUserIds);
+    const open = Boolean(this.config?.allowOpenInbound);
+    const warning = !allowed.length && !open
+      ? "MOSSBRIDGE_ALLOWED_USER_IDS is empty and MOSSBRIDGE_ALLOW_OPEN_INBOUND is false; normal WeChat inbound messages are rejected until you fill the allowlist or explicitly enable temporary enrollment."
+      : (!allowed.length && open
+        ? "Temporary open inbound enrollment is enabled. Use it only long enough to identify the sender id, then set MOSSBRIDGE_ALLOWED_USER_IDS and disable MOSSBRIDGE_ALLOW_OPEN_INBOUND."
+        : "");
+    return {
+      status: allowed.length ? "allowlist_configured" : (open ? "open_enrollment" : "closed_empty_allowlist"),
+      allowedUserCount: allowed.length,
+      openEnrollment: open,
+      warning,
+    };
+  }
+
+  logInboundAccess() {
+    const inboundAccess = this.describeInboundAccess();
+    console.log(`[mossbridge] inboundAccess=${inboundAccess.status}`);
+    console.log(`[mossbridge] allowedUserIds=${inboundAccess.allowedUserCount}`);
+    if (inboundAccess.warning) {
+      console.warn(`[mossbridge] inbound warning: ${inboundAccess.warning}`);
+    }
   }
 
   recordWeixinPollAudit({ response, messages, syncBufferBefore }) {
@@ -3072,6 +3110,9 @@ class MossbridgeApp {
     const effectiveModel = (runtimeName === "claudecode" && isLikelyCodexModel)
       ? (this.config.claudeModel || "")
       : storedModel;
+    const inboundAccess = typeof this.describeInboundAccess === "function"
+      ? this.describeInboundAccess()
+      : { status: "unknown", warning: "" };
 
     const lines = [
       `📍 workspace: ${workspaceRoot}`,
@@ -3079,7 +3120,11 @@ class MossbridgeApp {
       `📊 status: ${threadState?.status || "idle"}`,
       `🤖 runtime: ${runtimeName}`,
       `🤖 model: ${effectiveModel || "(default)"}`,
+      `🔐 inbound: ${inboundAccess.status}`,
     ];
+    if (inboundAccess.warning) {
+      lines.push(`⚠️ inbound warning: ${inboundAccess.warning}`);
+    }
     if (pendingThreadId) {
       lines.splice(2, 0, `🔁 target: ${pendingThreadId}`);
     }
@@ -5524,6 +5569,10 @@ function normalizeTextList(values) {
     result.push(normalized);
   }
   return result;
+}
+
+function normalizeAllowedUserIds(values) {
+  return normalizeTextList(values).map((item) => item.toLowerCase());
 }
 
 function mergeTextLists(left, right) {

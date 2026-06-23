@@ -43,8 +43,10 @@ Mossbridge is ready for technical users to inspect, run isolated checks, and att
 
 - `MOSSBRIDGE_ENABLE_CHECKIN=false` in `.env.example`.
 - `MOSSBRIDGE_ENABLE_DREAMING=false` in `.env.example`.
-- Empty `MOSSBRIDGE_ALLOWED_USER_IDS` is only for first isolated login/diagnostic.
+- Empty `MOSSBRIDGE_ALLOWED_USER_IDS` is closed by default.
+- `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true` is temporary enrollment only, used just long enough to identify the sender id.
 - A non-empty `MOSSBRIDGE_ALLOWED_USER_IDS` is required for ongoing use.
+- `/tmp` paths are disposable smoke paths only; service install/start/restart refuses ephemeral state/data/workspace unless explicitly overridden for a disposable service smoke.
 - Resident anchors are optional and must be user-confirmed after first conversation.
 - Old memory should migrate through `memory:export` and dry-run `memory:import`, then isolated apply.
 
@@ -60,10 +62,11 @@ Before describing a deployment as personally usable, a human should complete:
 6. `npm run smoke:memory-chain`.
 7. `npm run verify`.
 8. QR login.
-9. Fill `MOSSBRIDGE_ALLOWED_USER_IDS` after confirming sender id.
-10. Passive `npm run shared:start`.
-11. WeChat `/bind`.
-12. WeChat `/status`.
-13. One ordinary message receiving a normal reply.
+9. Confirm sender id from QR login output, `npm run accounts`, or an explicit temporary enrollment window.
+10. Fill `MOSSBRIDGE_ALLOWED_USER_IDS` and set `MOSSBRIDGE_ALLOW_OPEN_INBOUND=false`.
+11. Passive `npm run shared:start`.
+12. WeChat `/bind`.
+13. WeChat `/status`.
+14. One ordinary message receiving a normal reply.
 
 Only steps actually run should be reported as passed.

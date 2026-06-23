@@ -107,6 +107,10 @@ MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-capture/data \
 npm run capture:import -- /path/to/capture-bundle.json
 ```
 
+Use `/tmp` here only for disposable import smoke. For an ongoing deployment,
+stage captures under the persistent `MOSSBRIDGE_DATA_ROOT` chosen before QR
+login or service install.
+
 The importer:
 
 - stages the bundle under `cache/app_daily_captures/<source_client>/<captured_date>/`

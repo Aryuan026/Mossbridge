@@ -74,6 +74,10 @@ npm run memory:import -- \
   --bundle /private/tmp/mossbridge-memory-bundle
 ```
 
+The `/private/tmp` paths above are disposable migration-smoke paths. For an
+ongoing QR deployment or any service install/takeover, choose persistent target
+paths first.
+
 Import is dry-run by default. The output shows:
 
 - source identity
@@ -131,7 +135,10 @@ MOSSBRIDGE_WORKSPACE_ROOT=/private/tmp/mossbridge-wechat-workspace \
 npm run smoke:memory-chain
 ```
 
-Then start the real QR/WeChat validation only from that isolated state/data pair.
+Then start QR/WeChat validation only from the isolated target state/data pair.
+For disposable validation, the `/private/tmp` target can be deleted afterwards;
+for ongoing use, apply the bundle to persistent target paths before QR login or
+service install.
 The test goal is:
 
 - WeChat bind and first Codex-backed reply work.

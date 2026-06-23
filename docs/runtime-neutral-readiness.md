@@ -53,12 +53,15 @@ MOSSBRIDGE_WORKSPACE_ROOT=/absolute/path/to/mossbridge-workspace
 MOSSBRIDGE_STATE_DIR=/absolute/path/to/mossbridge-state
 MOSSBRIDGE_DATA_ROOT=/absolute/path/to/mossbridge-data
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 MOSSBRIDGE_ENABLE_CHECKIN=false
 MOSSBRIDGE_ENABLE_DREAMING=false
 MOSSBRIDGE_IDENTITY_USER_ID=owner
 MOSSBRIDGE_IDENTITY_REALM_ID=default
 MOSSBRIDGE_IDENTITY_AGENT_ID=moss
 ```
+
+`/tmp` paths are acceptable only for disposable smoke checks. Before real QR use, service install, or service takeover, switch state/data/workspace to persistent operator-chosen paths.
 
 Optional Codex model/provider controls:
 
@@ -80,7 +83,7 @@ For Claude Code, change only:
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+# Optional: leave MOSSBRIDGE_CLAUDE_MODEL unset to use the local Claude Code default.
 ```
 
 Before QR login, run isolated checks:
@@ -153,6 +156,7 @@ npm run service:restart:claudecode
 ```
 
 Use `service:takeover:*` only when intentionally replacing an existing Mossbridge LaunchAgent.
+Service install/start/restart refuses `/tmp`, `/private/tmp`, or `os.tmpdir()` state/data/workspace paths by default. Use `--allow-ephemeral` only for a disposable service smoke after confirming no real account or memory state is involved.
 
 Pass criteria:
 

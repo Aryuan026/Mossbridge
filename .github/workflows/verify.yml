@@ -22,3 +22,6 @@ jobs:
 
       - name: Verify
         run: npm run verify
+
+      - name: Check diff whitespace
+        run: git diff --check

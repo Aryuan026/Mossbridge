@@ -45,6 +45,8 @@ Recommended isolated paths for smoke:
 /tmp/mossbridge-smoke/workspace
 ```
 
+These `/tmp` paths are disposable smoke paths only. Before QR login for real use, and before any service install/takeover, require the user to choose persistent state/data/workspace paths.
+
 ## 2. Install Dependencies
 
 Use the lockfile:
@@ -71,6 +73,7 @@ MOSSBRIDGE_STATE_DIR=/tmp/mossbridge-smoke/state
 MOSSBRIDGE_DATA_ROOT=/tmp/mossbridge-smoke/data
 MOSSBRIDGE_WORKSPACE_ROOT=/tmp/mossbridge-smoke/workspace
 MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 MOSSBRIDGE_ENABLE_CHECKIN=false
 MOSSBRIDGE_ENABLE_DREAMING=false
 ```
@@ -79,7 +82,7 @@ For Claude Code:
 
 ```dotenv
 MOSSBRIDGE_RUNTIME=claudecode
-MOSSBRIDGE_CLAUDE_MODEL=claude-opus-4-6
+# Optional: leave MOSSBRIDGE_CLAUDE_MODEL unset to use the local Claude Code default.
 ```
 
 For Codex model/provider experiments, use:
@@ -112,7 +115,15 @@ mkdir -p /tmp/mossbridge-smoke/data
 mkdir -p /tmp/mossbridge-smoke/workspace
 ```
 
-Use equivalent user-selected paths if `/tmp` is not appropriate. Keep them outside the git repository.
+Use equivalent user-selected paths if `/tmp` is not appropriate. Keep them outside the git repository. Treat `/tmp` as disposable: do not use these paths for ongoing QR operation, service install, service takeover, or memory import apply.
+
+Before the user approves QR login for a real deployment, require persistent paths, for example:
+
+```dotenv
+MOSSBRIDGE_STATE_DIR=/Users/the-user/.mossbridge
+MOSSBRIDGE_DATA_ROOT=/Users/the-user/MossbridgeData
+MOSSBRIDGE_WORKSPACE_ROOT=/Users/the-user/MossbridgeWorkspace
+```
 
 ## 5. Run Safe Checks
 
@@ -136,7 +147,7 @@ These checks do not prove real WeChat delivery. Do not report QR/first-reply as 
 
 ## 6. QR/Login And Start Only After User Approval
 
-Only after the user asks for a real local smoke:
+Only after the user asks for a real local smoke, and only after the state/data/workspace paths are appropriate for the intended scope:
 
 ```bash
 npm run login
@@ -152,12 +163,19 @@ Do not start service guard yet. Keep the foreground terminal visible until first
 
 ## 7. Identify And Lock The Sender
 
-During first isolated login, `MOSSBRIDGE_ALLOWED_USER_IDS=` may be empty because the sender id is not known yet. This is a diagnostic posture, not a safe ongoing configuration.
+`MOSSBRIDGE_ALLOWED_USER_IDS=` is closed by default. With `MOSSBRIDGE_ALLOW_OPEN_INBOUND=false`, normal WeChat inbound is rejected.
 
-After the first incoming message or `/status`, identify the sender id from bridge status/logs, then set:
+Preferred sender-id sources:
+
+1. The `userId` printed by successful QR login.
+2. `npm run accounts`.
+3. A temporary enrollment window with `MOSSBRIDGE_ALLOW_OPEN_INBOUND=true`, only if the first two do not expose the sender id needed for the chat.
+
+After identifying the sender id, set:
 
 ```dotenv
 MOSSBRIDGE_ALLOWED_USER_IDS=the_confirmed_sender_id
+MOSSBRIDGE_ALLOW_OPEN_INBOUND=false
 ```
 
 Restart the bridge after editing `.env`.
@@ -172,6 +190,8 @@ In WeChat:
 /bind /tmp/mossbridge-smoke/workspace
 /status
 ```
+
+Use the `/tmp` workspace only for disposable smoke. For persistent deployment, bind the persistent workspace path.
 
 Then send one ordinary message. Pass criteria:
 
@@ -205,13 +225,28 @@ npm run service:install:codex
 npm run service:status:codex
 ```
 
+For Claude Code deployments:
+
+```bash
+npm run service:install:claudecode
+npm run service:status:claudecode
+```
+
+When `.env` has `MOSSBRIDGE_RUNTIME=claudecode`, do not run `service:install:codex`, `service:status:codex`, `service:restart:codex`, or `service:takeover:codex`. Use the matching `:claudecode` scripts.
+
 Use takeover only when the user intentionally wants to replace an existing Mossbridge LaunchAgent:
 
 ```bash
+# Codex runtime only
 npm run service:takeover:codex
+
+# Claude Code runtime only
+npm run service:takeover:claudecode
 ```
 
-Do not run service restart/takeover as a generic troubleshooting step.
+Do not run service restart/takeover as a generic troubleshooting step, and do not cross runtimes when choosing the service command.
+
+Service install/start/restart rejects `/tmp`, `/private/tmp`, or `os.tmpdir()` state/data/workspace paths by default. Only for a disposable service smoke, and only with explicit user approval, call `node ./scripts/launchd-service.js install --allow-ephemeral`.
 
 ## 10. Old Memory Migration
 

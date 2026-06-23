@@ -52,11 +52,18 @@ function buildLaunchdConfig(options = {}) {
   const runtime = normalizeText(options.runtime || process.env.MOSSBRIDGE_RUNTIME) || "codex";
   const label = normalizeText(options.label || process.env.MOSSBRIDGE_LAUNCHD_LABEL) || DEFAULT_LABEL;
   const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
+  const dataRoot = normalizeText(options.dataRoot || process.env.MOSSBRIDGE_DATA_ROOT)
+    || path.join(stateDir, "mossbridge_data");
+  const workspaceRoot = normalizeText(options.workspaceRoot || process.env.MOSSBRIDGE_WORKSPACE_ROOT)
+    || rootDir;
   return {
     label,
     runtime,
     rootDir,
     stateDir,
+    dataRoot,
+    workspaceRoot,
+    allowEphemeral: Boolean(options.allowEphemeral),
     logDir,
     plistPath: path.join(launchAgentsDir, `${label}.plist`),
     nodePath: normalizeText(options.node || process.env.MOSSBRIDGE_NODE_PATH) || process.execPath,
@@ -69,6 +76,7 @@ function buildLaunchdConfig(options = {}) {
 }
 
 function installService(config, { takeover = false } = {}) {
+  assertPersistentServicePaths(config);
   ensureLogDir();
   fs.mkdirSync(path.dirname(config.plistPath), { recursive: true });
   fs.writeFileSync(config.plistPath, buildPlist(config), "utf8");
@@ -91,6 +99,7 @@ function uninstallService(config) {
 }
 
 function startService(config, { takeover = false } = {}) {
+  assertPersistentServicePaths(config);
   if (takeover) {
     stopExistingManualBridge();
   }
@@ -108,6 +117,7 @@ function stopService(config) {
 }
 
 function restartService(config, { takeover = false } = {}) {
+  assertPersistentServicePaths(config);
   bootout(config, { allowFailure: true });
   if (takeover) {
     stopExistingManualBridge();
@@ -124,6 +134,7 @@ function printStatus(config) {
   const loaded = runLaunchctl(["print", serviceTarget(config)], { allowFailure: true });
   console.log(`label=${config.label}`);
   console.log(`requested_runtime=${config.runtime}`);
+  printEphemeralStatus(config);
   console.log(`plist=${fs.existsSync(config.plistPath) ? config.plistPath : "missing"}`);
   if (fs.existsSync(config.plistPath)) {
     const installedRuntime = readInstalledRuntime(config.plistPath);
@@ -170,6 +181,8 @@ function buildPlist(config) {
     plistKeyValue("HOME", config.home, 4),
     plistKeyValue("MOSSBRIDGE_RUNTIME", config.runtime, 4),
     plistKeyValue("MOSSBRIDGE_STATE_DIR", config.stateDir, 4),
+    plistKeyValue("MOSSBRIDGE_DATA_ROOT", config.dataRoot, 4),
+    plistKeyValue("MOSSBRIDGE_WORKSPACE_ROOT", config.workspaceRoot, 4),
     plistKeyValue("MOSSBRIDGE_SHARED_SUPERVISE", "1", 4),
     "  </dict>",
     "  <key>RunAtLoad</key>",
@@ -264,12 +277,71 @@ function waitForPidExit(pid, timeoutMs) {
   return !isPidAlive(pid);
 }
 
+function assertPersistentServicePaths(config) {
+  if (config?.allowEphemeral) {
+    return;
+  }
+  const ephemeral = collectEphemeralServicePaths(config);
+  if (!ephemeral.length) {
+    return;
+  }
+  const details = ephemeral.map((item) => `${item.name}=${item.path}`).join(", ");
+  throw new Error([
+    `Refusing to install/start launchd service with ephemeral path(s): ${details}.`,
+    "Use persistent MOSSBRIDGE_STATE_DIR, MOSSBRIDGE_DATA_ROOT, and MOSSBRIDGE_WORKSPACE_ROOT before QR/service use.",
+    "For disposable service smoke only, rerun with --allow-ephemeral.",
+  ].join(" "));
+}
+
+function printEphemeralStatus(config) {
+  const ephemeral = collectEphemeralServicePaths(config);
+  if (!ephemeral.length) {
+    console.log("ephemeral_paths=none");
+    return;
+  }
+  console.log(`ephemeral_paths=${ephemeral.map((item) => `${item.name}:${item.path}`).join(",")}`);
+  console.log("ephemeral_warning=service install/start/restart will refuse these paths unless --allow-ephemeral is passed");
+}
+
+function collectEphemeralServicePaths(config) {
+  return [
+    { name: "state", path: config?.stateDir },
+    { name: "data", path: config?.dataRoot },
+    { name: "workspace", path: config?.workspaceRoot },
+  ].filter((item) => isEphemeralPath(item.path));
+}
+
+function isEphemeralPath(value) {
+  const normalized = normalizePathForCompare(value);
+  if (!normalized) {
+    return false;
+  }
+  const roots = [
+    "/tmp",
+    "/private/tmp",
+    os.tmpdir(),
+  ].map(normalizePathForCompare).filter(Boolean);
+  return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+}
+
+function normalizePathForCompare(value) {
+  const raw = normalizeText(value);
+  if (!raw) {
+    return "";
+  }
+  return path.resolve(raw).replace(/\\/g, "/").replace(/\/+$/u, "");
+}
+
 function parseOptions(argv) {
-  const out = { takeover: false };
+  const out = { takeover: false, allowEphemeral: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--takeover") {
       out.takeover = true;
+      continue;
+    }
+    if (arg === "--allow-ephemeral") {
+      out.allowEphemeral = true;
       continue;
     }
     if (arg === "--runtime") {
@@ -285,6 +357,16 @@ function parseOptions(argv) {
     if (arg === "--node") {
       out.node = argv[index + 1] || "";
       index += 1;
+      continue;
+    }
+    if (arg === "--data-root") {
+      out.dataRoot = argv[index + 1] || "";
+      index += 1;
+      continue;
+    }
+    if (arg === "--workspace-root") {
+      out.workspaceRoot = argv[index + 1] || "";
+      index += 1;
     }
   }
   return out;
@@ -292,11 +374,14 @@ function parseOptions(argv) {
 
 function printUsage() {
   console.log([
-    "Usage: node scripts/launchd-service.js <install|uninstall|start|stop|restart|status|print-plist> [--takeover]",
+    "Usage: node scripts/launchd-service.js <install|uninstall|start|stop|restart|status|print-plist> [--takeover] [--allow-ephemeral]",
     "Options:",
     "  --runtime <id>   Runtime to start, default codex",
     "  --label <label>  launchd label, default com.mossbridge.bridge",
     "  --node <path>    Node.js executable path, default current process.execPath",
+    "  --data-root <path>  Data root for the LaunchAgent environment",
+    "  --workspace-root <path>  Workspace root for the LaunchAgent environment",
+    "  --allow-ephemeral  Permit service install/start/restart with /tmp state/data/workspace paths",
   ].join("\n"));
 }
 
@@ -337,7 +422,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertPersistentServicePaths,
   buildLaunchdConfig,
   buildPlist,
+  collectEphemeralServicePaths,
   escapeXml,
+  isEphemeralPath,
 };
