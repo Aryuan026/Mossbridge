@@ -121,6 +121,7 @@ class AsherieMemoryService {
     const runtimeProfile = normalizeText(args.runtime_profile || args.runtimeProfile);
     const proactiveLite = runtimeProfile === "proactive_lite";
     const forceRecentContext = Boolean(args.force_recent_context || args.forceRecentContext);
+    const sessionHandoffMode = forceRecentContext && normalizeText(recallMode) !== "proactive";
     const cacheLimit = resolveContextCacheLimit({
       requested: args.cache_limit || args.cacheLimit,
       recallMode,
@@ -136,27 +137,32 @@ class AsherieMemoryService {
       cacheLimit,
       Boolean(args.include_payload || args.includePayload),
     );
+    const recentRecordLimit = resolvePositiveInt(
+      args.recall_recent_record_limit || args.recallRecentRecordLimit,
+      Number(this.config.asherieRecallRecentRecordLimit) || 8,
+    );
     const focusQuery = buildEffectiveRecallQuery({
       query,
       recentRecords: recent.records,
       recallMode,
       forceRecentContext,
-      limit: resolvePositiveInt(
-        args.recall_recent_record_limit || args.recallRecentRecordLimit,
-        Number(this.config.asherieRecallRecentRecordLimit) || 8,
-      ),
+      limit: recentRecordLimit,
     });
     const recallFocus = buildRecallFocus({
       query: focusQuery,
       recentRecords: recent.records,
-      recentRecordLimit: resolvePositiveInt(
-        args.recall_recent_record_limit || args.recallRecentRecordLimit,
-        Number(this.config.asherieRecallRecentRecordLimit) || 8,
-      ),
+      recentRecordLimit,
     });
+    const deliveryRecallFocus = sessionHandoffMode
+      ? buildRecallFocus({
+          query,
+          recentRecords: recent.records,
+          recentRecordLimit,
+        })
+      : recallFocus;
     const deliveryProfile = resolveMemoryDeliveryProfile({
       query,
-      recallFocus,
+      recallFocus: deliveryRecallFocus,
       recallMode,
       runtimeProfile,
       forceRecentContext,
@@ -185,8 +191,11 @@ class AsherieMemoryService {
       records: temporalRows.records,
     });
     const recallQuery = normalizeText(recallFocus.recall_query || focusQuery || query);
+    const layerRecallQuery = sessionHandoffMode
+      ? normalizeText(deliveryRecallFocus.recall_query || query)
+      : recallQuery;
     const hotContextPacket = this.buildHotContextRuntimePacket(scopes, {
-      query: recallQuery,
+      query: layerRecallQuery,
       upstreamLimit: resolvePositiveInt(
         args.prelude_hot_upstream_limit || args.preludeHotUpstreamLimit,
         Number(this.config.asheriePreludeHotUpstreamLimit) || 4,
@@ -203,11 +212,11 @@ class AsherieMemoryService {
     const calendarPacket = this.calendarStore.summarizeForWakeup(scopes.scopedUserId, new Date());
     const wakeupPacket = buildWakeupRuntimePacket(this.wakeupStore, scopes.scopedUserId);
     const ongoingQuery = normalizeText(recallMode) === "proactive"
-      ? recallQuery
-      : (forceRecentContext ? recallQuery : normalizeText(query));
+      ? layerRecallQuery
+      : (forceRecentContext ? layerRecallQuery : normalizeText(query));
     const warmMemoryPacket = deliveryProfile.include_warm
       ? buildWarmMemoryRuntimePacket(this.warmMemoryStore, scopes.warmScope, {
-          query: recallQuery,
+          query: layerRecallQuery,
           limit: Number(args.limit) || 6,
           materialTypes: normalizeStringList(args.material_types || args.materialTypes),
           recallMode,
@@ -255,7 +264,7 @@ class AsherieMemoryService {
       : emptyOngoingTrackPacket(scopes.scopedUserId, ongoingQuery, "ongoing_track_delivery_suppressed");
     const observationJournalPacket = deliveryProfile.include_observation
       ? this.buildObservationJournalRuntimePacket(scopes.scopedUserId, {
-          query: recallQuery,
+          query: layerRecallQuery,
           limit: resolvePositiveInt(
             args.prelude_observation_limit || args.preludeObservationLimit,
             Number(this.config.asheriePreludeObservationLimit) || 4,
@@ -265,10 +274,10 @@ class AsherieMemoryService {
             Number(deliveryProfile.observation_min_score) || 0,
           ),
         })
-      : emptyObservationJournalPacket(scopes.scopedUserId, recallQuery, "observation_journal_delivery_suppressed");
+      : emptyObservationJournalPacket(scopes.scopedUserId, layerRecallQuery, "observation_journal_delivery_suppressed");
     const episodeJournalPacket = deliveryProfile.include_episode
       ? this.buildEpisodeJournalRuntimePacket(scopes.scopedUserId, {
-          query: recallQuery,
+          query: layerRecallQuery,
           limit: resolvePositiveInt(
             args.prelude_episode_limit || args.preludeEpisodeLimit,
             Number(this.config.asheriePreludeEpisodeLimit) || 3,
@@ -278,15 +287,15 @@ class AsherieMemoryService {
             Number(deliveryProfile.episode_min_score) || 4,
           ),
         })
-      : emptyEpisodeJournalPacket(scopes.scopedUserId, recallQuery, "episode_journal_delivery_suppressed");
+      : emptyEpisodeJournalPacket(scopes.scopedUserId, layerRecallQuery, "episode_journal_delivery_suppressed");
     const solitudeJournalPacket = shouldIncludeSolitudeDigestForTurn({
-      query: recallQuery,
+      query: layerRecallQuery,
       recallMode,
       runtimeProfile,
       requested: args.include_solitude_digest ?? args.includeSolitudeDigest,
     })
       ? this.buildSolitudeJournalRuntimePacket(scopes.scopedUserId, {
-          query: recallQuery,
+          query: layerRecallQuery,
           recentLimit: resolvePositiveInt(
             args.prelude_solitude_recent_limit || args.preludeSolitudeRecentLimit,
             Number(this.config.asheriePreludeSolitudeRecentLimit) || 2,
@@ -303,7 +312,7 @@ class AsherieMemoryService {
       : {
           ok: true,
           scoped_user_id: scopes.scopedUserId,
-          query: recallQuery,
+          query: layerRecallQuery,
           total_scanned: 0,
           hit_count: 0,
           recent_notes: [],
@@ -312,15 +321,30 @@ class AsherieMemoryService {
           summary: "",
           policy: "Solitude digest is only carried for wakeup/maintenance or explicit self-review queries.",
         };
-    const agentCharSelfAxisMaterialPacket = buildAgentCharSelfAxisMaterialPacket({
-      residentWarmPacket,
-      ambientWarmPacket,
-      warmMemoryPacket,
-      limit: resolvePositiveInt(
-        args.prelude_self_axis_material_limit || args.preludeSelfAxisMaterialLimit,
-        Number(this.config.asheriePreludeSelfAxisMaterialLimit) || 4,
-      ),
+    const includeRuntimePreludeGuidance = args.include_runtime_prelude_guidance ?? args.includeRuntimePreludeGuidance ?? false;
+    const includeSelfAxisMaterial = shouldIncludeAgentCharSelfAxisMaterialForTurn({
+      query,
+      recallMode,
+      runtimeProfile,
+      includeGuidance: includeRuntimePreludeGuidance,
+      requested: args.include_self_axis_material ?? args.includeSelfAxisMaterial,
     });
+    const agentCharSelfAxisMaterialPacket = includeSelfAxisMaterial
+      ? buildAgentCharSelfAxisMaterialPacket({
+          residentWarmPacket,
+          ambientWarmPacket,
+          warmMemoryPacket,
+          limit: resolvePositiveInt(
+            args.prelude_self_axis_material_limit || args.preludeSelfAxisMaterialLimit,
+            Number(this.config.asheriePreludeSelfAxisMaterialLimit) || 4,
+          ),
+        })
+      : buildAgentCharSelfAxisMaterialPacket({
+          residentWarmPacket: null,
+          ambientWarmPacket: null,
+          warmMemoryPacket: null,
+          limit: 0,
+        });
     const currentTurnSignals = normalizeCurrentTurnSignals(args.current_turn_signals || args.currentTurnSignals || {});
 
     let coldMemoryVersion = "";
@@ -341,8 +365,8 @@ class AsherieMemoryService {
       version: normalizeText(args.version),
     });
     const shouldSearchColdRoots = deliveryProfile.include_cold && !proactiveLite && shouldSearchColdRootsForTurn({
-      query: recallQuery,
-      recallFocus,
+      query: layerRecallQuery,
+      recallFocus: deliveryRecallFocus,
       recallMode,
     });
 
@@ -351,9 +375,9 @@ class AsherieMemoryService {
           userId: scopes.resolvedUserId,
           realmId: scopes.coldScope.realm_id,
           agentId: scopes.coldScope.agent_id,
-          query: recallQuery,
+          query: layerRecallQuery,
           limit: Number(args.cold_limit || args.coldLimit) || 2,
-          minScore: recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context ? 1 : 2,
+          minScore: deliveryRecallFocus?.explicit_recall_signal || deliveryRecallFocus?.used_recent_context ? 1 : 2,
           version: coldMemoryVersion,
         })
       : {
@@ -385,21 +409,21 @@ class AsherieMemoryService {
       coldMemoryError = "";
     }
     const localArchivePacket = shouldSearchLocalArchiveFallback({
-      query: recallQuery,
+      query: layerRecallQuery,
       proactiveLite,
       shouldSearchColdRoots,
       coldRootPacket,
     })
       ? this.localArchiveStore.search(scopes.warmScope, {
           scopedUserId: scopes.scopedUserId,
-          query: recallQuery,
+          query: layerRecallQuery,
           limit: resolvePositiveInt(
             args.prelude_local_archive_limit || args.preludeLocalArchiveLimit,
             Number(this.config.asheriePreludeLocalArchiveLimit) || 2,
           ),
-          minScore: recallFocus?.explicit_recall_signal || recallFocus?.used_recent_context ? 1 : 2,
+          minScore: deliveryRecallFocus?.explicit_recall_signal || deliveryRecallFocus?.used_recent_context ? 1 : 2,
         })
-      : buildEmptyLocalArchivePacket(scopes.warmScope, recallQuery, "local_archive_suppressed");
+      : buildEmptyLocalArchivePacket(scopes.warmScope, layerRecallQuery, "local_archive_suppressed");
     const retrieval = buildMemoryRetrievalPacket({
       mode: "mossbridge_context_packet",
       warmMemoryPacket,
@@ -444,11 +468,12 @@ class AsherieMemoryService {
       agentCharSelfAxisMaterialPacket,
       recallMode,
       forceRecentContext,
+      sessionHandoffMode,
       currentTurnSignals,
       recentRecords: recent.records,
       calendarPacket,
       wakeupPacket,
-      includeGuidance: args.include_runtime_prelude_guidance ?? args.includeRuntimePreludeGuidance ?? false,
+      includeGuidance: includeRuntimePreludeGuidance,
       preludeWarmLimit: resolvePositiveInt(
         args.prelude_warm_limit || args.preludeWarmLimit,
         Number(this.config.asheriePreludeWarmLimit) || 5,
@@ -1539,6 +1564,7 @@ function buildRuntimePrelude({
   temporalRecallPacket,
   hotContextPacket,
   forceRecentContext = false,
+  sessionHandoffMode = false,
   recentRecords,
   calendarPacket,
   wakeupPacket,
@@ -1565,7 +1591,7 @@ function buildRuntimePrelude({
   const includeRecentContext = forceRecentContext || shouldIncludeRecentContextPrelude(recallFocus, recallMode);
   const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
   const sessionHandoffLines = forceRecentContext && normalizeText(recallMode) !== "proactive"
-    ? buildSessionHandoffPrelude(recentRecords)
+    ? applySessionHandoffPreludeBudget(buildSessionHandoffPrelude(recentRecords))
     : [];
   if (includeGuidance !== false) {
     ensurePreludeHeader(lines);
@@ -1724,7 +1750,7 @@ function buildRuntimePrelude({
     });
   }
 
-  if (recallFocus?.used_recent_context) {
+  if (recallFocus?.used_recent_context && !sessionHandoffMode) {
     const reasons = Array.isArray(recallFocus.reasons) ? recallFocus.reasons.slice(0, 2).join(", ") : "";
     ensurePreludeHeader(lines);
     lines.push(`- recall-focus: expanded from recent context${reasons ? ` | ${reasons}` : ""}`);
@@ -1785,7 +1811,9 @@ function buildRuntimePrelude({
     lines.push(...snippets);
   }
 
-  return applyRuntimePreludeBudget(lines).join("\n").trim();
+  return applyRuntimePreludeBudget(lines, {
+    hardLimit: sessionHandoffMode ? 12000 : 18000,
+  }).join("\n").trim();
 }
 
 function ensurePreludeHeader(lines) {
@@ -1817,8 +1845,6 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
     "- 前台自由：",
     "- resident-anchor:",
     "- ambient-warm:",
-    "- self-axis-material:",
-    "- self-axis-candidate:",
     "- recall-focus:",
     "- 主动唤醒当前态：",
     "- 相对时间校准：",
@@ -1870,6 +1896,29 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
     }
   }
   return output.length ? output : normalizedLines.slice(0, 1);
+}
+
+function applySessionHandoffPreludeBudget(lines = [], { hardLimit = 3200 } = {}) {
+  const normalizedLines = Array.isArray(lines)
+    ? lines.map((line) => normalizePreludeText(line)).filter(Boolean)
+    : [];
+  const output = [];
+  let trimmed = 0;
+  for (const line of normalizedLines) {
+    const candidate = [...output, line].join("\n");
+    if (candidate.length <= hardLimit) {
+      output.push(line);
+    } else {
+      trimmed += 1;
+    }
+  }
+  if (trimmed > 0) {
+    const notice = `- session-handoff-budget: shortened ${trimmed} lines; use recent conversation tools or memory search if more tail detail is needed.`;
+    if ([...output, notice].join("\n").length <= hardLimit) {
+      output.push(notice);
+    }
+  }
+  return output;
 }
 
 function buildAgentCharSelfAxisMaterialPrelude(packet = {}, { limit = 3 } = {}) {
@@ -2110,6 +2159,39 @@ function shouldIncludeSolitudeDigestForTurn({ query = "", recallMode = "", runti
     return true;
   }
   return looksLikeSolitudeOverviewQuery(query);
+}
+
+function shouldIncludeAgentCharSelfAxisMaterialForTurn({
+  query = "",
+  recallMode = "",
+  runtimeProfile = "",
+  includeGuidance = false,
+  requested,
+} = {}) {
+  if (requested === true) {
+    return true;
+  }
+  if (requested === false) {
+    return false;
+  }
+  if (normalizeText(runtimeProfile) === "proactive_lite") {
+    return false;
+  }
+  if (includeGuidance === true) {
+    return true;
+  }
+  if (normalizeText(recallMode) === "proactive") {
+    return looksLikeSelfAxisReviewQuery(query);
+  }
+  return looksLikeSelfAxisReviewQuery(query);
+}
+
+function looksLikeSelfAxisReviewQuery(query = "") {
+  const normalized = normalizeText(query);
+  if (!normalized) {
+    return false;
+  }
+  return /(self[-_ ]?axis|persona|soul|dreaming|自我轴|自我整理|自我连续|人格连续|灵魂连续|内位视角|第一人称|表达风格.*(复盘|整理|修正)|修正.*(自己|表达|语气)|回顾.*(自己|表达|人格)|你最近学到|后台.*自我)/i.test(normalized);
 }
 
 function looksLikeSolitudeOverviewQuery(query = "") {

@@ -4119,6 +4119,9 @@ class MossbridgeApp {
       const frontstageNote = "";
       const toolHoverNote = "";
       const sections = [frontstageNote, toolHoverNote, prelude].filter(Boolean);
+      const augmentedText = sections.length
+        ? `${sections.join("\n\n")}\n\n===== Current Inbound Message =====\n${baseText}`
+        : baseText;
       const delivery = buildMemoryDeliveryReport({
         normalized,
         baseText,
@@ -4126,6 +4129,7 @@ class MossbridgeApp {
         toolHoverNote,
         prelude,
         sections,
+        runtimeText: augmentedText,
         contextPressure,
         includeStableTurnGuidance: includeRuntimeMaintenanceGuidance,
         residentAlreadyDelivered,
@@ -4158,12 +4162,12 @@ class MossbridgeApp {
       }
       if (!sections.length) {
         return {
-          text: baseText,
+          text: augmentedText,
           packet: packetWithDelivery,
         };
       }
       return {
-        text: `${sections.join("\n\n")}\n\n===== Current Inbound Message =====\n${baseText}`,
+        text: augmentedText,
         packet: packetWithDelivery,
       };
     } catch (error) {
@@ -4894,6 +4898,7 @@ function buildMemoryDeliveryReport({
   toolHoverNote = "",
   prelude = "",
   sections = [],
+  runtimeText = "",
   contextPressure = null,
   includeStableTurnGuidance = false,
   residentAlreadyDelivered = false,
@@ -4923,6 +4928,8 @@ function buildMemoryDeliveryReport({
     sections: sectionRows,
     total_chars: sectionRows.reduce((sum, row) => sum + row.chars, 0),
     estimated_tokens: sectionRows.reduce((sum, row) => sum + row.estimated_tokens, 0),
+    runtime_prompt_chars: String(runtimeText || "").length,
+    runtime_prompt_estimated_tokens: estimatePromptTokens(runtimeText),
     policy: "Delivery report is stored for diagnostics only; it is not injected into the runtime prompt.",
   };
 }

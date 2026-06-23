@@ -1515,6 +1515,16 @@ test("asherie memory service builds a session handoff snapshot for long continui
     resident: false,
     certainty_state: "settled",
   });
+  const track = await service.upsertOngoingTrack({
+    userId: "demo-user",
+    title: "论文架构收束",
+    summary: "论文架构正在收束，下一步继续围绕章节衔接修改。",
+    kind: "writing",
+    target_window: "这周",
+    next_step: "继续处理章节逻辑。",
+    shadow_snippets: ["旧 session 第8步讨论过明天继续修改。"],
+  });
+  assert.equal(track.ok, true);
 
   for (let index = 1; index <= 8; index += 1) {
     await service.writebackTurn({
@@ -1551,8 +1561,11 @@ test("asherie memory service builds a session handoff snapshot for long continui
   const recentThreadCount = (freshPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
   assert.equal(recentThreadCount, 8);
   assert.equal(freshPacket.delivery_profile.include_ambient_warm, true);
+  assert.equal(freshPacket.delivery_profile.include_ongoing, false);
+  assert.equal(freshPacket.ongoing_track_packet.hit_count, 0);
   assert.match(freshPacket.runtime_prelude, /session-handoff/);
   assert.match(freshPacket.runtime_prelude, /ambient-warm: 关系连续热场空气/);
+  assert.doesNotMatch(freshPacket.runtime_prelude, /ongoing: 论文架构收束/);
   assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
   assert.match(freshPacket.runtime_prelude, /论文架构第8步/);
   assert.equal((freshPacket.runtime_prelude.match(/session-tail-exchange:/g) || []).length, 3);
@@ -2051,13 +2064,22 @@ test("affective intimacy drift turns carry voice and relationship anchors", asyn
   assert.equal(packet.delivery_profile.include_ambient_warm, true);
   assert.ok(ambientTitles.includes("长期相处脉络"));
   assert.ok(warmTitles.includes("表达底色"));
-  assert.ok(packet.agent_char_self_axis_material_packet.hit_count >= 2);
+  assert.equal(packet.agent_char_self_axis_material_packet.hit_count, 0);
   assert.match(packet.runtime_prelude, /resident-anchor: 关系连续底色/);
   assert.match(packet.runtime_prelude, /ambient-warm: 长期相处脉络/);
   assert.match(packet.runtime_prelude, /warm: 表达底色/);
-  assert.match(packet.runtime_prelude, /self-axis-material:/);
-  assert.match(packet.runtime_prelude, /self-axis-candidate:/);
+  assert.doesNotMatch(packet.runtime_prelude, /self-axis-material:/);
+  assert.doesNotMatch(packet.runtime_prelude, /self-axis-candidate:/);
   assert.doesNotMatch(packet.runtime_prelude, /Bridge 提示词维护/);
+
+  const reviewPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "请帮我复盘一下你的自我轴和表达风格，看看哪里需要修正",
+    includeRuntimePreludeGuidance: false,
+  });
+  assert.ok(reviewPacket.agent_char_self_axis_material_packet.hit_count >= 2);
+  assert.match(reviewPacket.runtime_prelude, /self-axis-material:/);
+  assert.match(reviewPacket.runtime_prelude, /self-axis-candidate:/);
 });
 
 test("playful relational turns carry ambient warm without work tracks", async () => {

@@ -23,6 +23,7 @@ function resolveMemoryDeliveryProfile({
   const text = normalizeText(query);
   const mode = normalizeText(recallMode).toLowerCase();
   const runtime = normalizeText(runtimeProfile).toLowerCase();
+  const sessionHandoff = Boolean(forceRecentContext);
   const explicitMemory = EXPLICIT_MEMORY_PATTERN.test(text);
   const explicitOngoing = ONGOING_PATTERN.test(text) || ONGOING_OVERVIEW_PATTERN.test(text);
   const explicitEpisode = EPISODE_PATTERN.test(text);
@@ -41,7 +42,6 @@ function resolveMemoryDeliveryProfile({
     || explicitObservation
     || affectiveRelational
     || temporalReference
-    || Boolean(forceRecentContext)
   );
   const episodeProbe = looksLikeEpisodeProbe(text, {
     explicitMemory,
@@ -74,7 +74,7 @@ function resolveMemoryDeliveryProfile({
   let tier = "resident_only";
   if (runtime === "proactive_lite") {
     tier = "heartbeat_lite";
-  } else if (Boolean(forceRecentContext) || explicitMemory || ONGOING_OVERVIEW_PATTERN.test(text)) {
+  } else if (explicitMemory || ONGOING_OVERVIEW_PATTERN.test(text)) {
     tier = "full";
   } else if (affectiveRelational && !explicitOngoing && !explicitEpisode && !explicitObservation) {
     tier = "affective_warm";
@@ -90,7 +90,7 @@ function resolveMemoryDeliveryProfile({
 
   const includeWarm = ["affective_warm", "focused", "full"].includes(tier);
   const includeAmbientWarm = ["ambient_warm", "affective_warm", "task_ambient", "focused", "full", "heartbeat_lite"].includes(tier)
-    || Boolean(forceRecentContext);
+    || sessionHandoff;
   let includeOngoing = tier === "full" || tier === "focused";
   const explicitEpisodeDelivery = ["focused", "full"].includes(tier) && (explicitEpisode || explicitMemory || temporalReference);
   let includeEpisode = explicitEpisodeDelivery || episodeProbe;
@@ -127,6 +127,7 @@ function resolveMemoryDeliveryProfile({
     reading_context: readingContext,
     active_task: activeTask,
     loose_operational_close: looseOperationalClose,
+    session_handoff: sessionHandoff,
     include_resident: true,
     include_ambient_warm: includeAmbientWarm,
     include_warm: includeWarm,

@@ -342,6 +342,8 @@ test("foreground turns keep maintenance guidance out while pressure still trims 
   assert.equal(first.packet.delivery.mode, "inbound");
   assert.equal(first.packet.delivery.include_stable_guidance, false);
   assert.ok(first.packet.delivery.estimated_tokens > 0);
+  assert.equal(first.packet.delivery.runtime_prompt_chars, first.text.length);
+  assert.ok(first.packet.delivery.runtime_prompt_estimated_tokens >= first.packet.delivery.estimated_tokens);
   assert.equal(second.packet.delivery.include_stable_guidance, false);
   assert.equal(second.packet.delivery.policy.includes("not injected"), true);
 });
