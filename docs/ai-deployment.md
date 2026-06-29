@@ -4,6 +4,27 @@ This guide is for an AI assistant helping a user deploy Mossbridge from a clean 
 
 Mossbridge supports both Codex and Claude Code as runtimes. In this document, "AI deployment helper" means the assistant doing setup work; "runtime" means the local `codex` or `claude` command that will answer WeChat turns.
 
+## Agent-Driven Runtime Notes
+
+Mossbridge is usually deployed by an AI assistant for a human operator, and the running WeChat bridge is also driven by a background runtime agent. Do not treat every setting as a human-facing product preference. Many settings exist to keep an agent-driven bridge safe, portable, and runtime-neutral.
+
+Use this split when deciding where a change belongs:
+
+- Shared bridge/core settings apply to both Codex and Claude Code: WeChat intake, allowlist, state/data/workspace roots, memory delivery, check-in, dreaming, reminders, runtime notices, approvals, session-refresh queueing, and service guard behavior.
+- Codex-only settings belong behind `MOSSBRIDGE_CODEX_*`: Codex command path, model/provider selection, model catalog behavior, local provider wrapper, native image input, and Codex RPC/session details.
+- Claude Code-only settings belong behind `MOSSBRIDGE_CLAUDE_*` or the `:claudecode` scripts: Claude model override, process/session behavior, and Claude-specific approval/session recovery.
+- Pressure-test-derived behavior should be treated as a hypothesis for the next runtime until it is verified on that runtime. Claude Code pressure-test fixes can inform Codex CLI setup, but they do not prove Codex CLI stability by themselves.
+
+Important deployment interpretation:
+
+- Public Mossbridge should not be made Claude Code-only or Codex-only.
+- Shared runtime behavior should be fixed in bridge core when possible, not duplicated in both adapters.
+- Adapter-specific behavior should be limited to protocol, process/RPC, model, image input, approval, and session-id differences.
+- Do not enlarge every memory packet or add foreground instructions to compensate for weak recall. Use diagnostics and relevance gates first.
+- Do not treat token percentage alone as a mandatory session switch. Compression keeps a session alive; switching sessions is for recovering from pollution, stale state, tool errors, or handoff-worthy work boundaries.
+
+For the current Codex CLI pressure-test transition, read `docs/codex-cli-pressure-test-handoff.md` before changing deployment defaults.
+
 ## Hard Boundary
 
 Do not touch live state or accounts unless the user explicitly asks for that exact local deployment action.
@@ -94,6 +115,23 @@ MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 ```
+
+These `MOSSBRIDGE_CODEX_*` variables do not configure Claude Code. If `MOSSBRIDGE_RUNTIME=claudecode`, leave Codex-only variables unused unless the user is preparing a separate Codex runtime smoke.
+
+For shared runtime behavior, keep using the neutral variables:
+
+```dotenv
+MOSSBRIDGE_RUNTIME=
+MOSSBRIDGE_STATE_DIR=
+MOSSBRIDGE_DATA_ROOT=
+MOSSBRIDGE_WORKSPACE_ROOT=
+MOSSBRIDGE_ALLOWED_USER_IDS=
+MOSSBRIDGE_ENABLE_CHECKIN=
+MOSSBRIDGE_ENABLE_DREAMING=
+MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT=
+```
+
+Do not fork shared behavior into two `.env` files unless the user is deliberately running two separate deployments with separate state/data/workspace roots.
 
 Do not set migration-only memory overrides for a first deployment:
 

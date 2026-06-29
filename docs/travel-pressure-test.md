@@ -3,6 +3,8 @@
 This file is the handoff for a multi-day WeChat/runtime bridge pressure test.
 It is intentionally operational rather than architectural: when the user returns, collect evidence first, then decide what to fix.
 
+For the Codex CLI pressure-test transition after the Claude Code pressure-test line, read `docs/codex-cli-pressure-test-handoff.md` first. It separates what has already landed in public Mossbridge from what still needs Codex-specific pressure evidence.
+
 ## What To Preserve
 
 - Keep the Mac awake, powered, and online when possible.

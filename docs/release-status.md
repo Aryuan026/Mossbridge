@@ -39,6 +39,14 @@ Mossbridge is ready for technical users to inspect, run isolated checks, and att
 - `MOSSBRIDGE_ASHERIE_*` names remain in some memory-domain paths for compatibility. They are historical names, not a requirement to connect a private Home service.
 - LaunchAgent scripts are macOS-only.
 
+## Deferred Session Maintenance Review
+
+Session maintenance strategy still needs a dedicated review after private pressure-test results are ported back. The next pass should inspect session health entrypoints, context usage thresholds, handoff injection, recent-tail carryover, and whether Codex/Claude Code native compression is being used before forcing a new session.
+
+The intended direction is not "larger memory packets" or "always switch at a token line." Healthy natural chat can continue or observe compression; case/code/attachment pollution should checkpoint or handoff before switching; slow replies, tool errors, stiff posture, or wrong-context pollution can justify a recovery switch. Future implementation should add visible strategy/reason fields first, so logs can show whether a turn chose `continue`, `observe_compression`, `checkpoint_then_switch`, or `recovery_switch`.
+
+For the Codex CLI pressure-test transition, see `docs/codex-cli-pressure-test-handoff.md`.
+
 ## Public Safety Defaults
 
 - `MOSSBRIDGE_ENABLE_CHECKIN=false` in `.env.example`.

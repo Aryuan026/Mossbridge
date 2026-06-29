@@ -185,3 +185,13 @@ Before public-facing changes land:
 - Keep tests isolated from real state/data/workspace roots.
 - Do not leave private names, private paths, screenshots, account IDs, or unavailable tool hints in source, docs, prompts, fixtures, or test names.
 - Run the narrow tests for the changed area, then `npm run check` when touching source or scripts.
+
+## Deferred Session Maintenance Strategy
+
+Future session-health work should not reduce maintenance to "context pressure crossed a threshold, so cut the session." Treat this as a pending strategy intake from the private pressure-test line, not as current implemented behavior.
+
+- Healthy natural chat or light companionship: prefer continuing the current runtime thread or observing the runtime/CLI's native compression behavior.
+- Case, code, or attachment-heavy pollution: checkpoint or prepare a session handoff first, then switch if needed.
+- Slow replies, tool errors, stiff posture, or wrong-context pollution: a session switch can be used as recovery ventilation.
+
+The guiding rule is: compression keeps a session alive; switching sessions is for ventilation. Switching should clear pollution or restore state quality, not be the default token-saving tool. A future patch should first add strategy/reason logging such as `continue`, `observe_compression`, `checkpoint_then_switch`, and `recovery_switch` before changing foreground voice, Bridge context assembly, or memory contents.
