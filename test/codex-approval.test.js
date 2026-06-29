@@ -1,11 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const { MossbridgeApp } = require("../src/core/app");
 const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
 const {
   buildCodexMcpConfigArgs,
   resolveCodexProjectToolMcpServerConfig,
+  resolveProjectToolMcpEnv,
 } = require("../src/adapters/runtime/codex/mcp-config");
 
 test("codex MCP config auto-approves foreground mossbridge tools by default", () => {
@@ -44,6 +46,90 @@ test("codex lightweight checkins do not attach the project MCP server", () => {
     resolveCodexProjectToolMcpServerConfig({ toolProfile: "checkin_lite" }),
     null,
   );
+});
+
+test("codex project MCP server config inherits safe runtime env", () => {
+  const previous = {
+    MOSSBRIDGE_STATE_DIR: process.env.MOSSBRIDGE_STATE_DIR,
+    MOSSBRIDGE_DATA_ROOT: process.env.MOSSBRIDGE_DATA_ROOT,
+    MOSSBRIDGE_ACCOUNT_ID: process.env.MOSSBRIDGE_ACCOUNT_ID,
+    MOSSBRIDGE_CODEX_API_KEY: process.env.MOSSBRIDGE_CODEX_API_KEY,
+  };
+  process.env.MOSSBRIDGE_STATE_DIR = "/srv/mossbridge/state";
+  process.env.MOSSBRIDGE_DATA_ROOT = "/srv/mossbridge/data";
+  process.env.MOSSBRIDGE_ACCOUNT_ID = "account-1";
+  process.env.MOSSBRIDGE_CODEX_API_KEY = "secret";
+
+  try {
+    const config = resolveCodexProjectToolMcpServerConfig({
+      mossbridgeHome: path.resolve(__dirname, ".."),
+      toolProfile: "foreground",
+    });
+
+    assert.equal(config.env.MOSSBRIDGE_STATE_DIR, "/srv/mossbridge/state");
+    assert.equal(config.env.MOSSBRIDGE_DATA_ROOT, "/srv/mossbridge/data");
+    assert.equal(config.env.MOSSBRIDGE_ACCOUNT_ID, "account-1");
+    assert.equal(config.env.MOSSBRIDGE_CODEX_API_KEY, undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("codex MCP config passes safe mossbridge env to project tool subprocesses", () => {
+  const args = buildCodexMcpConfigArgs({
+    name: "mossbridge_tools",
+    command: "/usr/bin/node",
+    args: ["/workspace/bin/mossbridge.js", "tool-mcp-server"],
+    env: {
+      MOSSBRIDGE_ENV_FILE: "/etc/mossbridge/mossbridge.env",
+      MOSSBRIDGE_STATE_DIR: "/srv/mossbridge/state",
+      MOSSBRIDGE_ACCOUNT_ID: "wechat-account-1",
+      MOSSBRIDGE_DATA_ROOT: "/srv/mossbridge/data",
+      MOSSBRIDGE_STICKERS_DIR: "/srv/mossbridge/data/storage/stickers",
+      MOSSBRIDGE_IDENTITY_AGENT_ID: "moss",
+      MOSSBRIDGE_CODEX_API_KEY: "secret",
+      MOSSBRIDGE_LOCATION_TOKEN: "secret",
+      PUBLIC_API_KEYS: "secret",
+      BAD_KEY: "",
+      "not-valid": "/tmp/nope",
+    },
+  });
+  const joined = args.join("\n");
+
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_ENV_FILE="\/etc\/mossbridge\/mossbridge\.env"/);
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_STATE_DIR="\/srv\/mossbridge\/state"/);
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_ACCOUNT_ID="wechat-account-1"/);
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_DATA_ROOT="\/srv\/mossbridge\/data"/);
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_STICKERS_DIR="\/srv\/mossbridge\/data\/storage\/stickers"/);
+  assert.match(joined, /mcp_servers\.mossbridge_tools\.env\.MOSSBRIDGE_IDENTITY_AGENT_ID="moss"/);
+  assert.doesNotMatch(joined, /CODEX_API_KEY/);
+  assert.doesNotMatch(joined, /LOCATION_TOKEN/);
+  assert.doesNotMatch(joined, /PUBLIC_API_KEYS/);
+  assert.doesNotMatch(joined, /not-valid/);
+});
+
+test("codex MCP env resolver keeps runtime paths but excludes secrets", () => {
+  const env = resolveProjectToolMcpEnv({
+    MOSSBRIDGE_STATE_DIR: "/srv/mossbridge/state",
+    MOSSBRIDGE_ACCOUNT_ID: "account-1",
+    MOSSBRIDGE_DATA_ROOT: "/srv/mossbridge/data",
+    MOSSBRIDGE_IDENTITY_USER_ID: "owner",
+    MOSSBRIDGE_CODEX_API_KEY: "secret",
+    MOSSBRIDGE_LOCATION_TOKEN: "secret",
+  });
+
+  assert.deepEqual(env, {
+    MOSSBRIDGE_STATE_DIR: "/srv/mossbridge/state",
+    MOSSBRIDGE_DATA_ROOT: "/srv/mossbridge/data",
+    MOSSBRIDGE_ACCOUNT_ID: "account-1",
+    MOSSBRIDGE_IDENTITY_USER_ID: "owner",
+  });
 });
 
 test("codex MCP elicitation approvals map to runtime approval events", () => {

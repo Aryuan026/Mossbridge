@@ -27,11 +27,12 @@ function ensureStateDirectory(stateDir) {
 function loadEnv() {
   const stateDir = resolvePreferredStateDirectory();
   const candidates = [
+    process.env.MOSSBRIDGE_ENV_FILE,
     path.join(process.cwd(), ".env"),
     path.join(stateDir, ".env"),
     path.join(os.homedir(), ".mossbridge", ".env"),
   ];
-  for (const envPath of candidates) {
+  for (const envPath of candidates.map(normalizePathCandidate).filter(Boolean)) {
     if (!fs.existsSync(envPath)) {
       continue;
     }
@@ -170,4 +171,8 @@ function readFlagValue(args, flag) {
     }
   }
   return "";
+}
+
+function normalizePathCandidate(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }

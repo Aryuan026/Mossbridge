@@ -121,6 +121,7 @@ These `MOSSBRIDGE_CODEX_*` variables do not configure Claude Code. If `MOSSBRIDG
 For shared runtime behavior, keep using the neutral variables:
 
 ```dotenv
+MOSSBRIDGE_ENV_FILE=
 MOSSBRIDGE_RUNTIME=
 MOSSBRIDGE_STATE_DIR=
 MOSSBRIDGE_DATA_ROOT=
@@ -130,6 +131,8 @@ MOSSBRIDGE_ENABLE_CHECKIN=
 MOSSBRIDGE_ENABLE_DREAMING=
 MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT=
 ```
+
+`MOSSBRIDGE_ENV_FILE` is a launcher/service variable. Set it in the shell, LaunchAgent, or wrapper process that starts Mossbridge; do not rely on a file to point at itself.
 
 Do not fork shared behavior into two `.env` files unless the user is deliberately running two separate deployments with separate state/data/workspace roots.
 
