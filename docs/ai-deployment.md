@@ -134,6 +134,8 @@ MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT=
 
 `MOSSBRIDGE_ENV_FILE` is a launcher/service variable. Set it in the shell, LaunchAgent, or wrapper process that starts Mossbridge; do not rely on a file to point at itself.
 
+The recommended default is the repository-root `.env`; `MOSSBRIDGE_ENV_FILE` is an advanced path for wrappers or services, and shared scripts plus the app entrypoint read it with the same priority.
+
 Do not fork shared behavior into two `.env` files unless the user is deliberately running two separate deployments with separate state/data/workspace roots.
 
 Do not set migration-only memory overrides for a first deployment:

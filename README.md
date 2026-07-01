@@ -60,6 +60,8 @@ For an AI deployment helper, use [docs/ai-deployment.md](./docs/ai-deployment.md
 
 Do not overwrite an existing `.env`. Do not point a clean clone at another bridge's state directory, live WeChat account files, or a shared personal memory warehouse.
 
+The recommended default is the repository-root `.env`; `MOSSBRIDGE_ENV_FILE` is an advanced launcher/service path, and both shared scripts and the app entrypoint read it with the same priority.
+
 ## Minimal Configuration
 
 For a disposable smoke, create directories that are safe to delete:

@@ -3,18 +3,9 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const dotenv = require("dotenv");
 
-try {
-  require("dotenv").config({ path: path.join(process.cwd(), ".env") });
-} catch {
-  // ignore
-}
-
-try {
-  require("dotenv").config({ path: path.join(os.homedir(), ".mossbridge", ".env") });
-} catch {
-  // ignore
-}
+loadEnv();
 
 const rootDir = path.resolve(__dirname, "..");
 const port = resolveSharedPort(process.env.MOSSBRIDGE_SHARED_PORT);
@@ -26,6 +17,34 @@ const bridgePidFile = path.join(logDir, "shared-wechat.pid");
 const appServerLogFile = path.join(logDir, "shared-app-server.log");
 const accountsDir = path.join(stateDir, "accounts");
 const sessionFile = process.env.MOSSBRIDGE_SESSIONS_FILE || path.join(stateDir, "sessions.json");
+
+function resolvePreferredStateDirectory() {
+  return process.env.MOSSBRIDGE_STATE_DIR || path.join(os.homedir(), ".mossbridge");
+}
+
+function loadEnv() {
+  const stateDirCandidate = resolvePreferredStateDirectory();
+  const candidates = [
+    process.env.MOSSBRIDGE_ENV_FILE,
+    path.join(process.cwd(), ".env"),
+    path.join(stateDirCandidate, ".env"),
+    path.join(os.homedir(), ".mossbridge", ".env"),
+  ];
+  for (const envPath of candidates.map(normalizePathCandidate).filter(Boolean)) {
+    if (!fs.existsSync(envPath)) {
+      continue;
+    }
+    dotenv.config({ path: envPath });
+    return envPath;
+  }
+  dotenv.config();
+  return "";
+}
+
+function normalizePathCandidate(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized ? path.resolve(normalized) : "";
+}
 
 function ensureLogDir() {
   fs.mkdirSync(logDir, { recursive: true });
@@ -295,11 +314,14 @@ module.exports = {
   port,
   listenUrl,
   resolveSharedPort,
+  loadEnv,
   stateDir,
   logDir,
   appServerPidFile,
   bridgePidFile,
   appServerLogFile,
+  accountsDir,
+  sessionFile,
   ensureLogDir,
   isPidAlive,
   readPidFile,

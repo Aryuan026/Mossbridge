@@ -60,6 +60,8 @@ AI 部署助手请读 [docs/ai-deployment.md](./docs/ai-deployment.md)。人类�
 
 不要覆盖已有 `.env`。不要把 clean clone 指向其他 bridge 的 state dir、live 微信账号文件或共享私人记忆仓。
 
+推荐默认使用仓库根目录 `.env`；`MOSSBRIDGE_ENV_FILE` 是高级 launcher/service 路径，shared scripts 和 app entrypoint 会按同一优先级读取它。
+
 ## 最小配置
 
 先创建可删除的 smoke 目录：
