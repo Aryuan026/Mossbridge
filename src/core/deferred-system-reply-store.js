@@ -47,6 +47,12 @@ class DeferredSystemReplyStore {
         text: mergeDeferredReplyText(existing.text, normalized.text),
         failedAt: normalized.failedAt || existing.failedAt,
         lastError: normalized.lastError || existing.lastError,
+        deferReason: normalized.deferReason || existing.deferReason,
+        immediateSent: false,
+        deferred: true,
+        prefixDelivered: Boolean(existing.prefixDelivered || normalized.prefixDelivered),
+        prefixDeliveredAt: normalized.prefixDeliveredAt || existing.prefixDeliveredAt,
+        contextTokenAgeMs: normalized.contextTokenAgeMs ?? existing.contextTokenAgeMs ?? null,
       };
       this.state.replies[existingIndex] = merged;
       this.state.replies.sort(compareDeferredReplies);
@@ -60,26 +66,35 @@ class DeferredSystemReplyStore {
   }
 
   drainForSender(accountId, senderId) {
+    return this.drainForSenderWithExpiry(accountId, senderId).drained;
+  }
+
+  drainForSenderWithExpiry(accountId, senderId, { nowMs = Date.now(), systemReplyMaxAgeMs = null } = {}) {
     this.load();
     const normalizedAccountId = normalizeText(accountId);
     const normalizedSenderId = normalizeText(senderId);
     const drained = [];
+    const expired = [];
     const pending = [];
 
     for (const reply of this.state.replies) {
       if (reply.accountId === normalizedAccountId && reply.senderId === normalizedSenderId) {
+        if (isExpiredDeferredSystemReply(reply, { nowMs, systemReplyMaxAgeMs })) {
+          expired.push(reply);
+          continue;
+        }
         drained.push(reply);
       } else {
         pending.push(reply);
       }
     }
 
-    if (drained.length) {
+    if (drained.length || expired.length) {
       this.state.replies = pending;
       this.save();
     }
 
-    return drained;
+    return { drained, expired };
   }
 
   countForSender(accountId, senderId) {
@@ -110,6 +125,7 @@ function normalizeDeferredSystemReply(reply) {
   const createdAt = normalizeIsoTime(reply.createdAt);
   const failedAt = normalizeIsoTime(reply.failedAt);
   const lastError = normalizeText(reply.lastError);
+  const prefixDeliveredAt = normalizeIsoTime(reply.prefixDeliveredAt);
   if (!id || !accountId || !senderId || !text) {
     return null;
   }
@@ -124,6 +140,12 @@ function normalizeDeferredSystemReply(reply) {
     createdAt: createdAt || new Date().toISOString(),
     failedAt: failedAt || new Date().toISOString(),
     lastError,
+    deferReason: normalizeText(reply.deferReason),
+    immediateSent: false,
+    deferred: true,
+    prefixDelivered: Boolean(reply.prefixDelivered),
+    prefixDeliveredAt,
+    contextTokenAgeMs: normalizeNullableNonNegativeNumber(reply.contextTokenAgeMs),
   };
 }
 
@@ -164,6 +186,27 @@ function compareDeferredReplies(left, right) {
   return String(left?.id || "").localeCompare(String(right?.id || ""));
 }
 
+function isExpiredDeferredSystemReply(reply, { nowMs = Date.now(), systemReplyMaxAgeMs = null } = {}) {
+  if (reply?.kind !== "system_reply") {
+    return false;
+  }
+  const maxAgeMs = normalizeNullableNonNegativeNumber(systemReplyMaxAgeMs);
+  if (maxAgeMs === null || maxAgeMs <= 0) {
+    return false;
+  }
+  const failedAtMs = Date.parse(reply?.failedAt || "");
+  const createdAtMs = Date.parse(reply?.createdAt || "");
+  const anchorMs = Number.isFinite(failedAtMs) ? failedAtMs : createdAtMs;
+  if (!Number.isFinite(anchorMs)) {
+    return false;
+  }
+  const currentMs = Number(nowMs);
+  if (!Number.isFinite(currentMs)) {
+    return false;
+  }
+  return currentMs - anchorMs > maxAgeMs;
+}
+
 function normalizeIsoTime(value) {
   const normalized = normalizeText(value);
   if (!normalized) {
@@ -183,6 +226,17 @@ function normalizeText(value) {
 function normalizeDeferredReplyKind(value) {
   const normalized = normalizeText(value);
   return normalized === "system_reply" ? normalized : "plain_reply";
+}
+
+function normalizeNullableNonNegativeNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }
 
 module.exports = { DeferredSystemReplyStore };

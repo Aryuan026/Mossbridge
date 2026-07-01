@@ -16,6 +16,7 @@ const CURRENT_REPLY_HEADER = "===== [Mossbridge] current_runtime_reply =====";
 function createHarness({
   sendText,
   getKnownContextTokens,
+  getContextTokenAgeMs,
   onOutboundDelivery,
   onDeferredSystemReply,
   onRuntimeNotice,
@@ -36,6 +37,12 @@ function createHarness({
         return getKnownContextTokens();
       }
       return {};
+    },
+    getContextTokenAgeMs(userId) {
+      if (typeof getContextTokenAgeMs === "function") {
+        return getContextTokenAgeMs(userId);
+      }
+      return null;
     },
   };
 
@@ -229,6 +236,9 @@ test("plain reply is deferred after transient delivery retries are exhausted", a
     async sendText() {
       throw transientError;
     },
+    getContextTokenAgeMs() {
+      return 42_000;
+    },
     onDeferredSystemReply(payload) {
       deferred.push(payload);
     },
@@ -256,9 +266,15 @@ test("plain reply is deferred after transient delivery retries are exhausted", a
   assert.equal(deferred[0].userId, "user-transient-deferred");
   assert.equal(deferred[0].text, "Mossbridge will defer this reply");
   assert.equal(deferred[0].kind, "plain_reply");
+  assert.equal(deferred[0].deferReason, "transient_delivery_failure");
+  assert.equal(deferred[0].immediateSent, false);
+  assert.equal(deferred[0].deferred, true);
+  assert.equal(deferred[0].prefixDelivered, false);
+  assert.equal(deferred[0].contextTokenAgeMs, 42_000);
   assert.equal(outbound.at(-1).status, "deferred");
   assert.equal(outbound.at(-1).causeCode, "UND_ERR_CONNECT_TIMEOUT");
   assert.equal(outbound.at(-1).apiLabel, "sendMessage");
+  assert.equal(outbound.at(-1).contextTokenAgeMs, 42_000);
 });
 
 test("plain reply defers one combined batch when multiple items fail in the same turn", async () => {
@@ -285,6 +301,11 @@ test("plain reply defers one combined batch when multiple items fail in the same
         createdAt: new Date().toISOString(),
         failedAt: new Date().toISOString(),
         lastError: payload.error instanceof Error ? payload.error.message : "",
+        deferReason: payload.deferReason,
+        immediateSent: payload.immediateSent,
+        deferred: payload.deferred,
+        prefixDelivered: payload.prefixDelivered,
+        contextTokenAgeMs: payload.contextTokenAgeMs,
       });
     },
     onOutboundDelivery(payload) {
@@ -334,8 +355,53 @@ test("plain reply defers one combined batch when multiple items fail in the same
   );
   assert.equal(store.state.replies[0].kind, "plain_reply");
   assert.equal(store.state.replies[0].dedupeKey, "thread-batch-defer:turn-batch-defer");
+  assert.equal(store.state.replies[0].deferReason, "context_token_rejected");
+  assert.equal(store.state.replies[0].immediateSent, false);
+  assert.equal(store.state.replies[0].deferred, true);
+  assert.equal(store.state.replies[0].prefixDelivered, false);
   assert.equal(outbound.filter((entry) => entry.status === "deferred").length, 2);
   fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("deferred queue expires stale system replies without dropping plain replies", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-deferred-expiry-"));
+  const store = new DeferredSystemReplyStore({
+    filePath: path.join(tempDir, "deferred-system-replies.json"),
+  });
+  try {
+    store.enqueue({
+      id: "old-system",
+      accountId: "account-expiry",
+      senderId: "user-expiry",
+      threadId: "thread-expiry",
+      text: "stale proactive note",
+      kind: "system_reply",
+      createdAt: "2026-07-01T09:00:00.000Z",
+      failedAt: "2026-07-01T09:00:00.000Z",
+    });
+    store.enqueue({
+      id: "old-plain",
+      accountId: "account-expiry",
+      senderId: "user-expiry",
+      threadId: "thread-expiry",
+      text: "user-turn reply",
+      kind: "plain_reply",
+      createdAt: "2026-07-01T09:00:00.000Z",
+      failedAt: "2026-07-01T09:00:00.000Z",
+    });
+
+    const result = store.drainForSenderWithExpiry("account-expiry", "user-expiry", {
+      nowMs: Date.parse("2026-07-01T12:00:00.000Z"),
+      systemReplyMaxAgeMs: 30 * 60_000,
+    });
+
+    assert.deepEqual(result.expired.map((reply) => reply.id), ["old-system"]);
+    assert.deepEqual(result.drained.map((reply) => reply.id), ["old-plain"]);
+    store.load();
+    assert.equal(store.state.replies.length, 0);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("system runtime capacity notices are suppressed instead of delivered as proactive replies", async () => {

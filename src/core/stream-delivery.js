@@ -49,6 +49,7 @@ class StreamDelivery {
       userId: String(target.userId).trim(),
       contextToken: String(target.contextToken).trim(),
       provider: normalizeText(target.provider),
+      contextTokenAgeMs: normalizeNullableNonNegativeNumber(target.contextTokenAgeMs),
     });
   }
 
@@ -554,6 +555,7 @@ class StreamDelivery {
         status,
         attempt,
         contextTokenPresent: Boolean(payload?.contextToken),
+        contextTokenAgeMs: resolveReplyTargetContextTokenAgeMs(state?.replyTarget, this.channelAdapter),
         textPreview: payload?.text || "",
         error: error instanceof Error ? error.message : String(error || ""),
         ...buildDeliveryErrorDiagnosticPayload(error),
@@ -582,6 +584,11 @@ class StreamDelivery {
         error,
         kind,
         dedupeKey: state.runKey,
+        deferReason: resolveDeliveryDeferReason(error),
+        immediateSent: false,
+        deferred: true,
+        prefixDelivered: false,
+        contextTokenAgeMs: resolveReplyTargetContextTokenAgeMs(target, this.channelAdapter),
       });
       console.warn(
         `[mossbridge] deferred system reply until the next inbound message thread=${state.threadId} user=${target.userId}`
@@ -880,6 +887,7 @@ function normalizeReplyTarget(target) {
     userId: String(target.userId).trim(),
     contextToken: String(target.contextToken).trim(),
     provider: normalizeText(target.provider),
+    contextTokenAgeMs: normalizeNullableNonNegativeNumber(target.contextTokenAgeMs),
   };
 }
 
@@ -1143,6 +1151,16 @@ function shouldDeferReplyAfterDeliveryFailure(error) {
   return isSystemReplyContextFailure(error) || isTransientDeliveryFailure(error);
 }
 
+function resolveDeliveryDeferReason(error) {
+  if (isSystemReplyContextFailure(error)) {
+    return "context_token_rejected";
+  }
+  if (isTransientDeliveryFailure(error)) {
+    return "transient_delivery_failure";
+  }
+  return "delivery_failed";
+}
+
 function buildDeliveryErrorDiagnosticPayload(error) {
   if (!(error instanceof Error)) {
     return {};
@@ -1155,6 +1173,28 @@ function buildDeliveryErrorDiagnosticPayload(error) {
     apiEndpoint: normalizeText(error.weixinApi?.endpoint),
     apiTimeoutMs: Number.isFinite(Number(error.weixinApi?.timeoutMs)) ? Number(error.weixinApi.timeoutMs) : null,
   };
+}
+
+function resolveReplyTargetContextTokenAgeMs(target = {}, channelAdapter = null) {
+  const fromTarget = normalizeNullableNonNegativeNumber(target?.contextTokenAgeMs);
+  if (fromTarget !== null) {
+    return fromTarget;
+  }
+  if (!target?.userId || typeof channelAdapter?.getContextTokenAgeMs !== "function") {
+    return null;
+  }
+  return normalizeNullableNonNegativeNumber(channelAdapter.getContextTokenAgeMs(target.userId));
+}
+
+function normalizeNullableNonNegativeNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }
 
 function isSystemReplyContextFailure(error) {

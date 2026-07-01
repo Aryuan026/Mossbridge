@@ -19,6 +19,11 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_MAINTENANCE_PROFILE",
   "MOSSBRIDGE_MAINTENANCE_ALLOW_SELF_REPAIR",
   "MOSSBRIDGE_ALLOW_OPEN_INBOUND",
+  "MOSSBRIDGE_CODEX_ENDPOINT",
+  "MOSSBRIDGE_CODEX_COMMAND",
+  "MOSSBRIDGE_CODEX_MODEL",
+  "MOSSBRIDGE_CODEX_MODEL_PROVIDER",
+  "MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT",
   "MOSSBRIDGE_MODEL_CHOICES",
   "MOSSBRIDGE_CODEX_MODEL_CHOICES",
   "MOSSBRIDGE_CLAUDE_MODEL_CHOICES",
@@ -29,6 +34,7 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT",
   "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_FAILURE_THRESHOLD",
   "MOSSBRIDGE_BACKGROUND_RUNTIME_CIRCUIT_COOLDOWN_MINUTES",
+  "MOSSBRIDGE_DEFERRED_SYSTEM_REPLY_MAX_AGE_MINUTES",
 ];
 
 function withBridgeEnv(values, fn) {
@@ -141,6 +147,17 @@ test("readConfig enables open inbound enrollment only when explicitly requested"
   });
 });
 
+test("readConfig loads deferred system reply max age", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_DEFERRED_SYSTEM_REPLY_MAX_AGE_MINUTES: "12",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.deferredSystemReplyMaxAgeMinutes, 12);
+  });
+});
+
 test("readConfig defaults public memory identity to moss agent", () => {
   withBridgeEnv({ MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state" }, () => {
     const config = readConfig();
@@ -176,6 +193,25 @@ test("readConfig exposes model choices for WeChat model menus", () => {
     assert.deepEqual(config.modelChoices, ["fast=gpt-5.4-mini"]);
     assert.deepEqual(config.codexModelChoices, ["local=gemma4:26b-32k@ollama"]);
     assert.deepEqual(config.claudeModelChoices, ["opus=claude-opus-4-6"]);
+  });
+});
+
+test("readConfig preserves explicit Codex runtime endpoint and model config", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_CODEX_ENDPOINT: "ws://127.0.0.1:9876",
+    MOSSBRIDGE_CODEX_COMMAND: "codex",
+    MOSSBRIDGE_CODEX_MODEL: "gpt-test",
+    MOSSBRIDGE_CODEX_MODEL_PROVIDER: "openai",
+    MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT: "true",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.codexEndpoint, "ws://127.0.0.1:9876");
+    assert.equal(config.codexCommand, "codex");
+    assert.equal(config.codexModel, "gpt-test");
+    assert.equal(config.codexModelProvider, "openai");
+    assert.equal(config.codexNativeImageInput, true);
   });
 });
 

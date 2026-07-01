@@ -648,10 +648,29 @@ class MossbridgeApp {
       apiLabel: normalizeText(payload.apiLabel),
       apiEndpoint: normalizeText(payload.apiEndpoint),
       apiTimeoutMs: Number.isFinite(Number(payload.apiTimeoutMs)) ? Number(payload.apiTimeoutMs) : null,
+      deferReason: normalizeText(payload.deferReason),
+      immediateSent: Boolean(payload.immediateSent),
+      deferred: Boolean(payload.deferred),
+      prefixDelivered: Boolean(payload.prefixDelivered),
+      prefixDeliveredAt: normalizeIsoTime(payload.prefixDeliveredAt),
+      deferredReplyCount: Number.isFinite(Number(payload.deferredReplyCount)) ? Number(payload.deferredReplyCount) : null,
+      contextTokenAgeMs: Number.isFinite(Number(payload.contextTokenAgeMs)) ? Number(payload.contextTokenAgeMs) : null,
     });
   }
 
-  deferSystemReply({ threadId = "", userId = "", text = "", error = null, kind = "plain_reply", dedupeKey = "" }) {
+  deferSystemReply({
+    threadId = "",
+    userId = "",
+    text = "",
+    error = null,
+    kind = "plain_reply",
+    dedupeKey = "",
+    deferReason = "",
+    immediateSent = false,
+    deferred = true,
+    prefixDelivered = false,
+    contextTokenAgeMs = null,
+  }) {
     const queued = this.deferredSystemReplyQueue.enqueue({
       id: `${normalizeCommandArgument(threadId) || "system"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
       accountId: this.activeAccountId || this.channelAdapter.resolveAccount().accountId,
@@ -663,6 +682,11 @@ class MossbridgeApp {
       createdAt: new Date().toISOString(),
       failedAt: new Date().toISOString(),
       lastError: error instanceof Error ? error.message : String(error || ""),
+      deferReason,
+      immediateSent,
+      deferred,
+      prefixDelivered,
+      contextTokenAgeMs,
     });
     this.recordControlEvent?.({
       type: "channel.reply.deferred",
@@ -725,7 +749,33 @@ class MossbridgeApp {
     if (!normalized?.accountId || !normalized?.senderId || !normalized?.contextToken) {
       return;
     }
-    const pendingReplies = this.deferredSystemReplyQueue.drainForSender(normalized.accountId, normalized.senderId);
+    const drainResult = typeof this.deferredSystemReplyQueue.drainForSenderWithExpiry === "function"
+      ? this.deferredSystemReplyQueue.drainForSenderWithExpiry(normalized.accountId, normalized.senderId, {
+        systemReplyMaxAgeMs: resolveDeferredSystemReplyMaxAgeMs(this.config),
+      })
+      : { drained: this.deferredSystemReplyQueue.drainForSender(normalized.accountId, normalized.senderId), expired: [] };
+    const pendingReplies = Array.isArray(drainResult?.drained) ? drainResult.drained : [];
+    const expiredReplies = Array.isArray(drainResult?.expired) ? drainResult.expired : [];
+    if (expiredReplies.length) {
+      this.recordWeixinOutboundAudit({
+        userId: normalized.senderId,
+        provider: normalized.provider,
+        kind: "deferred_reply_prefix",
+        status: "expired_dropped",
+        attempt: "next_inbound_prefix",
+        contextTokenPresent: Boolean(normalized.contextToken),
+        contextTokenAgeMs: resolveContextTokenAgeMsForAudit(this.channelAdapter, normalized.senderId),
+        textPreview: "expired deferred system replies dropped",
+        immediateSent: false,
+        deferred: true,
+        prefixDelivered: false,
+        deferredReplyCount: expiredReplies.length,
+        deferReason: summarizeDeferredReplyReasons(expiredReplies),
+      });
+      console.warn(
+        `[mossbridge] dropped stale deferred system reply prefix sender=${normalized.senderId} count=${expiredReplies.length}`
+      );
+    }
     if (!pendingReplies.length) {
       return;
     }
@@ -735,6 +785,22 @@ class MossbridgeApp {
       senderId: normalized.senderId,
     });
     this.streamDelivery.setDeferredReplyPrefix(bindingKey, formatDeferredSystemReplyBatch(pendingReplies));
+    this.recordWeixinOutboundAudit({
+      userId: normalized.senderId,
+      provider: normalized.provider,
+      kind: "deferred_reply_prefix",
+      status: "queued_for_next_runtime_reply",
+      attempt: "next_inbound_prefix",
+      contextTokenPresent: Boolean(normalized.contextToken),
+      contextTokenAgeMs: resolveContextTokenAgeMsForAudit(this.channelAdapter, normalized.senderId),
+      textPreview: pendingReplies.map((reply) => normalizeText(reply.text)).filter(Boolean).join("\n\n"),
+      immediateSent: false,
+      deferred: true,
+      prefixDelivered: true,
+      prefixDeliveredAt: new Date().toISOString(),
+      deferredReplyCount: pendingReplies.length,
+      deferReason: summarizeDeferredReplyReasons(pendingReplies),
+    });
     console.warn(
       `[mossbridge] queued deferred reply prefix sender=${normalized.senderId} count=${pendingReplies.length}`
     );
@@ -4413,6 +4479,16 @@ class MossbridgeApp {
     const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
     const role = snapshot.prepared.provider === "system" ? "system" : "user";
     const incomingTextForCache = buildIncomingTextForConversationCache(snapshot.prepared);
+    const incomingAttachmentRefs = buildAttachmentRefsForWriteback(snapshot.prepared.attachments || []);
+    const incomingMessageForCache = {
+      role,
+      content: incomingTextForCache,
+      timestamp: snapshot.prepared.receivedAt || new Date().toISOString(),
+    };
+    if (incomingAttachmentRefs.length) {
+      incomingMessageForCache.attachments = incomingAttachmentRefs;
+      incomingMessageForCache.attachment_refs = incomingAttachmentRefs;
+    }
     let writebackResult = null;
     let writebackError = null;
     try {
@@ -4421,13 +4497,7 @@ class MossbridgeApp {
         senderId: snapshot.prepared.senderId,
         accountId: snapshot.prepared.accountId,
         query: incomingTextForCache,
-        incomingMessages: [
-          {
-            role,
-            content: incomingTextForCache,
-            timestamp: snapshot.prepared.receivedAt || new Date().toISOString(),
-          },
-        ],
+        incomingMessages: [incomingMessageForCache],
         outboundMessages: assistantTextFinal
           ? [
               {
@@ -4612,6 +4682,42 @@ function buildIncomingTextForConversationCache(prepared = {}) {
     return [originalText, attachmentContext].filter(Boolean).join("\n\n");
   }
   return originalText || fallbackText;
+}
+
+function buildAttachmentRefsForWriteback(attachments = []) {
+  const rows = [];
+  for (const item of Array.isArray(attachments) ? attachments : []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const pathRef = normalizeText(item.relativePath) || normalizeText(item.path) || normalizeText(item.absolutePath);
+    const notePath = normalizeText(item.noteRelativePath)
+      || normalizeText(item.notePath)
+      || normalizeText(item.noteAbsolutePath);
+    const ref = {};
+    assignNormalizedField(ref, "kind", item.kind);
+    assignNormalizedField(ref, "path", pathRef);
+    assignNormalizedField(ref, "absolute_path", item.absolutePath);
+    assignNormalizedField(ref, "note_path", notePath);
+    assignNormalizedField(ref, "note_absolute_path", item.noteAbsolutePath);
+    assignNormalizedField(ref, "file_name", item.fileName);
+    assignNormalizedField(ref, "source_file_name", item.sourceFileName);
+    assignNormalizedField(ref, "content_type", item.contentType);
+    if (item.isImage !== undefined) {
+      ref.is_image = Boolean(item.isImage);
+    }
+    if (Object.keys(ref).length && (ref.path || ref.note_path || ref.absolute_path || ref.note_absolute_path)) {
+      rows.push(ref);
+    }
+  }
+  return rows;
+}
+
+function assignNormalizedField(target, key, value) {
+  const normalized = normalizeText(value);
+  if (normalized) {
+    target[key] = normalized;
+  }
 }
 
 function buildAttachmentContextForConversationCache(prepared = {}) {
@@ -6791,6 +6897,33 @@ function groupDeferredReplies(replies) {
     grouped.plain.push(normalizedText);
   }
   return grouped;
+}
+
+function summarizeDeferredReplyReasons(replies) {
+  const reasons = [];
+  for (const reply of Array.isArray(replies) ? replies : []) {
+    const reason = normalizeText(reply?.deferReason);
+    if (reason && !reasons.includes(reason)) {
+      reasons.push(reason);
+    }
+  }
+  return reasons.join(",") || "delivery_failed";
+}
+
+function resolveContextTokenAgeMsForAudit(channelAdapter, senderId) {
+  if (typeof channelAdapter?.getContextTokenAgeMs !== "function") {
+    return null;
+  }
+  const ageMs = Number(channelAdapter.getContextTokenAgeMs(senderId));
+  return Number.isFinite(ageMs) && ageMs >= 0 ? ageMs : null;
+}
+
+function resolveDeferredSystemReplyMaxAgeMs(config = {}) {
+  const minutes = Number(config.deferredSystemReplyMaxAgeMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return null;
+  }
+  return minutes * 60_000;
 }
 
 function formatWechatLocalTime(receivedAt) {

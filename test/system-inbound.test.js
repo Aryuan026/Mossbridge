@@ -220,6 +220,153 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
   assert.match(result.text, /warm-card: Meteor necklace/);
 });
 
+test("deferred proactive replies record prefix delivery audit when next inbound arrives", () => {
+  let prefixText = "";
+  let outboundAudit = null;
+  const appLike = {
+    config: {
+      deferredSystemReplyMaxAgeMinutes: 30,
+    },
+    deferredSystemReplyQueue: {
+      drainForSenderWithExpiry(accountId, senderId, options) {
+        assert.equal(accountId, "wx-account");
+        assert.equal(senderId, "user-1");
+        assert.equal(options.systemReplyMaxAgeMs, 30 * 60_000);
+        return {
+          drained: [{
+            id: "deferred-1",
+            accountId: "wx-account",
+            senderId: "user-1",
+            threadId: "thread-checkin",
+            text: "queued proactive note",
+            kind: "system_reply",
+            deferReason: "context_token_rejected",
+          }],
+          expired: [],
+        };
+      },
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+        };
+      },
+    },
+    streamDelivery: {
+      setDeferredReplyPrefix(bindingKey, text) {
+        assert.equal(bindingKey, "binding:user-1");
+        prefixText = text;
+      },
+    },
+    channelAdapter: {
+      getContextTokenAgeMs() {
+        return 12_345;
+      },
+    },
+    weixinIngressAuditStore: {
+      recordOutbound(payload) {
+        outboundAudit = payload;
+        return payload;
+      },
+    },
+    recordWeixinOutboundAudit: MossbridgeApp.prototype.recordWeixinOutboundAudit,
+  };
+
+  MossbridgeApp.prototype.primeDeferredRepliesForSender.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    provider: "weixin",
+    contextToken: "ctx-fresh",
+  });
+
+  assert.match(prefixText, /queued proactive note/);
+  assert.equal(outboundAudit.kind, "deferred_reply_prefix");
+  assert.equal(outboundAudit.status, "queued_for_next_runtime_reply");
+  assert.equal(outboundAudit.immediateSent, false);
+  assert.equal(outboundAudit.deferred, true);
+  assert.equal(outboundAudit.prefixDelivered, true);
+  assert.equal(outboundAudit.deferredReplyCount, 1);
+  assert.equal(outboundAudit.deferReason, "context_token_rejected");
+  assert.equal(outboundAudit.contextTokenAgeMs, 12_345);
+});
+
+test("stale deferred proactive replies are dropped instead of delivered as next inbound prefix", () => {
+  let prefixCalled = false;
+  let outboundAudit = null;
+  const appLike = {
+    config: {
+      deferredSystemReplyMaxAgeMinutes: 30,
+    },
+    deferredSystemReplyQueue: {
+      drainForSenderWithExpiry(accountId, senderId, options) {
+        assert.equal(accountId, "wx-account");
+        assert.equal(senderId, "user-1");
+        assert.equal(options.systemReplyMaxAgeMs, 30 * 60_000);
+        return {
+          drained: [],
+          expired: [{
+            id: "old-deferred-1",
+            accountId: "wx-account",
+            senderId: "user-1",
+            threadId: "thread-checkin",
+            text: "stale proactive note",
+            kind: "system_reply",
+            deferReason: "context_token_rejected",
+            deferred: true,
+            prefixDelivered: false,
+          }],
+        };
+      },
+    },
+    runtimeAdapter: {
+      getSessionStore() {
+        return {
+          buildBindingKey({ senderId }) {
+            return `binding:${senderId}`;
+          },
+        };
+      },
+    },
+    streamDelivery: {
+      setDeferredReplyPrefix() {
+        prefixCalled = true;
+      },
+    },
+    channelAdapter: {
+      getContextTokenAgeMs() {
+        return 99_000;
+      },
+    },
+    weixinIngressAuditStore: {
+      recordOutbound(payload) {
+        outboundAudit = payload;
+        return payload;
+      },
+    },
+    recordWeixinOutboundAudit: MossbridgeApp.prototype.recordWeixinOutboundAudit,
+  };
+
+  MossbridgeApp.prototype.primeDeferredRepliesForSender.call(appLike, {
+    workspaceId: "default",
+    accountId: "wx-account",
+    senderId: "user-1",
+    provider: "weixin",
+    contextToken: "ctx-fresh",
+  });
+
+  assert.equal(prefixCalled, false);
+  assert.equal(outboundAudit.kind, "deferred_reply_prefix");
+  assert.equal(outboundAudit.status, "expired_dropped");
+  assert.equal(outboundAudit.prefixDelivered, false);
+  assert.equal(outboundAudit.deferredReplyCount, 1);
+  assert.equal(outboundAudit.deferReason, "context_token_rejected");
+  assert.equal(outboundAudit.contextTokenAgeMs, 99_000);
+});
+
 test("random checkin system prompt stays in lightweight no-tool mode", () => {
   const dispatcher = new SystemMessageDispatcher({
     queueStore: { hasPendingForAccount() { return false; }, drainForAccount() { return []; }, enqueue() {} },
@@ -1202,6 +1349,90 @@ test("image attachments inject view_image instructions for runtimes that support
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("runtime writeback preserves saved attachment refs for cache and downstream APIs", async () => {
+  let writebackArgs = null;
+  const appLike = {
+    projectDomains: {
+      memory: {
+        async writebackTurn(args) {
+          writebackArgs = args;
+          return { ok: true, appended_record: { record_id: "cap-test" } };
+        },
+      },
+    },
+    turnWritebackContextByRunKey: new Map(),
+    pendingTurnWritebackByThreadId: new Map(),
+    threadStateStore: {
+      getThreadState() {
+        return { lastReplyText: "assistant saw the image" };
+      },
+    },
+    runtimeAdapter: {
+      describe() {
+        return { id: "codex" };
+      },
+      getSessionStore() {
+        return {
+          getRuntimeParamsForWorkspace() {
+            return { model: "gpt-test" };
+          },
+        };
+      },
+    },
+    recordControlEvent() {},
+    completeMemoryMetabolismAttempt() {},
+    rememberTurnWritebackContext: MossbridgeApp.prototype.rememberTurnWritebackContext,
+    consumeTurnWritebackContext: MossbridgeApp.prototype.consumeTurnWritebackContext,
+  };
+
+  MossbridgeApp.prototype.rememberTurnWritebackContext.call(appLike, {
+    turn: { threadId: "thread-1", turnId: "turn-1" },
+    bindingKey: "binding:user-1",
+    workspaceRoot: "/workspace",
+    dispatchedAtMs: Date.now(),
+    prepared: {
+      workspaceId: "default",
+      accountId: "wx-account",
+      senderId: "user-1",
+      provider: "weixin",
+      originalText: "看这张图",
+      runtimeText: "看这张图",
+      text: "看这张图",
+      receivedAt: "2026-05-05T10:00:01.000Z",
+      attachments: [{
+        kind: "image",
+        relativePath: "inbox/2026-05-05/photo.jpg",
+        absolutePath: "/workspace/inbox/2026-05-05/photo.jpg",
+        noteRelativePath: "context/attachment-notes/photo.md",
+        noteAbsolutePath: "/workspace/context/attachment-notes/photo.md",
+        sourceFileName: "photo.jpg",
+        contentType: "image/jpeg",
+        isImage: true,
+      }],
+      attachmentFailures: [],
+    },
+  });
+
+  await MossbridgeApp.prototype.writebackRuntimeTurn.call(appLike, {
+    event: {
+      type: "runtime.turn.completed",
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        text: "assistant saw the image",
+      },
+    },
+    linked: { bindingKey: "binding:user-1" },
+  });
+
+  assert.ok(writebackArgs);
+  const incoming = writebackArgs.incomingMessages[0];
+  assert.equal(incoming.attachments[0].path, "inbox/2026-05-05/photo.jpg");
+  assert.equal(incoming.attachment_refs[0].note_path, "context/attachment-notes/photo.md");
+  assert.equal(incoming.attachment_refs[0].absolute_path, "/workspace/inbox/2026-05-05/photo.jpg");
+  assert.equal(incoming.attachment_refs[0].is_image, true);
 });
 
 test("image attachments tell claudecode to use Read on the saved local image file", async () => {

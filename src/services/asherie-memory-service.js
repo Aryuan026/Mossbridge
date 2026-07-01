@@ -2669,11 +2669,59 @@ function normalizeMessageArray(messages) {
   }
   return messages
     .filter((item) => item && typeof item === "object")
-    .map((item) => ({
-      role: normalizeText(item.role) || "unknown",
-      content: typeof item.content === "string" ? item.content : String(item.content || ""),
-      timestamp: normalizeText(item.timestamp) || new Date().toISOString(),
-    }));
+    .map((item) => {
+      const row = {
+        role: normalizeText(item.role) || "unknown",
+        content: typeof item.content === "string" ? item.content : String(item.content || ""),
+        timestamp: normalizeText(item.timestamp) || new Date().toISOString(),
+      };
+      const attachmentRefs = normalizeMessageAttachmentRefs(
+        item.attachment_refs || item.attachmentRefs || item.attachments,
+      );
+      if (attachmentRefs.length) {
+        row.attachments = attachmentRefs;
+        row.attachment_refs = attachmentRefs;
+      }
+      return row;
+    });
+}
+
+function normalizeMessageAttachmentRefs(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = {};
+      copyNormalizedField(row, "kind", item.kind);
+      copyNormalizedField(row, "path", item.path || item.relativePath || item.absolute_path || item.absolutePath);
+      copyNormalizedField(row, "absolute_path", item.absolute_path || item.absolutePath);
+      copyNormalizedField(row, "note_path", item.note_path || item.notePath || item.noteRelativePath || item.note_absolute_path || item.noteAbsolutePath);
+      copyNormalizedField(row, "note_absolute_path", item.note_absolute_path || item.noteAbsolutePath);
+      copyNormalizedField(row, "caption", item.caption);
+      copyNormalizedField(row, "description", item.description);
+      copyNormalizedField(row, "file_name", item.file_name || item.fileName);
+      copyNormalizedField(row, "source_file_name", item.source_file_name || item.sourceFileName);
+      copyNormalizedField(row, "content_type", item.content_type || item.contentType);
+      if (item.is_image !== undefined || item.isImage !== undefined) {
+        row.is_image = Boolean(item.is_image ?? item.isImage);
+      }
+      return row;
+    })
+    .filter((item) => Object.keys(item).length > 0 && (
+      item.path
+      || item.absolute_path
+      || item.note_path
+      || item.note_absolute_path
+    ));
+}
+
+function copyNormalizedField(target, key, value) {
+  const normalized = normalizeText(value);
+  if (normalized) {
+    target[key] = normalized;
+  }
 }
 
 function buildArchiveSourceRecordFromArgs(args = {}) {

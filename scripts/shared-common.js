@@ -17,7 +17,7 @@ try {
 }
 
 const rootDir = path.resolve(__dirname, "..");
-const port = String(process.env.MOSSBRIDGE_SHARED_PORT || "8765");
+const port = resolveSharedPort(process.env.MOSSBRIDGE_SHARED_PORT);
 const listenUrl = `ws://127.0.0.1:${port}`;
 const stateDir = process.env.MOSSBRIDGE_STATE_DIR || path.join(os.homedir(), ".mossbridge");
 const logDir = path.join(stateDir, "logs");
@@ -66,6 +66,18 @@ function removePidFileIfMatches(filePath, pid) {
   if (current && current === pid) {
     fs.rmSync(filePath, { force: true });
   }
+}
+
+function resolveSharedPort(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "8765";
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error("MOSSBRIDGE_SHARED_PORT must be an integer from 1 to 65535");
+  }
+  return String(parsed);
 }
 
 function checkReadyz() {
@@ -282,6 +294,7 @@ module.exports = {
   rootDir,
   port,
   listenUrl,
+  resolveSharedPort,
   stateDir,
   logDir,
   appServerPidFile,

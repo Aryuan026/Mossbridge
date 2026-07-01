@@ -111,6 +111,11 @@ test("WeixinIngressAuditStore persists outbound delivery snapshots", () => {
       apiLabel: "sendMessage",
       apiEndpoint: "ilink/bot/sendmessage",
       apiTimeoutMs: 15000,
+      deferReason: "context_token_rejected",
+      immediateSent: false,
+      deferred: true,
+      prefixDelivered: false,
+      contextTokenAgeMs: 12345,
     });
 
     const snapshot = new WeixinIngressAuditStore({ filePath }).snapshot();
@@ -126,6 +131,10 @@ test("WeixinIngressAuditStore persists outbound delivery snapshots", () => {
     assert.equal(snapshot.lastOutbound.apiLabel, "sendMessage");
     assert.equal(snapshot.lastOutbound.apiEndpoint, "ilink/bot/sendmessage");
     assert.equal(snapshot.lastOutbound.apiTimeoutMs, 15000);
+    assert.equal(snapshot.lastOutbound.contextTokenAgeMs, 12345);
+    assert.equal(snapshot.lastOutbound.deferReason, "context_token_rejected");
+    assert.equal(snapshot.lastOutbound.deferred, true);
+    assert.equal(snapshot.lastOutbound.prefixDelivered, false);
     assert.equal(snapshot.recentEvents.length, 1);
   } finally {
     fs.rmSync(filePath, { force: true });

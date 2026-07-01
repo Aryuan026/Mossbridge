@@ -157,6 +157,51 @@ test("asherie memory service writes warm/cold/cache layers and recalls them", as
   assert.equal(cacheFiles.some((name) => name.startsWith(`${SINGLE_USER_ID}__`)), true);
 });
 
+test("asherie memory service keeps attachment refs in conversation cache writeback", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-attachments-"));
+  const service = new AsherieMemoryService({
+    config: {
+      stateDir: tempRoot,
+      asherieDataRoot: path.join(tempRoot, "gateway-data"),
+    },
+  });
+
+  const writeback = await service.writebackTurn({
+    userId: "demo-user",
+    query: "看这张图",
+    assistantTextFinal: "我看到了这张图。",
+    incomingMessages: [{
+      role: "user",
+      content: "看这张图",
+      timestamp: "2026-05-05T10:00:01.000Z",
+      attachments: [{
+        kind: "image",
+        path: "inbox/2026-05-05/photo.jpg",
+        absolute_path: "/workspace/inbox/2026-05-05/photo.jpg",
+        note_path: "context/attachment-notes/photo.md",
+        note_absolute_path: "/workspace/context/attachment-notes/photo.md",
+        source_file_name: "photo.jpg",
+        content_type: "image/jpeg",
+        is_image: true,
+      }],
+    }],
+  });
+
+  assert.equal(writeback.ok, true);
+  const cacheDir = path.join(tempRoot, "gateway-data", "cache", "conversation_cache");
+  const cacheFiles = fs.readdirSync(cacheDir).filter((name) => name.endsWith(".jsonl"));
+  assert.equal(cacheFiles.length, 1);
+  const rows = fs.readFileSync(path.join(cacheDir, cacheFiles[0]), "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line));
+  const incoming = rows[0].incoming_messages[0];
+  assert.equal(incoming.attachments[0].path, "inbox/2026-05-05/photo.jpg");
+  assert.equal(incoming.attachment_refs[0].note_path, "context/attachment-notes/photo.md");
+  assert.equal(incoming.attachment_refs[0].absolute_path, "/workspace/inbox/2026-05-05/photo.jpg");
+  assert.equal(incoming.attachment_refs[0].is_image, true);
+});
+
 test("asherie memory service uses warm-triggered local archive when cold roots miss", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-local-archive-"));
   const service = new AsherieMemoryService({

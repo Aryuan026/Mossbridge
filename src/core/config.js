@@ -46,6 +46,7 @@ function readConfig() {
     reminderQueueFile: path.join(stateDir, "reminder-queue.json"),
     systemMessageQueueFile: path.join(stateDir, "system-message-queue.json"),
     deferredSystemReplyQueueFile: path.join(stateDir, "deferred-system-replies.json"),
+    deferredSystemReplyMaxAgeMinutes: clampInt(readBridgeIntEnv("DEFERRED_SYSTEM_REPLY_MAX_AGE_MINUTES"), 30, 1, 24 * 60),
     checkinConfigFile: path.join(stateDir, "checkin-config.json"),
     controlLedgerFile: path.join(stateDir, "control-events.jsonl"),
     memoryMetabolismStateFile: path.join(stateDir, "memory-metabolism-state.json"),
