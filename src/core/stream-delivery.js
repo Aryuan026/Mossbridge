@@ -202,6 +202,7 @@ class StreamDelivery {
     const created = {
       runKey,
       threadId,
+      runtimeId: this.runtimeId,
       bindingKey: "",
       replyTarget: null,
       suppressDelivery: this.consumeSuppressedRun(threadId),
@@ -715,6 +716,7 @@ class StreamDelivery {
         action: runtimeNotice.action,
         threadId: state?.threadId || "",
         provider: state?.replyTarget?.provider || "",
+        runtimeId: state?.runtimeId || this.runtimeId,
         text: sourceText,
       });
     } catch (error) {
@@ -780,6 +782,7 @@ function collectPendingReplyDeliveries(state, { force }) {
     }
     const runtimeNotice = shieldRuntimeNoticeForDelivery(sanitizedText, {
       provider: state?.replyTarget?.provider,
+      runtimeId: state?.runtimeId,
     });
     if (runtimeNotice.shielded) {
       pending.push(runtimeNotice.action === "replace"
@@ -949,7 +952,10 @@ function resolveSystemReplyDelivery(replyText, policy = createSystemReplyPolicy(
   if (!normalized) {
     return { kind: "invalid", reason: "final reply is empty" };
   }
-  const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, { provider: "system" });
+  const runtimeNotice = shieldRuntimeNoticeForDelivery(normalized, {
+    provider: "system",
+    runtimeId: policy?.runtimeId,
+  });
   if (runtimeNotice.shielded) {
     return { kind: "silent", reason: "runtime capacity notice", runtimeNotice };
   }

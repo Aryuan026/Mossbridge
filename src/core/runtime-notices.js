@@ -48,7 +48,7 @@ function isRuntimeCapacitySignal(text) {
   return kind === RUNTIME_NOTICE_KIND.CAPACITY || kind === RUNTIME_NOTICE_KIND.CAPACITY_WARNING;
 }
 
-function shieldRuntimeNoticeForDelivery(text, { provider = "" } = {}) {
+function shieldRuntimeNoticeForDelivery(text, { provider = "", runtimeId = "" } = {}) {
   const kind = classifyRuntimeNotice(text);
   if (!kind) {
     return { shielded: false, kind: RUNTIME_NOTICE_KIND.NONE, action: "pass", text };
@@ -61,7 +61,7 @@ function shieldRuntimeNoticeForDelivery(text, { provider = "" } = {}) {
       shielded: true,
       kind,
       action: "replace",
-      text: buildRuntimeCapacityNotice(text),
+      text: buildRuntimeCapacityNotice(text, { runtimeId }),
     };
   }
   if (kind === RUNTIME_NOTICE_KIND.CAPACITY_WARNING) {
@@ -69,7 +69,7 @@ function shieldRuntimeNoticeForDelivery(text, { provider = "" } = {}) {
       shielded: true,
       kind,
       action: "replace",
-      text: buildRuntimeCapacityWarningNotice(text),
+      text: buildRuntimeCapacityWarningNotice(text, { runtimeId }),
     };
   }
   return { shielded: true, kind, action: "silent", text: "" };
@@ -126,6 +126,9 @@ function resolveRuntimeLabel(runtimeId, text) {
   }
   if (normalizedRuntime === "codex") {
     return "Codex";
+  }
+  if (normalizedRuntime) {
+    return normalizeText(runtimeId);
   }
   const normalizedText = normalizeText(text);
   if (/\bclaude(?:\s+code)?\b/i.test(normalizedText)) {

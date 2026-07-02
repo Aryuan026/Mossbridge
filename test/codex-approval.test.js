@@ -312,7 +312,7 @@ test("handleApprovalCommand sends MCP elicitation responses back through the run
   assert.deepEqual(sent, ["✅ This request has been approved."]);
 });
 
-test("handleApprovalCommand does not pretend to support persistent Codex MCP tool approval from WeChat", async () => {
+test("handleApprovalCommand does not pretend to support persistent runtime MCP tool approval from WeChat", async () => {
   const responses = [];
   const sent = [];
   const approval = {
@@ -372,5 +372,5 @@ test("handleApprovalCommand does not pretend to support persistent Codex MCP too
   );
 
   assert.deepEqual(responses, []);
-  assert.deepEqual(sent, ["⚠️ Persistent approval for this Codex MCP tool request is not available from WeChat."]);
+  assert.deepEqual(sent, ["⚠️ Persistent approval for this runtime MCP tool request is not available from WeChat."]);
 });

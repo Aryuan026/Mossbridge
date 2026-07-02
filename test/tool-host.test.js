@@ -610,6 +610,23 @@ test("tool host exposes a read-only bridge status tool for heartbeat maintenance
   assert.equal(result.data.reminders.next_due_at, "2026-05-09T12:00:00.000Z");
 });
 
+test("bridge status uses config runtime instead of a hard-coded Codex fallback", async () => {
+  const host = createHost({
+    config: {
+      runtime: "localruntime",
+    },
+  });
+
+  const result = await host.invokeTool("mossbridge_bridge_status", {}, {
+    workspaceRoot: "/workspace",
+    senderId: "user-1",
+  });
+
+  assert.equal(result.data.runtime_id, "localruntime");
+  assert.match(result.text, /runtime=localruntime/);
+  assert.doesNotMatch(result.text, /runtime=codex/);
+});
+
 test("bridge status includes latest sticker delivery degradation", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-status-sticker-"));
   const stickerDeliveryAuditFile = path.join(tempRoot, "sticker-delivery-audit.json");

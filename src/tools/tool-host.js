@@ -2447,7 +2447,7 @@ function buildBridgeStatusSnapshot(
   const includeRuntime = args.includeRuntime !== false;
   const includeChannel = args.includeChannel !== false;
   const includeControl = args.includeControl !== false;
-  const runtimeId = normalizeText(context.runtimeId) || "codex";
+  const runtimeId = normalizeText(context.runtimeId) || normalizeText(config.runtime) || "runtime";
   const nowMs = Date.now();
   const snapshot = {
     ok: true,
@@ -2715,7 +2715,7 @@ function formatBridgeStatusSnapshot(snapshot = {}) {
     ? "disabled"
     : `${dailyBudget.weighted_tokens ?? 0}/${dailyBudget.token_budget ?? 0} weighted, ${dailyBudget.thread_count ?? 0}/${dailyBudget.thread_budget ?? 0} threads`;
   const lines = [
-    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "codex"} context=${usageText} checkinBudget=${budgetText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} controlEvents=${control.sample_size ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
+    `${snapshot.label || "Bridge"} status: systemQueue=${queue.system_pending ?? "n/a"} deferredReplies=${queue.deferred_replies ?? "n/a"} reminders=${reminders.pending_count ?? "n/a"} runtime=${snapshot.runtime_id || "runtime"} context=${usageText} checkinBudget=${budgetText} cooldowns=${runtime.active_cooldown_count ?? "n/a"} controlEvents=${control.sample_size ?? "n/a"} policy=${snapshot.maintenance?.action_level || "read_only_report"}`,
   ];
   const recommendation = Array.isArray(snapshot.recommendations) ? snapshot.recommendations[0] : null;
   if (recommendation?.message) {

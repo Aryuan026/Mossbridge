@@ -49,7 +49,7 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
         payload: {
           threadId: message.sessionId,
           turnId: message.turnId,
-          text: typeof message.text === "string" ? message.text : "❌ ClaudeCode request failed",
+          text: typeof message.text === "string" ? message.text : "❌ Runtime request failed",
           reason: normalizeString(message.reason),
         },
       };

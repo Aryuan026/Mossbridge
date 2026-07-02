@@ -150,6 +150,7 @@ class MossbridgeApp {
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
       sessionStore: this.runtimeAdapter.getSessionStore(),
+      runtimeId: this.runtimeAdapter.describe?.().id || this.config.runtime || "runtime",
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
       onRuntimeNotice: (payload) => this.recordRuntimeNotice(payload),
       onOutboundDelivery: (payload) => this.recordWeixinOutboundAudit(payload),
@@ -707,7 +708,7 @@ class MossbridgeApp {
     return queued;
   }
 
-  recordRuntimeNotice({ text = "", threadId = "", source = "", provider = "" } = {}) {
+  recordRuntimeNotice({ text = "", threadId = "", source = "", provider = "", runtimeId = "" } = {}) {
     if (!isRuntimeCapacitySignal(text)) {
       return null;
     }
@@ -715,7 +716,7 @@ class MossbridgeApp {
       return null;
     }
     const cooldown = this.runtimeCooldownStore.setCapacityCooldown({
-      runtimeId: this.config.runtime || "codex",
+      runtimeId: normalizeText(runtimeId) || this.runtimeAdapter?.describe?.().id || this.config?.runtime || "runtime",
       text,
       source: normalizeText(source) || normalizeText(provider) || "runtime_notice",
       threadId,
@@ -1169,14 +1170,15 @@ class MossbridgeApp {
   }
 
   async routePreparedInbound({ bindingKey, workspaceRoot, prepared }) {
-    const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(this.config.runtime || "codex");
+    const runtimeId = this.runtimeAdapter?.describe?.().id || this.config?.runtime || "runtime";
+    const cooldown = this.runtimeCooldownStore?.getActiveCooldown?.(runtimeId);
     if (cooldown) {
       this.recordControlEvent?.({
         type: "runtime.cooldown.blocked_turn",
         layer: CONTROL_LAYER.TACTICAL,
         scope: CONTROL_SCOPE.RUNTIME,
         source: "app.routePreparedInbound",
-        subject: this.config.runtime || "runtime",
+        subject: runtimeId,
         severity: CONTROL_SEVERITY.WARN,
         reason: cooldown.reason || "runtime_cooldown",
         outcome: "blocked",
@@ -1190,7 +1192,7 @@ class MossbridgeApp {
       await this.channelAdapter.sendText({
         userId: prepared.senderId,
         text: buildRuntimeCapacityNotice(cooldown.messagePreview || "", {
-          runtimeId: this.config.runtime || "codex",
+          runtimeId,
         }),
         contextToken: prepared.contextToken,
       }).catch(() => {});
@@ -1602,6 +1604,7 @@ class MossbridgeApp {
     const runtimeName = this.runtimeAdapter.describe().id || "runtime";
     const isCodex = runtimeName === "codex";
     const isClaudeCode = runtimeName === "claudecode";
+    const sharedCommands = buildSharedRuntimeCommands(runtimeName);
     const suppressVisibleStatus = shouldSuppressVisibleRuntimeStatus(normalized);
     const suppressNotice = suppressVisibleStatus || (openingTurn && isClaudeCode);
     const noticeTimeoutMs = suppressNotice
@@ -1723,9 +1726,9 @@ class MossbridgeApp {
           : "detail: runtime process did not emit a first event",
         `workspace: ${workspaceRoot}`,
         `thread: ${normalizedThreadId}`,
-        isCodex ? "check_1: npm run shared:status" : "check_1: npm run shared:status:claudecode",
-        isCodex ? "check_2: npm run shared:start" : "check_2: npm run shared:start:claudecode",
-        isCodex ? "check_3: npm run shared:open" : "check_3: npm run shared:open:claudecode",
+        `check_1: ${sharedCommands.status}`,
+        `check_2: ${sharedCommands.start}`,
+        `check_3: ${sharedCommands.open}`,
       ];
       this.recordControlEvent?.({
         type: "runtime.first_event.timeout",
@@ -3508,7 +3511,7 @@ class MossbridgeApp {
     if (approval?.kind === "mcp_tool_call" && command.name === "always") {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "⚠️ Persistent approval for this Codex MCP tool request is not available from WeChat.",
+        text: "⚠️ Persistent approval for this runtime MCP tool request is not available from WeChat.",
         contextToken: normalized.contextToken,
       });
       return;
@@ -3518,7 +3521,7 @@ class MossbridgeApp {
     if (!approvalResponse) {
       await this.channelAdapter.sendText({
         userId: normalized.senderId,
-        text: "⚠️ This Codex MCP request cannot be answered from WeChat yet.",
+        text: "⚠️ This runtime MCP request cannot be answered from WeChat yet.",
         contextToken: normalized.contextToken,
       });
       return;
@@ -4025,6 +4028,7 @@ class MossbridgeApp {
         threadId,
         source: "runtime_turn_failed",
         provider: target.provider,
+        runtimeId: this.runtimeAdapter?.describe?.().id || this.config?.runtime || "runtime",
       });
     }
     if (target.provider === "system" && isClaudeRuntimeFailureText(rawText)) {
@@ -4035,7 +4039,11 @@ class MossbridgeApp {
       }
       this.lastSystemFailureNoticeAtByKey.set(key, Date.now());
     }
-    const runtimeNotice = shieldRuntimeNoticeForDelivery(rawText, { provider: target.provider });
+    const runtimeId = this.runtimeAdapter?.describe?.().id || this.config?.runtime || "runtime";
+    const runtimeNotice = shieldRuntimeNoticeForDelivery(rawText, {
+      provider: target.provider,
+      runtimeId,
+    });
     if (runtimeNotice.shielded && runtimeNotice.action === "silent") {
       return;
     }
@@ -4043,7 +4051,7 @@ class MossbridgeApp {
       userId: target.userId,
       text: runtimeNotice.shielded
         ? runtimeNotice.text
-        : formatRuntimeFailureForUser(rawText, { provider: target.provider }),
+        : formatRuntimeFailureForUser(rawText, { provider: target.provider, runtimeId }),
       contextToken: target.contextToken,
     }).catch(() => {});
   }
@@ -5763,13 +5771,14 @@ function resolvePositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
+function formatRuntimeFailureForUser(text, { provider = "", runtimeId = "" } = {}) {
   const normalized = normalizeText(text) || "❌ Execution failed";
   const kind = classifyRuntimeFailureKind(normalized);
+  const runtimeLabel = formatRuntimeLabel(runtimeId);
   if (kind === "prompt_too_long") {
     return formatBridgeNotice("runtime_prompt_too_long", [
       "source: bridge",
-      "runtime: ClaudeCode",
+      `runtime: ${runtimeLabel}`,
       "status: prompt_too_long",
       "result: run_released",
       provider === "system"
@@ -5780,7 +5789,7 @@ function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
   if (kind === "bad_json") {
     return formatBridgeNotice("runtime_bad_json", [
       "source: bridge",
-      "runtime: ClaudeCode",
+      `runtime: ${runtimeLabel}`,
       "status: request_body_rejected",
       "result: run_isolated",
       "action: resend_request",
@@ -5789,7 +5798,7 @@ function formatRuntimeFailureForUser(text, { provider = "" } = {}) {
   if (kind === "api_error") {
     return formatBridgeNotice("runtime_api_error", [
       "source: bridge",
-      "runtime: ClaudeCode",
+      `runtime: ${runtimeLabel}`,
       "status: api_error",
       "result: run_released",
       "memory: not_recorded",
@@ -5809,6 +5818,29 @@ function formatRuntimeLabel(runtimeName) {
     return "Codex";
   }
   return normalizeText(runtimeName) || "runtime";
+}
+
+function buildSharedRuntimeCommands(runtimeName) {
+  return {
+    status: buildSharedRuntimeCommand("status", runtimeName),
+    start: buildSharedRuntimeCommand("start", runtimeName),
+    open: buildSharedRuntimeCommand("open", runtimeName),
+  };
+}
+
+function buildSharedRuntimeCommand(commandName, runtimeName) {
+  const command = normalizeText(commandName);
+  const runtime = normalizeText(runtimeName).toLowerCase();
+  if (!command) {
+    return "npm run shared:status";
+  }
+  if (runtime === "claudecode") {
+    return `npm run shared:${command}:claudecode`;
+  }
+  if (!runtime || runtime === "codex") {
+    return `npm run shared:${command}`;
+  }
+  return `MOSSBRIDGE_RUNTIME=${runtime} npm run shared:${command}`;
 }
 
 function formatModelStatusNotice({
@@ -6281,7 +6313,7 @@ function buildElicitationApprovalPromptText(approval) {
     out.push("👉 /no     cancel this request");
   }
   if (!supportedCommands.size) {
-    out.push("⚠️ This Codex MCP request cannot be answered from WeChat yet.");
+    out.push("⚠️ This runtime MCP request cannot be answered from WeChat yet.");
   }
 
   return out.join("\n");

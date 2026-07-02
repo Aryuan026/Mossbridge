@@ -718,6 +718,73 @@ test("user first-event failures still send a visible diagnostic after local turn
     const visible = calls.find((call) => call[0] === "text");
     assert.ok(visible);
     assert.match(visible[1], /status: first_event_timeout/);
+    assert.match(visible[1], /check_1: npm run shared:status:claudecode/);
+    assert.match(visible[1], /check_2: npm run shared:start:claudecode/);
+    assert.match(visible[1], /check_3: npm run shared:open:claudecode/);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("first-event diagnostics build command hints from the current runtime id", async () => {
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const timers = [];
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const sent = [];
+    const appLike = {
+      pendingRuntimeEventWatchdogs: new Map(),
+      clearRuntimeEventWatchdog: MossbridgeApp.prototype.clearRuntimeEventWatchdog,
+      runtimeAdapter: {
+        describe() {
+          return { id: "localruntime" };
+        },
+        getSessionStore() {
+          return {
+            getThreadIdForWorkspace() {
+              return "thread-localruntime";
+            },
+          };
+        },
+      },
+      channelAdapter: {
+        async sendTyping() {},
+        async sendText(payload) {
+          sent.push(payload.text);
+        },
+      },
+    };
+
+    MossbridgeApp.prototype.scheduleRuntimeEventWatchdog.call(appLike, {
+      bindingKey: "binding-user",
+      workspaceRoot: "/workspace",
+      normalized: {
+        provider: "weixin",
+        senderId: "user-1",
+        contextToken: "ctx-1",
+      },
+      threadId: "thread-localruntime",
+      openingTurn: false,
+    });
+
+    assert.deepEqual(timers.map((timer) => timer.delayMs), [8_000, 45_000]);
+    await timers[1].callback();
+
+    const visible = sent.find((text) => /status: first_event_timeout/.test(text));
+    assert.ok(visible);
+    assert.match(visible, /runtime: localruntime/);
+    assert.match(visible, /check_1: MOSSBRIDGE_RUNTIME=localruntime npm run shared:status/);
+    assert.match(visible, /check_2: MOSSBRIDGE_RUNTIME=localruntime npm run shared:start/);
+    assert.match(visible, /check_3: MOSSBRIDGE_RUNTIME=localruntime npm run shared:open/);
+    assert.doesNotMatch(visible, /shared:status:claudecode/);
   } finally {
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;

@@ -449,6 +449,7 @@ test("user runtime capacity notices are rewritten into bridge notices", async ()
 test("user runtime capacity warnings are rewritten and reported without hard cooldown copy", async () => {
   const notices = [];
   const { sent, streamDelivery } = createHarness({
+    runtimeId: "codex",
     onRuntimeNotice(payload) {
       notices.push(payload);
     },
@@ -468,11 +469,14 @@ test("user runtime capacity warnings are rewritten and reported without hard coo
 
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /^\[Mossbridge] runtime_usage_warning/);
+  assert.match(sent[0].text, /runtime: Codex/);
+  assert.doesNotMatch(sent[0].text, /runtime: ClaudeCode/);
   assert.match(sent[0].text, /status: usage_warning/);
   assert.match(sent[0].text, /result: runtime_still_available/);
   assert.doesNotMatch(sent[0].text, /继续接住|记忆断|你的消息没送到/);
   assert.equal(notices.length, 1);
   assert.equal(notices[0].kind, RUNTIME_NOTICE_KIND.CAPACITY_WARNING);
+  assert.equal(notices[0].runtimeId, "codex");
   assert.equal(notices[0].threadId, "thread-warning-user");
 });
 
