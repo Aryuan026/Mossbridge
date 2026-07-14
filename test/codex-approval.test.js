@@ -1,9 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const { MossbridgeApp } = require("../src/core/app");
 const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
+const { readLatestCodexSessionTokenUsage } = require("../src/adapters/runtime/codex/session-usage");
 const {
   buildCodexMcpConfigArgs,
   resolveCodexProjectToolMcpServerConfig,
@@ -130,6 +133,210 @@ test("codex MCP env resolver keeps runtime paths but excludes secrets", () => {
     MOSSBRIDGE_ACCOUNT_ID: "account-1",
     MOSSBRIDGE_IDENTITY_USER_ID: "owner",
   });
+});
+
+test("codex token count events map current usage separately from cumulative totals", () => {
+  const directEvent = mapCodexMessageToRuntimeEvent({
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      thread_id: "thread-direct",
+      info: {
+        thread_id: "thread-direct-info",
+        model_context_window: 200000,
+        last_token_usage: {
+          input_tokens: 1200,
+          cached_input_tokens: 300,
+          output_tokens: 80,
+          reasoning_output_tokens: 20,
+          total_tokens: 1600,
+        },
+        total_token_usage: {
+          input_tokens: 100000,
+          cached_input_tokens: 90000,
+          output_tokens: 8000,
+          reasoning_output_tokens: 2000,
+          total_tokens: 200000,
+        },
+      },
+    },
+  });
+
+  assert.equal(directEvent.type, "runtime.context.updated");
+  assert.equal(directEvent.payload.runtimeId, "codex");
+  assert.equal(directEvent.payload.threadId, "thread-direct");
+  assert.equal(directEvent.payload.currentTokens, 1600);
+  assert.equal(directEvent.payload.contextWindow, 200000);
+  assert.equal(directEvent.payload.cachedInputTokens, 300);
+  assert.equal(directEvent.payload.reasoningTokens, 20);
+  assert.equal(directEvent.payload.cumulativeTotalTokens, 200000);
+
+  const rpcEvent = mapCodexMessageToRuntimeEvent({
+    method: "event_msg",
+    params: {
+      msg: {
+        type: "token_count",
+        info: {
+          thread_id: "thread-rpc",
+          model_context_window: 200000,
+          last_token_usage: {
+            input_tokens: 5000,
+            cached_input_tokens: 2000,
+            output_tokens: 400,
+            reasoning_output_tokens: 50,
+            total_tokens: 7450,
+          },
+          total_token_usage: {
+            input_tokens: 500000,
+            cached_input_tokens: 200000,
+            output_tokens: 40000,
+            reasoning_output_tokens: 5000,
+            total_tokens: 745000,
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(rpcEvent.type, "runtime.context.updated");
+  assert.equal(rpcEvent.payload.threadId, "thread-rpc");
+  assert.equal(rpcEvent.payload.currentTokens, 7450);
+  assert.equal(rpcEvent.payload.cumulativeTotalTokens, 745000);
+});
+
+test("codex token count current context uses last usage, not cumulative session total", () => {
+  const event = mapCodexMessageToRuntimeEvent({
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      thread_id: "thread-large-cumulative",
+      info: {
+        model_context_window: 258400,
+        last_token_usage: {
+          input_tokens: 237160,
+          cached_input_tokens: 235392,
+          output_tokens: 119,
+          total_tokens: 237279,
+        },
+        total_token_usage: {
+          input_tokens: 55000000,
+          cached_input_tokens: 54000000,
+          output_tokens: 416639,
+          total_tokens: 55416639,
+        },
+      },
+    },
+  });
+
+  assert.equal(event.payload.currentTokens, 237279);
+  assert.equal(event.payload.cumulativeTotalTokens, 55416639);
+});
+
+test("codex session usage fallback reads latest token_count from session jsonl", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-codex-session-"));
+  const threadId = "019f10de-9207-7542-aca5-258214d683d9";
+  const sessionDir = path.join(tempRoot, "sessions", "2026", "06", "29");
+  const sessionFile = path.join(sessionDir, `rollout-2026-06-29T08-54-09-${threadId}.jsonl`);
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(sessionFile, [
+      JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { total_tokens: 100 }, model_context_window: 258400 } } }),
+      JSON.stringify({
+        timestamp: "2026-07-01T12:21:30.335Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 237160,
+              cached_input_tokens: 235392,
+              output_tokens: 119,
+              total_tokens: 237279,
+            },
+            total_token_usage: {
+              total_tokens: 55416639,
+            },
+            model_context_window: 258400,
+          },
+        },
+      }),
+    ].join("\n"));
+
+    const usage = readLatestCodexSessionTokenUsage({ threadId, codexHome: tempRoot });
+
+    assert.equal(usage.runtimeId, "codex");
+    assert.equal(usage.threadId, threadId);
+    assert.equal(usage.currentTokens, 237279);
+    assert.equal(usage.contextWindow, 258400);
+    assert.equal(usage.cumulativeTotalTokens, 55416639);
+    assert.equal(usage.source, "codex_session_jsonl");
+    assert.equal(usage.sourceFile, sessionFile);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("recordLatestRuntimeSessionContextUsage stores Codex jsonl fallback without session refresh", () => {
+  const recorded = [];
+  let refreshChecked = false;
+  const appLike = {
+    config: {},
+    runtimeAdapter: {
+      describe() {
+        return { id: "codex" };
+      },
+      getLatestContextUsage({ threadId }) {
+        assert.equal(threadId, "thread-jsonl");
+        return {
+          runtimeId: "codex",
+          threadId,
+          currentTokens: 237279,
+          contextWindow: 258400,
+          source: "codex_session_jsonl",
+        };
+      },
+      getSessionStore() {
+        return {
+          findBindingForThreadId(threadId) {
+            assert.equal(threadId, "thread-jsonl");
+            return {
+              bindingKey: "binding-jsonl",
+              workspaceRoot: "/workspace",
+            };
+          },
+        };
+      },
+    },
+    runtimeContextUsageStore: {
+      recordContext(snapshot) {
+        recorded.push(snapshot);
+      },
+    },
+    maybeQueueAutoSessionRefreshForPressure() {
+      refreshChecked = true;
+      return { id: "should-not-run" };
+    },
+    pendingAutoCompactByThreadId: new Map(),
+    lastAutoCompactAtByThreadId: new Map(),
+    recordRuntimeContextUsage: MossbridgeApp.prototype.recordRuntimeContextUsage,
+  };
+
+  const usage = MossbridgeApp.prototype.recordLatestRuntimeSessionContextUsage.call(appLike, {
+    type: "runtime.turn.completed",
+    payload: {
+      threadId: "thread-jsonl",
+      turnId: "turn-jsonl",
+    },
+  });
+
+  assert.equal(usage.currentTokens, 237279);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].runtimeId, "codex");
+  assert.equal(recorded[0].threadId, "thread-jsonl");
+  assert.equal(recorded[0].workspaceRoot, "/workspace");
+  assert.equal(recorded[0].bindingKey, "binding-jsonl");
+  assert.equal(recorded[0].source, "codex_session_jsonl");
+  assert.equal(refreshChecked, false);
 });
 
 test("codex MCP elicitation approvals map to runtime approval events", () => {

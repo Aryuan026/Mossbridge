@@ -41,9 +41,10 @@ const MEMORY_MUTATION_TOOL_NAMES = new Set([
 ]);
 
 class ProjectToolHost {
-  constructor({ services, runtimeContextStore }) {
+  constructor({ services, runtimeContextStore, toolInvocationAuditStore = null }) {
     this.services = services;
     this.runtimeContextStore = runtimeContextStore;
+    this.toolInvocationAuditStore = toolInvocationAuditStore;
     this.extraToolHosts = createExtraToolHosts(services);
   }
 
@@ -59,6 +60,34 @@ class ProjectToolHost {
   }
 
   async invokeTool(toolName, args = {}, context = {}) {
+    const startedAtMs = Date.now();
+    const auditContext = this.resolveContext(context);
+    const toolProfile = normalizeToolProfile(context.toolProfile);
+    try {
+      const result = await this.invokeToolWithoutAudit(toolName, args, context);
+      this.toolInvocationAuditStore?.append?.({
+        toolName,
+        toolProfile,
+        context: auditContext,
+        startedAtMs,
+        completedAtMs: Date.now(),
+        result,
+      });
+      return result;
+    } catch (error) {
+      this.toolInvocationAuditStore?.append?.({
+        toolName,
+        toolProfile,
+        context: auditContext,
+        startedAtMs,
+        completedAtMs: Date.now(),
+        error,
+      });
+      throw error;
+    }
+  }
+
+  async invokeToolWithoutAudit(toolName, args = {}, context = {}) {
     const normalizedToolProfile = normalizeToolProfile(context.toolProfile);
     if (!isToolAllowedInProfile(toolName, normalizedToolProfile)) {
       throw new Error(`Tool ${toolName} is not available in ${normalizedToolProfile} profile.`);

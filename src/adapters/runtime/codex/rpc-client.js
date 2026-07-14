@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const os = require("os");
+const path = require("path");
 const WebSocket = require("ws");
 const { buildCodexMcpConfigArgs } = require("./mcp-config");
 
@@ -147,6 +148,7 @@ class CodexRpcClient {
 
   async sendUserMessage({ threadId, text, attachments = [], model = null, modelProvider = null, effort = null, accessMode = null, workspaceRoot = "" }) {
     const input = buildTurnInputPayload({ text, attachments });
+    const attachmentSandboxRoots = buildAttachmentSandboxRoots(attachments);
     return threadId
       ? this.sendRequest("turn/start", buildTurnStartParams({
         threadId,
@@ -156,7 +158,7 @@ class CodexRpcClient {
         effort,
         accessMode,
         workspaceRoot,
-        extraWritableRoots: this.extraWritableRoots,
+        extraWritableRoots: [...this.extraWritableRoots, ...attachmentSandboxRoots],
       }))
       : this.sendRequest("thread/start", buildStartThreadParams({ input, model, modelProvider }));
   }
@@ -383,7 +385,7 @@ function buildTurnInputPayload({ text, attachments = [] }) {
     input.push({ type: "text", text: normalizedText });
   }
   for (const attachment of Array.isArray(attachments) ? attachments : []) {
-    const absolutePath = normalizeNonEmptyString(attachment?.absolutePath);
+    const absolutePath = resolveLocalImagePath(attachment);
     if (!absolutePath) {
       continue;
     }
@@ -393,6 +395,40 @@ function buildTurnInputPayload({ text, attachments = [] }) {
     });
   }
   return input;
+}
+
+function buildAttachmentSandboxRoots(attachments = []) {
+  const roots = [];
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    const absolutePath = resolveLocalImagePath(attachment);
+    if (absolutePath) {
+      roots.push(path.dirname(absolutePath));
+    }
+  }
+  return normalizeWritableRoots(roots);
+}
+
+function resolveLocalImagePath(attachment = {}) {
+  const candidate = normalizeNonEmptyString(attachment?.absolutePath);
+  if (!candidate || !path.isAbsolute(candidate) || !isImageAttachment(attachment)) {
+    return "";
+  }
+  const resolvedPath = path.resolve(candidate);
+  const parent = path.dirname(resolvedPath);
+  return parent && parent !== path.parse(resolvedPath).root ? resolvedPath : "";
+}
+
+function isImageAttachment(attachment = {}) {
+  if (attachment?.isImage === true) {
+    return true;
+  }
+  const contentType = normalizeNonEmptyString(attachment?.contentType || attachment?.mimeType).toLowerCase();
+  if (contentType.startsWith("image/")) {
+    return true;
+  }
+  return /\.(?:avif|bmp|gif|heic|heif|jpe?g|png|webp)$/i.test(
+    normalizeNonEmptyString(attachment?.fileName || attachment?.absolutePath),
+  );
 }
 
 function buildTurnStartParams({ threadId, input, model, modelProvider, effort, accessMode, workspaceRoot, extraWritableRoots = [] }) {

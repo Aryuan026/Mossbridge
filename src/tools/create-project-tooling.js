@@ -10,6 +10,7 @@ const { StickerService } = require("../services/sticker-service");
 const { SystemMessageService } = require("../services/system-message-service");
 const { TimelineService } = require("../services/timeline-service");
 const { MemoryMetabolismService } = require("../services/memory-metabolism-service");
+const { ToolInvocationAuditStore } = require("../core/tool-invocation-audit-store");
 const { RuntimeContextStore } = require("./runtime-context-store");
 const { ProjectToolHost } = require("./tool-host");
 const { WhereaboutsService } = require("whereabouts-mcp");
@@ -23,6 +24,9 @@ function createProjectTooling(config, options = {}) {
   const timelineIntegration = options.timelineIntegration || createTimelineIntegration(config);
   const runtimeContextStore = options.runtimeContextStore || new RuntimeContextStore({
     filePath: config.projectToolContextFile,
+  });
+  const toolInvocationAuditStore = options.toolInvocationAuditStore || new ToolInvocationAuditStore({
+    filePath: config.toolInvocationAuditFile,
   });
   const channelFileService = new ChannelFileService({ config, channelAdapter, sessionStore });
   const asherieMemory = new AsherieMemoryService({ config });
@@ -63,12 +67,14 @@ function createProjectTooling(config, options = {}) {
   const toolHost = new ProjectToolHost({
     services,
     runtimeContextStore,
+    toolInvocationAuditStore,
   });
   return {
     services,
     domains,
     toolHost,
     runtimeContextStore,
+    toolInvocationAuditStore,
   };
 }
 

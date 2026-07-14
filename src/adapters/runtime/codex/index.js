@@ -13,6 +13,7 @@ const {
 const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
 const { normalizeToolProfile, resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
+const { readLatestCodexSessionTokenUsage } = require("./session-usage");
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
@@ -108,6 +109,12 @@ function createCodexRuntimeAdapter(config) {
     },
     getSessionStore() {
       return sessionStore;
+    },
+    getLatestContextUsage({ threadId = "" } = {}) {
+      return readLatestCodexSessionTokenUsage({
+        threadId,
+        codexHome: config.codexHome,
+      });
     },
     getTurnCapabilities({ model = "" } = {}) {
       const forcedNativeImageInput = config.codexNativeImageInput;

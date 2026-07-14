@@ -51,7 +51,10 @@ test("codex rpc client uses turn/interrupt for stop requests", async () => {
 });
 
 test("codex rpc client sends image attachments as local images", async () => {
-  const client = new CodexRpcClient({ endpoint: "ws://127.0.0.1:8765" });
+  const client = new CodexRpcClient({
+    endpoint: "ws://127.0.0.1:8765",
+    extraWritableRoots: ["/state"],
+  });
   const calls = [];
   client.sendRequest = async (method, params) => {
     calls.push({ method, params });
@@ -64,6 +67,12 @@ test("codex rpc client sends image attachments as local images", async () => {
     attachments: [{
       absolutePath: path.join("/tmp", "mossbridge image.jpg"),
       contentType: "image/jpeg",
+    }, {
+      absolutePath: path.join("/tmp", "notes.txt"),
+      contentType: "text/plain",
+    }, {
+      absolutePath: "relative-image.png",
+      contentType: "image/png",
     }],
   });
 
@@ -75,6 +84,7 @@ test("codex rpc client sends image attachments as local images", async () => {
       path: "/tmp/mossbridge image.jpg",
     },
   ]);
+  assert.deepEqual(calls[0].params.sandboxPolicy.writableRoots, ["/state", "/tmp"]);
 });
 
 test("codex rpc client includes model provider on thread start, resume, and turn start", async () => {

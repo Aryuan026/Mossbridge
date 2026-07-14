@@ -14,10 +14,11 @@ const {
 } = require("../shared/approval-command");
 
 function mapCodexMessageToRuntimeEvent(message) {
-  if (message?.type === "event_msg" && message?.payload?.type === "token_count") {
+  const eventPayload = extractCodexEventPayload(message);
+  if (eventPayload?.type === "token_count") {
     return {
       type: "runtime.context.updated",
-      payload: normalizeContextPayload(message),
+      payload: normalizeContextPayload(eventPayload),
     };
   }
   const method = normalizeString(message?.method);
@@ -114,18 +115,50 @@ function mapCodexMessageToRuntimeEvent(message) {
   return null;
 }
 
-function normalizeContextPayload(message) {
-  const payload = message?.payload || {};
+function extractCodexEventPayload(message) {
+  if (message?.type === "event_msg") {
+    return firstObject(message.payload, message.params?.payload, message.params?.msg, message.params);
+  }
+  if (normalizeString(message?.method) === "event_msg") {
+    return firstObject(message.params?.payload, message.params?.msg, message.params);
+  }
+  return null;
+}
+
+function firstObject(...values) {
+  for (const value of values) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizeContextPayload(payload) {
+  return normalizeCodexTokenCountPayload(payload);
+}
+
+function normalizeCodexTokenCountPayload(payload) {
   const info = payload?.info || {};
-  const total = info?.total_token_usage || {};
+  const last = info?.last_token_usage && typeof info.last_token_usage === "object"
+    ? info.last_token_usage
+    : {};
+  const cumulative = info?.total_token_usage && typeof info.total_token_usage === "object"
+    ? info.total_token_usage
+    : {};
   return {
     runtimeId: "codex",
     threadId: normalizeString(payload?.thread_id || info?.thread_id),
-    inputTokens: numberOrZero(total.input_tokens),
-    cachedInputTokens: numberOrZero(total.cached_input_tokens),
-    outputTokens: numberOrZero(total.output_tokens),
-    reasoningTokens: numberOrZero(total.reasoning_output_tokens),
-    currentTokens: numberOrZero(total.total_tokens),
+    inputTokens: numberOrZero(last.input_tokens),
+    cachedInputTokens: numberOrZero(last.cached_input_tokens),
+    outputTokens: numberOrZero(last.output_tokens),
+    reasoningTokens: numberOrZero(last.reasoning_output_tokens),
+    currentTokens: numberOrZero(last.total_tokens),
+    cumulativeInputTokens: numberOrZero(cumulative.input_tokens),
+    cumulativeCachedInputTokens: numberOrZero(cumulative.cached_input_tokens),
+    cumulativeOutputTokens: numberOrZero(cumulative.output_tokens),
+    cumulativeReasoningTokens: numberOrZero(cumulative.reasoning_output_tokens),
+    cumulativeTotalTokens: numberOrZero(cumulative.total_tokens),
     contextWindow: numberOrZero(info?.model_context_window),
   };
 }
@@ -320,4 +353,7 @@ function numberOrZero(value) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
 
-module.exports = { mapCodexMessageToRuntimeEvent };
+module.exports = {
+  mapCodexMessageToRuntimeEvent,
+  normalizeCodexTokenCountPayload,
+};

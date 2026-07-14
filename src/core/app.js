@@ -1775,9 +1775,9 @@ class MossbridgeApp {
     this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
   }
 
-  recordRuntimeContextUsage(event) {
+  recordRuntimeContextUsage(event, { allowAutomation = true } = {}) {
     if (event?.type !== "runtime.context.updated") {
-      return;
+      return null;
     }
     const payload = event.payload || {};
     const runtimeId = normalizeText(payload.runtimeId) || this.runtimeAdapter.describe().id || "";
@@ -1792,13 +1792,16 @@ class MossbridgeApp {
       config: this.config,
     });
     this.runtimeContextUsageStore?.recordContext?.(usage);
+    if (!allowAutomation) {
+      return usage;
+    }
     const sessionRefresh = this.maybeQueueAutoSessionRefreshForPressure?.({ usage, linked });
     if (sessionRefresh?.id) {
-      return;
+      return usage;
     }
     const decision = evaluateClaudeAutoCompact(usage, this.config);
     if (!decision.shouldCompact || !threadId) {
-      return;
+      return usage;
     }
     const lastRequestedAt = Number(this.lastAutoCompactAtByThreadId.get(threadId)) || 0;
     const minIntervalMs = Math.max(60_000, Number(this.config.claudeAutoCompactMinIntervalMs) || 0);
@@ -1812,6 +1815,34 @@ class MossbridgeApp {
       workspaceRoot: linked?.workspaceRoot || "",
       bindingKey: linked?.bindingKey || "",
     });
+    return usage;
+  }
+
+  recordLatestRuntimeSessionContextUsage(event) {
+    if (event?.type !== "runtime.turn.completed" && event?.type !== "runtime.turn.failed") {
+      return null;
+    }
+    const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id);
+    if (runtimeId !== "codex" || typeof this.runtimeAdapter?.getLatestContextUsage !== "function") {
+      return null;
+    }
+    const threadId = normalizeCommandArgument(event?.payload?.threadId);
+    if (!threadId) {
+      return null;
+    }
+    const usage = this.runtimeAdapter.getLatestContextUsage({ threadId });
+    if (!usage || !Number.isFinite(Number(usage.currentTokens)) || Number(usage.currentTokens) <= 0) {
+      return null;
+    }
+    this.recordRuntimeContextUsage({
+      type: "runtime.context.updated",
+      payload: {
+        ...usage,
+        threadId: usage.threadId || threadId,
+        runtimeId,
+      },
+    }, { allowAutomation: false });
+    return usage;
   }
 
   maybeQueueAutoSessionRefreshForPressure({ usage = {}, linked = null } = {}) {
@@ -3813,6 +3844,7 @@ class MossbridgeApp {
         sessionStore.clearThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
       }
       await this.writebackRuntimeTurn({ event, linked });
+      this.recordLatestRuntimeSessionContextUsage?.(event);
       const scopeKey = linked?.bindingKey && linked?.workspaceRoot
         ? buildScopeKey(linked.bindingKey, linked.workspaceRoot)
         : "";

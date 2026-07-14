@@ -569,8 +569,34 @@ function createHost(overrides = {}) {
         return {};
       },
     },
+    toolInvocationAuditStore: overrides.toolInvocationAuditStore || null,
   });
 }
+
+test("tool host writes an audit receipt from the actual invocation hook", async () => {
+  const receipts = [];
+  const host = createHost({
+    toolInvocationAuditStore: {
+      append(receipt) {
+        receipts.push(receipt);
+      },
+    },
+  });
+
+  const result = await host.invokeTool("mossbridge_sticker_send", { stickerId: "stk_001" }, {
+    runtimeId: "codex",
+    threadId: "thread-tool-audit",
+    bindingKey: "binding-tool-audit",
+    toolProfile: "foreground",
+  });
+
+  assert.equal(result.data.stickerId, "stk_001");
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].toolName, "mossbridge_sticker_send");
+  assert.equal(receipts[0].toolProfile, "foreground");
+  assert.equal(receipts[0].context.threadId, "thread-tool-audit");
+  assert.equal(Object.hasOwn(receipts[0], "args"), false);
+});
 
 test("tool host rejects legacy timeline write CLI-shaped fields", async () => {
   const host = createHost();
