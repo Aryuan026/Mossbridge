@@ -114,9 +114,14 @@ MOSSBRIDGE_CODEX_MODEL_PROVIDER=
 MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
+# Optional alpha: ordinary Codex foreground chat companion base. Default off.
+MOSSBRIDGE_CODEX_COMPANION_PROFILE=false
+# MOSSBRIDGE_CODEX_COMPANION_INSTRUCTIONS_FILE=
 ```
 
 These `MOSSBRIDGE_CODEX_*` variables do not configure Claude Code. If `MOSSBRIDGE_RUNTIME=claudecode`, leave Codex-only variables unused unless the user is preparing a separate Codex runtime smoke.
+
+`MOSSBRIDGE_CODEX_COMPANION_PROFILE=true` is optional and reversible. In the public alpha it applies only to ordinary Codex foreground chat by sending a short neutral base instruction through `thread/start` and `thread/resume`; it does not rewrite task/full/check-in lanes, does not change the MCP tool surface, and does not provide process-level Codex home isolation.
 
 For shared runtime behavior, keep using the neutral variables:
 

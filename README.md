@@ -102,9 +102,14 @@ MOSSBRIDGE_CODEX_MODEL_PROVIDER=
 MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
+# Optional alpha: ordinary Codex foreground chat companion base. Default off.
+MOSSBRIDGE_CODEX_COMPANION_PROFILE=false
+# MOSSBRIDGE_CODEX_COMPANION_INSTRUCTIONS_FILE=
 ```
 
 For local providers such as Ollama, copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) outside the repo, make it executable, and set `MOSSBRIDGE_CODEX_COMMAND` to that copy.
+
+`MOSSBRIDGE_CODEX_COMPANION_PROFILE=true` is an optional alpha foreground-chat aid for Codex. It sends the neutral [templates/codex-companion-base.md](./templates/codex-companion-base.md) content through `thread/start` and `thread/resume` with `personality=none`, only for the ordinary foreground Codex lane. It is off by default, does not affect Claude Code, and does not claim process-level Codex home isolation in this public preview.
 
 ## Access Control
 

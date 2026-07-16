@@ -14,6 +14,7 @@ const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
 const { normalizeToolProfile, resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
 const { readLatestCodexSessionTokenUsage } = require("./session-usage");
+const { buildCodexCompanionDiagnostics, prepareCodexCompanionProfile } = require("./companion-profile");
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
@@ -22,6 +23,11 @@ function createCodexRuntimeAdapter(config) {
   const eventListeners = new Set();
   const configuredModel = normalizeText(config.codexModel);
   const configuredModelProvider = normalizeText(config.codexModelProvider);
+  const companionProfile = prepareCodexCompanionProfile({
+    enabled: config.codexCompanionProfile === true,
+    instructionsFile: config.codexCompanionInstructionsFile,
+  });
+  const companionDeliveryVerifiedByProfile = new Map();
 
   function resolveModel(model = "", storedParams = null) {
     if (configuredModel) {
@@ -57,6 +63,57 @@ function createCodexRuntimeAdapter(config) {
       clientsByProfile.set(normalizedToolProfile, runtimeClient);
     }
     return runtimeClient;
+  }
+
+  function shouldUseCompanionForToolProfile(toolProfile) {
+    return companionProfile.applied === true && normalizeToolProfile(toolProfile) === "foreground";
+  }
+
+  function companionThreadOverrides(toolProfile) {
+    if (!shouldUseCompanionForToolProfile(toolProfile)) {
+      return {};
+    }
+    return {
+      baseInstructions: companionProfile.baseInstructions,
+      personality: companionProfile.personality,
+    };
+  }
+
+  function markCompanionDeliveryVerified(toolProfile) {
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    if (!shouldUseCompanionForToolProfile(normalizedToolProfile)) {
+      return;
+    }
+    companionDeliveryVerifiedByProfile.set(normalizedToolProfile, true);
+    const readyState = readyStateByProfile.get(normalizedToolProfile);
+    if (readyState) {
+      readyState.companionProfile = companionDiagnosticsForProfile(normalizedToolProfile);
+    }
+  }
+
+  function companionDiagnosticsForProfile(toolProfile) {
+    const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    return buildCodexCompanionDiagnostics(companionProfile, {
+      deliveryVerified: companionDeliveryVerifiedByProfile.get(normalizedToolProfile) === true,
+    });
+  }
+
+  async function startRuntimeThread(runtimeClient, params, toolProfile) {
+    const overrides = companionThreadOverrides(toolProfile);
+    const response = await runtimeClient.startThread({ ...params, ...overrides });
+    if (overrides.baseInstructions) {
+      markCompanionDeliveryVerified(toolProfile);
+    }
+    return response;
+  }
+
+  async function resumeRuntimeThread(runtimeClient, params, toolProfile) {
+    const overrides = companionThreadOverrides(toolProfile);
+    const response = await runtimeClient.resumeThread({ ...params, ...overrides });
+    if (overrides.baseInstructions) {
+      markCompanionDeliveryVerified(toolProfile);
+    }
+    return response;
   }
 
   function resolveToolProfileForOperation({ bindingKey = "", threadId = "", metadata = {}, toolProfile = "" } = {}) {
@@ -95,6 +152,7 @@ function createCodexRuntimeAdapter(config) {
         sessionsFile: config.sessionsFile,
         model: configuredModel,
         modelProvider: configuredModelProvider,
+        companionProfile: companionDiagnosticsForProfile("foreground"),
       };
     },
     createClient() {
@@ -147,6 +205,7 @@ function createCodexRuntimeAdapter(config) {
         endpoint: config.codexEndpoint || "(spawn)",
         models,
         toolProfile,
+        companionProfile: companionDiagnosticsForProfile(toolProfile),
       };
       readyStateByProfile.set(toolProfile, nextReadyState);
       return nextReadyState;
@@ -195,11 +254,11 @@ function createCodexRuntimeAdapter(config) {
       const toolProfile = resolveToolProfileForOperation({ bindingKey, threadId });
       const runtimeClient = ensureClient({ toolProfile });
       await this.initialize({ toolProfile });
-      return runtimeClient.resumeThread({
+      return resumeRuntimeThread(runtimeClient, {
         threadId,
         model: configuredModel,
         modelProvider: configuredModelProvider,
-      });
+      }, toolProfile);
     },
     async compactThread({ threadId, bindingKey = "" } = {}) {
       const toolProfile = resolveToolProfileForOperation({ bindingKey, threadId });
@@ -208,15 +267,16 @@ function createCodexRuntimeAdapter(config) {
       return runtimeClient.compactThread({ threadId });
     },
     async refreshThreadInstructions({ threadId, workspaceRoot, model = "", modelProvider = "" }) {
-      const runtimeClient = ensureClient();
-      await this.initialize();
+      const toolProfile = "foreground";
+      const runtimeClient = ensureClient({ toolProfile });
+      await this.initialize({ toolProfile });
       const refreshText = buildInstructionRefreshText(config);
       const desiredModel = resolveModel(model, { modelProvider });
-      await runtimeClient.resumeThread({
+      await resumeRuntimeThread(runtimeClient, {
         threadId,
         model: desiredModel,
         modelProvider: configuredModelProvider,
-      });
+      }, toolProfile);
       const completion = waitForTurnCompletion(runtimeClient, threadId);
       await runtimeClient.sendUserMessage({
         threadId,
@@ -254,11 +314,11 @@ function createCodexRuntimeAdapter(config) {
       const skipOpeningInstructions = Boolean(metadata?.skipOpeningInstructions);
       let outboundText = skipOpeningInstructions ? buildSystemWakeTurnText(config, text) : text;
       if (!threadId) {
-        const response = await runtimeClient.startThread({
+        const response = await startRuntimeThread(runtimeClient, {
           cwd: workspaceRoot,
           model: desiredModel,
           modelProvider: desiredModelProvider,
-        });
+        }, toolProfile);
         threadId = extractThreadId(response);
         if (!threadId) {
           throw new Error("thread/start did not return a thread id");
@@ -266,17 +326,17 @@ function createCodexRuntimeAdapter(config) {
         sessionStore.setThreadIdForWorkspace(bindingKey, workspaceRoot, threadId, metadata);
         outboundText = skipOpeningInstructions ? buildSystemWakeTurnText(config, text) : buildOpeningTurnText(config, text);
       } else {
-        await runtimeClient.resumeThread({
+        await resumeRuntimeThread(runtimeClient, {
           threadId,
           model: desiredModel,
           modelProvider: desiredModelProvider,
-        }).catch(async () => {
+        }, toolProfile).catch(async () => {
           sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
-          const recreated = await runtimeClient.startThread({
+          const recreated = await startRuntimeThread(runtimeClient, {
             cwd: workspaceRoot,
             model: desiredModel,
             modelProvider: desiredModelProvider,
-          });
+          }, toolProfile);
           threadId = extractThreadId(recreated);
           if (!threadId) {
             throw new Error("thread/start did not return a thread id");

@@ -133,3 +133,40 @@ test("codex rpc client includes model provider on thread start, resume, and turn
   assert.equal(calls[3].params.modelProvider, "ollama");
   assert.deepEqual(calls[3].params.input, [{ type: "text", text: "opening" }]);
 });
+
+test("codex rpc client can send thread instruction overrides on start and resume", async () => {
+  const client = new CodexRpcClient({ endpoint: "ws://127.0.0.1:8765" });
+  const calls = [];
+  client.sendRequest = async (method, params) => {
+    calls.push({ method, params });
+    return { ok: true };
+  };
+
+  await client.startThread({
+    cwd: "/workspace",
+    baseInstructions: "base",
+    developerInstructions: "developer",
+    personality: "none",
+  });
+  await client.resumeThread({
+    threadId: "thread-1",
+    baseInstructions: "base",
+    developerInstructions: "developer",
+    personality: "none",
+  });
+  await client.startThread({
+    cwd: "/workspace",
+    personality: "unsupported",
+  });
+
+  assert.equal(calls[0].method, "thread/start");
+  assert.equal(calls[0].params.baseInstructions, "base");
+  assert.equal(calls[0].params.developerInstructions, "developer");
+  assert.equal(calls[0].params.personality, "none");
+  assert.equal(calls[1].method, "thread/resume");
+  assert.equal(calls[1].params.baseInstructions, "base");
+  assert.equal(calls[1].params.developerInstructions, "developer");
+  assert.equal(calls[1].params.personality, "none");
+  assert.equal(calls[2].params.personality, undefined);
+  assert.equal(calls[2].params.baseInstructions, undefined);
+});

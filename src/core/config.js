@@ -122,6 +122,9 @@ function readConfig() {
     codexModel: readBridgeTextEnv("CODEX_MODEL"),
     codexModelProvider: readBridgeTextEnv("CODEX_MODEL_PROVIDER"),
     codexNativeImageInput: readBridgeOptionalBoolEnv("CODEX_NATIVE_IMAGE_INPUT"),
+    codexCompanionProfile: readBridgeBoolEnv("CODEX_COMPANION_PROFILE"),
+    codexCompanionInstructionsFile: readBridgeTextEnv("CODEX_COMPANION_INSTRUCTIONS_FILE")
+      || path.resolve(__dirname, "..", "..", "templates", "codex-companion-base.md"),
     modelChoices: readBridgeListEnv("MODEL_CHOICES"),
     codexModelChoices: readBridgeListEnv("CODEX_MODEL_CHOICES"),
     claudeCommand: readBridgeTextEnv("CLAUDE_COMMAND") || "claude",

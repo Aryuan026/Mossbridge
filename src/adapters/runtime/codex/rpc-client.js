@@ -163,11 +163,18 @@ class CodexRpcClient {
       : this.sendRequest("thread/start", buildStartThreadParams({ input, model, modelProvider }));
   }
 
-  async startThread({ cwd, model = "", modelProvider = "" }) {
-    return this.sendRequest("thread/start", buildStartThreadParams({ cwd, model, modelProvider }));
+  async startThread({ cwd, model = "", modelProvider = "", baseInstructions = "", developerInstructions = "", personality = "" }) {
+    return this.sendRequest("thread/start", buildStartThreadParams({
+      cwd,
+      model,
+      modelProvider,
+      baseInstructions,
+      developerInstructions,
+      personality,
+    }));
   }
 
-  async resumeThread({ threadId, model = "", modelProvider = "" }) {
+  async resumeThread({ threadId, model = "", modelProvider = "", baseInstructions = "", developerInstructions = "", personality = "" }) {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       throw new Error("thread/resume requires a non-empty threadId");
@@ -181,6 +188,7 @@ class CodexRpcClient {
     if (normalizedModelProvider) {
       params.modelProvider = normalizedModelProvider;
     }
+    applyInstructionOverrides(params, { baseInstructions, developerInstructions, personality });
     return this.sendRequest("thread/resume", params);
   }
 
@@ -347,7 +355,7 @@ function normalizeNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function buildStartThreadParams({ cwd, input, model, modelProvider }) {
+function buildStartThreadParams({ cwd, input, model, modelProvider, baseInstructions = "", developerInstructions = "", personality = "" }) {
   const params = {};
   const normalizedCwd = normalizeNonEmptyString(cwd);
   const normalizedModel = normalizeNonEmptyString(model);
@@ -364,7 +372,32 @@ function buildStartThreadParams({ cwd, input, model, modelProvider }) {
   if (normalizedModelProvider) {
     params.modelProvider = normalizedModelProvider;
   }
+  applyInstructionOverrides(params, { baseInstructions, developerInstructions, personality });
   return params;
+}
+
+function applyInstructionOverrides(params, { baseInstructions = "", developerInstructions = "", personality = "" } = {}) {
+  const normalizedBaseInstructions = normalizeNonEmptyString(baseInstructions);
+  const normalizedDeveloperInstructions = normalizeNonEmptyString(developerInstructions);
+  const normalizedPersonality = normalizePersonality(personality);
+  if (normalizedBaseInstructions) {
+    params.baseInstructions = normalizedBaseInstructions;
+  }
+  if (normalizedDeveloperInstructions) {
+    params.developerInstructions = normalizedDeveloperInstructions;
+  }
+  if (normalizedPersonality) {
+    params.personality = normalizedPersonality;
+  }
+  return params;
+}
+
+function normalizePersonality(value) {
+  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  if (normalized === "none" || normalized === "friendly" || normalized === "pragmatic") {
+    return normalized;
+  }
+  return "";
 }
 
 function buildListThreadsParams({ cursor, limit, sortKey }) {
