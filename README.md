@@ -6,7 +6,7 @@ Mossbridge, or 苔藓小桥, is a local-first WeChat bridge for Codex and Claude
 
 This is suitable today for technical users who can read logs, run local CLIs, and keep state/data directories separate. It is not marked Stable or Production Ready.
 
-Mossbridge is derived from [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss). It is a modified fork, not an official Cyberboss release. See [NOTICE.md](./NOTICE.md) and [LICENSE](./LICENSE). The license is `AGPL-3.0-only`.
+Mossbridge is derived from [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss). It is a modified fork, not an official Cyberboss release, and follows the same `AGPL-3.0-only` license. See [NOTICE.md](./NOTICE.md) and [LICENSE](./LICENSE).
 
 ## Current Status
 
@@ -266,4 +266,4 @@ See [docs/commands.md](./docs/commands.md).
 
 ## License
 
-Mossbridge is released under `AGPL-3.0-only`. If you modify it and provide it as a network service, follow the AGPL source-disclosure requirements.
+Mossbridge follows upstream cyberboss under `AGPL-3.0-only`. This public alpha is shared for self-hosting, study, and prototype evaluation. See [LICENSE](./LICENSE) for the full license text.

@@ -6,7 +6,7 @@ Mossbridge 是一个本地优先的 WeChat bridge，用来把 Codex 或 Claude C
 
 当前适合能读日志、会运行本地 CLI、能分清 state/data/workspace 的技术用户自托管。它还不是 Stable，也不宣称 Production Ready。
 
-Mossbridge 从 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 修改分叉而来，不是 Cyberboss 官方版本。来源与许可见 [NOTICE.md](./NOTICE.md) 和 [LICENSE](./LICENSE)。本仓库使用 `AGPL-3.0-only`。
+Mossbridge 从 [WenXiaoWendy/cyberboss](https://github.com/WenXiaoWendy/cyberboss) 修改分叉而来，不是 Cyberboss 官方版本，并沿用上游的 `AGPL-3.0-only` 许可。来源与许可见 [NOTICE.md](./NOTICE.md) 和 [LICENSE](./LICENSE)。
 
 ## 当前状态
 
@@ -261,4 +261,4 @@ npm run shared:refresh-session
 
 ## License
 
-Mossbridge 使用 `AGPL-3.0-only`。如果你修改它并通过网络向用户提供服务，需要遵守 AGPL 的源码提供要求。
+Mossbridge 沿用上游 cyberboss 的 `AGPL-3.0-only`。当前公开 alpha 主要面向自托管、学习和原型验证；完整许可文本见 [LICENSE](./LICENSE)。
