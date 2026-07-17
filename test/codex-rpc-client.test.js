@@ -50,6 +50,41 @@ test("codex rpc client uses turn/interrupt for stop requests", async () => {
   }]);
 });
 
+test("codex rpc client removes a request when the transport cannot send it", async () => {
+  const client = new CodexRpcClient({ endpoint: "ws://127.0.0.1:8765" });
+
+  await assert.rejects(
+    () => client.sendRequest("thread/list", {}),
+    /Codex websocket is not connected/,
+  );
+  assert.equal(client.pending.size, 0);
+});
+
+test("codex rpc client rejects all pending requests when its transport closes", async () => {
+  const client = new CodexRpcClient({ endpoint: "" });
+  client.child = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      write() {},
+    },
+  };
+
+  const pending = client.sendRequest("thread/list", {});
+  const rejected = assert.rejects(pending, (error) => {
+    assert.equal(error.code, "CODEX_TRANSPORT_CLOSED");
+    assert.match(error.message, /transport closed/);
+    return true;
+  });
+  client.handleTransportClosed("Codex process transport closed");
+
+  await rejected;
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.isReady, false);
+});
+
 test("codex rpc client sends image attachments as local images", async () => {
   const client = new CodexRpcClient({
     endpoint: "ws://127.0.0.1:8765",

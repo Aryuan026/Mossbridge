@@ -77,8 +77,8 @@ class CodexRpcClient {
     }
 
     this.child = child;
-    child.on("error", () => {
-      this.isReady = false;
+    child.on("error", (error) => {
+      this.handleTransportClosed(error instanceof Error ? error.message : "Codex process transport error");
     });
     child.stdout.on("data", (chunk) => {
       this.stdoutBuffer += chunk.toString("utf8");
@@ -92,10 +92,10 @@ class CodexRpcClient {
       }
     });
     child.on("close", () => {
-      this.isReady = false;
       if (this.child === child) {
         this.child = null;
       }
+      this.handleTransportClosed("Codex process transport closed");
     });
   }
 
@@ -112,10 +112,10 @@ class CodexRpcClient {
         }
       });
       socket.on("close", () => {
-        this.isReady = false;
         if (this.socket === socket) {
           this.socket = null;
         }
+        this.handleTransportClosed("Codex websocket transport closed");
       });
     });
   }
@@ -242,6 +242,7 @@ class CodexRpcClient {
       this.child = null;
     }
     this.isReady = false;
+    this.rejectPendingRequests("Codex transport closed");
   }
 
   async sendRequest(method, params) {
@@ -250,8 +251,31 @@ class CodexRpcClient {
     const responsePromise = new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    this.sendRaw(payload);
+    try {
+      this.sendRaw(payload);
+    } catch (error) {
+      this.pending.delete(id);
+      throw error;
+    }
     return responsePromise;
+  }
+
+  handleTransportClosed(message = "Codex transport closed") {
+    this.isReady = false;
+    this.rejectPendingRequests(message);
+  }
+
+  rejectPendingRequests(message = "Codex transport closed") {
+    if (!this.pending.size) {
+      return;
+    }
+    const error = new Error(message);
+    error.code = "CODEX_TRANSPORT_CLOSED";
+    const requests = [...this.pending.values()];
+    this.pending.clear();
+    for (const request of requests) {
+      request.reject(error);
+    }
   }
 
   async sendNotification(method, params) {

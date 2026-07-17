@@ -2,10 +2,14 @@ const { spawn } = require("child_process");
 const {
   rootDir,
   listenUrl,
+  appServerRecoveryRequestFile,
   bridgePidFile,
   writePidFile,
   removePidFileIfMatches,
   ensureSharedAppServer,
+  readSharedAppServerRecoveryRequest,
+  clearSharedAppServerRecoveryRequest,
+  recycleSharedAppServer,
   ensureBridgeNotRunning,
 } = require("./shared-common");
 
@@ -13,6 +17,7 @@ async function main() {
   const runtime = process.env.MOSSBRIDGE_RUNTIME || "codex";
   const supervise = process.env.MOSSBRIDGE_SHARED_SUPERVISE !== "0";
   let shuttingDown = false;
+  let recoveryInProgress = false;
   let restartCount = 0;
   console.log(`starting shared bridge runtime=${runtime}`);
   if (supervise) {
@@ -36,20 +41,28 @@ async function main() {
   const isCodex = runtime === "codex";
   if (isCodex) {
     childEnv.MOSSBRIDGE_CODEX_ENDPOINT = listenUrl;
+    childEnv.MOSSBRIDGE_SHARED_RECOVERY_REQUEST_FILE = appServerRecoveryRequestFile;
   }
 
   let child = null;
 
   const startChild = () => {
-    child = spawn(process.execPath, ["./bin/mossbridge.js", "start"], {
+    const startedChild = spawn(process.execPath, ["./bin/mossbridge.js", "start"], {
       cwd: rootDir,
       env: childEnv,
       stdio: "inherit",
     });
-    writePidFile(bridgePidFile, child.pid);
+    child = startedChild;
+    writePidFile(bridgePidFile, startedChild.pid);
 
-    child.on("exit", (code, signal) => {
-      removePidFileIfMatches(bridgePidFile, child.pid);
+    startedChild.on("exit", (code, signal) => {
+      removePidFileIfMatches(bridgePidFile, startedChild.pid);
+      if (child === startedChild) {
+        child = null;
+      }
+      if (recoveryInProgress) {
+        return;
+      }
       if (shuttingDown || signal) {
         if (signal && !shuttingDown) {
           process.kill(process.pid, signal);
@@ -71,8 +84,80 @@ async function main() {
     });
   };
 
+  const stopBridgeForRecovery = async () => {
+    const runningChild = child;
+    if (!runningChild || runningChild.exitCode != null || runningChild.signalCode) {
+      return;
+    }
+    await new Promise((resolve) => {
+      let settled = false;
+      let forceTimer = null;
+      let doneTimer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(forceTimer);
+        clearTimeout(doneTimer);
+        resolve();
+      };
+      runningChild.once("exit", finish);
+      runningChild.kill("SIGTERM");
+      forceTimer = setTimeout(() => {
+        if (runningChild.exitCode == null && !runningChild.signalCode) {
+          runningChild.kill("SIGKILL");
+        }
+      }, 8_000);
+      doneTimer = setTimeout(finish, 10_000);
+    });
+    if (runningChild.exitCode == null && !runningChild.signalCode) {
+      throw new Error("Bridge child did not stop before shared app-server recovery");
+    }
+  };
+
+  const recoverSharedAppServer = async () => {
+    if (shuttingDown || recoveryInProgress) {
+      return;
+    }
+    const request = readSharedAppServerRecoveryRequest();
+    if (!request) {
+      return;
+    }
+    recoveryInProgress = true;
+    console.warn(
+      `shared app-server recovery starting reason=${request.reason} action_replay_allowed=false`
+    );
+    try {
+      await stopBridgeForRecovery();
+      const recovered = await recycleSharedAppServer();
+      clearSharedAppServerRecoveryRequest();
+      restartCount = 0;
+      console.log(`shared app-server recovery complete status=${recovered.status} pid=${recovered.pid || 0}`);
+      if (!shuttingDown) {
+        recoveryInProgress = false;
+        startChild();
+      }
+    } catch (error) {
+      console.error(`shared app-server recovery failed: ${error.message || String(error)}`);
+      if (!shuttingDown && !child) {
+        recoveryInProgress = false;
+        startChild();
+      }
+    } finally {
+      recoveryInProgress = false;
+    }
+  };
+
+  const recoveryTimer = isCodex
+    ? setInterval(() => {
+        void recoverSharedAppServer();
+      }, 1_000)
+    : null;
+
   const stop = (signal) => {
     shuttingDown = true;
+    if (recoveryTimer) {
+      clearInterval(recoveryTimer);
+    }
     if (child && !child.killed) {
       child.kill(signal);
     }

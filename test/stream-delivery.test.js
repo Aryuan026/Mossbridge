@@ -74,7 +74,7 @@ async function runCompletedTurn(streamDelivery, { threadId, turnId, itemId, text
     type: "runtime.reply.completed",
     payload: { threadId, turnId, itemId, text },
   });
-  await streamDelivery.handleRuntimeEvent({
+  return streamDelivery.handleRuntimeEvent({
     type: "runtime.turn.completed",
     payload: { threadId, turnId },
   });
@@ -107,6 +107,88 @@ test("system silent JSON is suppressed", async () => {
   });
 
   assert.deepEqual(sent, []);
+});
+
+test("ordinary replies replace raw MCP transport failures with a bounded no-retry notice", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-mcp-closed", {
+    userId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+  });
+
+  const result = await runCompletedTurn(streamDelivery, {
+    threadId: "thread-mcp-closed",
+    turnId: "turn-mcp-closed",
+    itemId: "item-mcp-closed",
+    text: "Transport closed",
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "Mossbridge: the tool channel closed before returning a result. This turn was not retried automatically, so the same action is not run twice.");
+  assert.deepEqual(result, {
+    mcpTransportFailure: {
+      reason: "transport_closed_before_toolhost",
+      actionReplayAllowed: false,
+      toolOutcomeReached: false,
+    },
+  });
+});
+
+test("ordinary discussion of a transport error is not rewritten without tool failure context", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-transport-discussion", {
+    userId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+  });
+  const text = "我在代码审查里看到了 Transport closed，但这里是在解释日志。";
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-transport-discussion",
+    turnId: "turn-transport-discussion",
+    itemId: "item-transport-discussion",
+    text,
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, text);
+});
+
+test("MCP transport recovery waits for turn completion", async () => {
+  const { sent, streamDelivery } = createHarness();
+  streamDelivery.queueReplyTargetForThread("thread-mcp-recovery", {
+    userId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+  });
+
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: { threadId: "thread-mcp-recovery", turnId: "turn-mcp-recovery" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.reply.completed",
+    payload: {
+      threadId: "thread-mcp-recovery",
+      turnId: "turn-mcp-recovery",
+      itemId: "item-1",
+      text: "tool call failed for mcp: Transport closed",
+    },
+  });
+  assert.equal(sent.length, 1);
+
+  const result = await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.completed",
+    payload: { threadId: "thread-mcp-recovery", turnId: "turn-mcp-recovery" },
+  });
+  assert.deepEqual(result, {
+    mcpTransportFailure: {
+      reason: "transport_closed_before_toolhost",
+      actionReplayAllowed: false,
+      toolOutcomeReached: false,
+    },
+  });
 });
 
 test("suppressNextRunForThread suppresses one ordinary reply run", async () => {

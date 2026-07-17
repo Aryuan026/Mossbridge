@@ -23,6 +23,7 @@ const { CheckinConfigStore, parseCheckinRangeMinutes, resolveDefaultCheckinRange
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("./default-targets");
 const { resolveWorkspaceOfficePaths } = require("./workspace-office-layout");
 const { StreamDelivery } = require("./stream-delivery");
+const { createCodexMcpTransportRecoveryRequester } = require("./codex-mcp-transport-recovery");
 const { ThreadStateStore } = require("./thread-state-store");
 const { RuntimeCooldownStore } = require("./runtime-cooldown-store");
 const { RuntimeContextUsageStore } = require("./runtime-context-usage-store");
@@ -147,6 +148,9 @@ class MossbridgeApp {
     this.residentAnchorPreludeKeys = new Set();
     this.stableTurnGuidanceKeys = new Set();
     this.systemMessageDispatcher = null;
+    this.requestCodexMcpTransportRecovery = createCodexMcpTransportRecoveryRequester({
+      filePath: process.env.MOSSBRIDGE_SHARED_RECOVERY_REQUEST_FILE || "",
+    });
     this.streamDelivery = new StreamDelivery({
       channelAdapter: this.channelAdapter,
       sessionStore: this.runtimeAdapter.getSessionStore(),
@@ -3815,7 +3819,7 @@ class MossbridgeApp {
           turnId: event?.payload?.turnId,
         })
       : null;
-    await this.streamDelivery.handleRuntimeEvent(event);
+    const deliveryResult = await this.streamDelivery.handleRuntimeEvent(event);
     if (!event) {
       return;
     }
@@ -3902,6 +3906,15 @@ class MossbridgeApp {
         }
         if (typeof this.recordBackgroundRuntimeSuccess === "function") {
           this.recordBackgroundRuntimeSuccess({ event });
+        }
+        if (
+          deliveryResult?.mcpTransportFailure
+          && typeof this.requestCodexMcpTransportRecovery === "function"
+        ) {
+          const recovery = this.requestCodexMcpTransportRecovery();
+          console.warn(
+            `[mossbridge] MCP transport recovery requested=${recovery.requested} reason=${recovery.reason}`
+          );
         }
         if (typeof this.maybeCloseIdleSystemRuntimeClient === "function") {
           await this.maybeCloseIdleSystemRuntimeClient({ event, linked });

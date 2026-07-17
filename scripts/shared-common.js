@@ -2,7 +2,7 @@ const fs = require("fs");
 const http = require("http");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { execFileSync, spawn } = require("child_process");
 const dotenv = require("dotenv");
 
 loadEnv();
@@ -15,6 +15,7 @@ const logDir = path.join(stateDir, "logs");
 const appServerPidFile = path.join(logDir, "shared-app-server.pid");
 const bridgePidFile = path.join(logDir, "shared-wechat.pid");
 const appServerLogFile = path.join(logDir, "shared-app-server.log");
+const appServerRecoveryRequestFile = path.join(logDir, "shared-app-server-recovery.json");
 const accountsDir = path.join(stateDir, "accounts");
 const sessionFile = process.env.MOSSBRIDGE_SESSIONS_FILE || path.join(stateDir, "sessions.json");
 
@@ -119,6 +120,197 @@ function checkReadyz() {
       resolve(false);
     });
   });
+}
+
+function readSharedAppServerRecoveryRequest() {
+  try {
+    return parseSharedAppServerRecoveryRequest(fs.readFileSync(appServerRecoveryRequestFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function parseSharedAppServerRecoveryRequest(raw) {
+  try {
+    const parsed = JSON.parse(String(raw || ""));
+    if (
+      parsed?.schema_version !== "codex_mcp_transport_recovery.v1"
+      || parsed?.reason !== "transport_closed_before_toolhost"
+      || parsed?.action_replay_allowed !== false
+      || parsed?.tool_outcome_reached !== false
+      || parsed?.request_contains_tool_arguments !== false
+      || parsed?.request_contains_user_text !== false
+    ) {
+      return null;
+    }
+    return {
+      reason: parsed.reason,
+      requestedAt: normalizeText(parsed.requested_at),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearSharedAppServerRecoveryRequest() {
+  fs.rmSync(appServerRecoveryRequestFile, { force: true });
+}
+
+function readProcessTable() {
+  if (process.platform === "win32") {
+    return [];
+  }
+  try {
+    const raw = execFileSync(
+      "ps",
+      ["-ax", "-o", "pid=,ppid=,pgid=,sid=,command="],
+      { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    );
+    return parseProcessTable(raw);
+  } catch {
+    return [];
+  }
+}
+
+function parseProcessTable(raw) {
+  return String(raw || "")
+    .split(/\r?\n/u)
+    .map((line) => line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/u))
+    .filter(Boolean)
+    .map((match) => ({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      pgid: Number(match[3]),
+      sid: Number(match[4]),
+      command: normalizeText(match[5]),
+    }));
+}
+
+function isOwnedSharedAppServerCommand(command) {
+  const normalized = normalizeText(command);
+  return /(?:^|[\s/])codex(?:\.js)?(?:\s|$)/u.test(normalized)
+    && /(?:^|\s)app-server(?:\s|$)/u.test(normalized)
+    && normalized.includes(listenUrl);
+}
+
+function signalDetachedProcessGroup(pid, signal) {
+  if (process.platform === "win32") {
+    throw new Error("shared app-server process-group recovery is unavailable on Windows");
+  }
+  try {
+    process.kill(-Number(pid), signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      throw error;
+    }
+  }
+}
+
+function resolveOwnedSharedAppServerSession(leaderPid, processTable = []) {
+  const numericLeaderPid = Number(leaderPid);
+  if (!Number.isInteger(numericLeaderPid) || numericLeaderPid <= 0) {
+    return null;
+  }
+  const entries = Array.isArray(processTable) ? processTable : [];
+  const leader = entries.find((entry) => Number(entry?.pid) === numericLeaderPid) || null;
+  if (
+    !leader
+    || Number(leader.sid) !== numericLeaderPid
+    || Number(leader.pgid) !== numericLeaderPid
+    || !isOwnedSharedAppServerCommand(leader.command)
+  ) {
+    return null;
+  }
+  const sessionEntries = entries.filter((entry) => Number(entry?.sid) === numericLeaderPid);
+  const processGroups = listProcessGroupsForSession(numericLeaderPid, entries);
+  if (!processGroups.includes(numericLeaderPid)) {
+    return null;
+  }
+  return {
+    leaderPid: numericLeaderPid,
+    sessionId: numericLeaderPid,
+    processCount: sessionEntries.length,
+    processGroups,
+  };
+}
+
+function listProcessGroupsForSession(sessionId, processTable = []) {
+  const numericSessionId = Number(sessionId);
+  return Array.from(new Set(
+    (Array.isArray(processTable) ? processTable : [])
+      .filter((entry) => Number(entry?.sid) === numericSessionId)
+      .map((entry) => Number(entry?.pgid))
+      .filter((pgid) => Number.isInteger(pgid) && pgid > 0),
+  )).sort((left, right) => {
+    if (left === numericSessionId) return 1;
+    if (right === numericSessionId) return -1;
+    return left - right;
+  });
+}
+
+function signalSharedAppServerSession(sessionId, signal, { processTable, signalGroup }) {
+  const processGroups = listProcessGroupsForSession(sessionId, processTable);
+  for (const pgid of processGroups) {
+    signalGroup(pgid, signal);
+  }
+  return processGroups;
+}
+
+async function recycleSharedAppServer({
+  readPid = () => readPidFile(appServerPidFile),
+  pidAlive = isPidAlive,
+  processTable = readProcessTable,
+  signalGroup = signalDetachedProcessGroup,
+  readyCheck = checkReadyz,
+  ensure = ensureSharedAppServer,
+  wait = sleep,
+  gracefulAttempts = 25,
+  forceAttempts = 10,
+} = {}) {
+  const pid = Number(readPid()) || 0;
+  const ready = await readyCheck();
+  if (!pid || !pidAlive(pid)) {
+    if (ready) {
+      throw new Error("refusing to recycle shared app-server with an unknown live listener");
+    }
+    if (pid) {
+      removePidFileIfMatches(appServerPidFile, pid);
+    }
+    return ensure();
+  }
+
+  const ownedSession = resolveOwnedSharedAppServerSession(pid, processTable());
+  if (!ownedSession) {
+    throw new Error("refusing to recycle a pid/session not owned by the shared Codex app-server");
+  }
+
+  signalSharedAppServerSession(pid, "SIGTERM", {
+    processTable: processTable(),
+    signalGroup,
+  });
+  for (let index = 0; index < gracefulAttempts; index += 1) {
+    if (listProcessGroupsForSession(pid, processTable()).length === 0 && !(await readyCheck())) {
+      break;
+    }
+    await wait(200);
+  }
+  if (listProcessGroupsForSession(pid, processTable()).length > 0 || await readyCheck()) {
+    signalSharedAppServerSession(pid, "SIGKILL", {
+      processTable: processTable(),
+      signalGroup,
+    });
+    for (let index = 0; index < forceAttempts; index += 1) {
+      if (listProcessGroupsForSession(pid, processTable()).length === 0 && !(await readyCheck())) {
+        break;
+      }
+      await wait(200);
+    }
+  }
+  if (listProcessGroupsForSession(pid, processTable()).length > 0 || await readyCheck()) {
+    throw new Error("shared Codex app-server session did not stop cleanly");
+  }
+  removePidFileIfMatches(appServerPidFile, pid);
+  return ensure();
 }
 
 async function waitForReadyz({ attempts = 10, delayMs = 300 } = {}) {
@@ -320,6 +512,7 @@ module.exports = {
   appServerPidFile,
   bridgePidFile,
   appServerLogFile,
+  appServerRecoveryRequestFile,
   accountsDir,
   sessionFile,
   ensureLogDir,
@@ -328,6 +521,13 @@ module.exports = {
   writePidFile,
   removePidFileIfMatches,
   ensureSharedAppServer,
+  readSharedAppServerRecoveryRequest,
+  parseSharedAppServerRecoveryRequest,
+  parseProcessTable,
+  clearSharedAppServerRecoveryRequest,
+  isOwnedSharedAppServerCommand,
+  resolveOwnedSharedAppServerSession,
+  recycleSharedAppServer,
   ensureBridgeNotRunning,
   resolveBoundThread,
 };

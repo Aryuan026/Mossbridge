@@ -1,8 +1,10 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
 const { recordAiReply } = require("./activity-tracker");
+const { isCodexMcpTransportFailureText } = require("./codex-mcp-transport-recovery");
 const { RUNTIME_NOTICE_KIND, shieldRuntimeNoticeForDelivery } = require("./runtime-notices");
 
 const CURRENT_REPLY_HEADER = "===== [Mossbridge] current_runtime_reply =====";
+const MCP_TRANSPORT_FAILURE_REPLY = "Mossbridge: the tool channel closed before returning a result. This turn was not retried automatically, so the same action is not run twice.";
 
 class StreamDelivery {
   constructor({
@@ -181,8 +183,17 @@ class StreamDelivery {
         state.turnId = turnId || state.turnId;
         this.captureTurnCompletionText(state, event.payload.text);
         await this.flush(state, { force: true });
+        const result = state.mcpTransportFailureObserved
+          ? {
+              mcpTransportFailure: {
+                reason: "transport_closed_before_toolhost",
+                actionReplayAllowed: false,
+                toolOutcomeReached: false,
+              },
+            }
+          : null;
         this.disposeRunState(state.runKey);
-        return;
+        return result;
       }
       case "runtime.turn.failed":
         this.disposeRunState(buildRunKey(threadId, turnId));
@@ -215,6 +226,7 @@ class StreamDelivery {
       flushPromise: null,
       sequence: this.runSequence += 1,
       threadReplyTargetAttached: false,
+      mcpTransportFailureObserved: false,
     };
     this.stateByRunKey.set(runKey, created);
     this.attachReplyTarget(created);
@@ -429,7 +441,11 @@ class StreamDelivery {
       return;
     }
 
-    const baseText = delivery.kind === "action" ? delivery.message : delivery.text;
+    const rawBaseText = delivery.kind === "action" ? delivery.message : delivery.text;
+    if (isCodexMcpTransportFailureText(rawBaseText)) {
+      state.mcpTransportFailureObserved = true;
+    }
+    const baseText = shieldMcpTransportFailureReply(rawBaseText);
     if (!baseText) {
       return;
     }
@@ -1231,6 +1247,14 @@ function isTransientDeliveryFailure(error) {
     || message.includes("econnreset")
     || message.includes("etimedout")
     || message.includes("eai_again");
+}
+
+function shieldMcpTransportFailureReply(text) {
+  const normalized = normalizeText(text);
+  if (!normalized || !isCodexMcpTransportFailureText(normalized)) {
+    return text;
+  }
+  return MCP_TRANSPORT_FAILURE_REPLY;
 }
 
 function normalizeNumericErrorCode(value) {
