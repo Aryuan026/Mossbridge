@@ -118,6 +118,7 @@ function readConfig() {
     syncBufferDir: path.join(stateDir, "sync-buffers"),
     codexEndpoint: readBridgeTextEnv("CODEX_ENDPOINT"),
     codexCommand: readBridgeTextEnv("CODEX_COMMAND"),
+    codexRpcRequestTimeoutMs: clampInt(readBridgeIntEnv("CODEX_RPC_REQUEST_TIMEOUT_MS"), 45_000, 5_000, 120_000),
     codexHome: readBridgeTextEnv("CODEX_HOME") || readTextEnv("CODEX_HOME") || path.join(os.homedir(), ".codex"),
     codexModel: readBridgeTextEnv("CODEX_MODEL"),
     codexModelProvider: readBridgeTextEnv("CODEX_MODEL_PROVIDER"),

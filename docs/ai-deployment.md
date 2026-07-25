@@ -113,6 +113,7 @@ MOSSBRIDGE_CODEX_MODEL=
 MOSSBRIDGE_CODEX_MODEL_PROVIDER=
 MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
+MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS=45000
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 # Optional alpha: ordinary Codex foreground chat companion base. Default off.
 MOSSBRIDGE_CODEX_COMPANION_PROFILE=false
@@ -134,6 +135,7 @@ MOSSBRIDGE_WORKSPACE_ROOT=
 MOSSBRIDGE_ALLOWED_USER_IDS=
 MOSSBRIDGE_ENABLE_CHECKIN=
 MOSSBRIDGE_ENABLE_DREAMING=
+# Leave unset for runtime-aware defaults: Codex about 76%, Claude Code/others 92%.
 MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT=
 ```
 
@@ -142,6 +144,8 @@ MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT=
 The recommended default is the repository-root `.env`; `MOSSBRIDGE_ENV_FILE` is an advanced path for wrappers or services, and shared scripts plus the app entrypoint read it with the same priority.
 
 Do not fork shared behavior into two `.env` files unless the user is deliberately running two separate deployments with separate state/data/workspace roots.
+
+Session refresh is a queued boundary action, not an immediate runtime kill. Codex can queue from live context telemetry or the read-only session JSONL fallback when the snapshot belongs to the bound thread. The queued request waits for the next normal foreground user message; check-in, dreaming, and other system turns must not consume it.
 
 Do not set migration-only memory overrides for a first deployment:
 

@@ -101,10 +101,14 @@ MOSSBRIDGE_CODEX_MODEL=
 MOSSBRIDGE_CODEX_MODEL_PROVIDER=
 MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
+# 可选：环境变量会被限制在 5000..120000 ms。
+MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS=45000
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 ```
 
 如果接 Ollama 等本地 provider，把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到仓库外、设为可执行，再让 `MOSSBRIDGE_CODEX_COMMAND` 指向复制后的脚本。
+
+session pressure refresh 是排队刷新，不是立刻硬切。`MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` 留空时使用 runtime-aware 默认值：Codex 按实际 context window 约 76% 排队，Claude Code 和其他 runtime 用 92%。排队后只在下一条普通前台用户消息边界应用，保留短 recent-tail grace；check-in、dreaming 等 system turn 不会消费这张刷新单。设为 `0` 可关闭，或在部署实测后填写明确百分比。
 
 ## 访问控制
 

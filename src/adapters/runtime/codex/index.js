@@ -49,6 +49,7 @@ function createCodexRuntimeAdapter(config) {
         env: process.env,
         extraWritableRoots: [config.stateDir],
         mcpServerConfig: resolveCodexProjectToolMcpServerConfig({ toolProfile: normalizedToolProfile }),
+        requestTimeoutMs: config.codexRpcRequestTimeoutMs,
       });
       runtimeClient.__mossbridgeToolProfile = normalizedToolProfile;
       runtimeClient.onMessage((message) => {

@@ -14,12 +14,20 @@ const CODEX_CLIENT_INFO = {
 };
 
 class CodexRpcClient {
-  constructor({ endpoint = "", env = process.env, codexCommand = "", extraWritableRoots = [], mcpServerConfig = null }) {
+  constructor({
+    endpoint = "",
+    env = process.env,
+    codexCommand = "",
+    extraWritableRoots = [],
+    mcpServerConfig = null,
+    requestTimeoutMs = 45_000,
+  }) {
     this.endpoint = endpoint;
     this.env = env;
     this.codexCommand = codexCommand || resolveDefaultCodexCommand(env);
     this.extraWritableRoots = normalizeWritableRoots(extraWritableRoots);
     this.mcpServerConfig = mcpServerConfig;
+    this.requestTimeoutMs = normalizeRequestTimeoutMs(requestTimeoutMs);
     this.mode = endpoint ? "websocket" : "spawn";
     this.socket = null;
     this.child = null;
@@ -245,16 +253,27 @@ class CodexRpcClient {
     this.rejectPendingRequests("Codex transport closed");
   }
 
-  async sendRequest(method, params) {
+  async sendRequest(method, params, { timeoutMs = this.requestTimeoutMs } = {}) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const payload = JSON.stringify({ id, method, params });
+    const payload = serializeJsonRpcMessage({ id, method, params });
+    const effectiveTimeoutMs = normalizeRequestTimeoutMs(timeoutMs);
     const responsePromise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) {
+          return;
+        }
+        this.pending.delete(id);
+        pending.reject(buildRequestTimeoutError(method, effectiveTimeoutMs));
+      }, effectiveTimeoutMs);
+      this.pending.set(id, { resolve, reject, timeout });
     });
     try {
       this.sendRaw(payload);
     } catch (error) {
+      const pending = this.pending.get(id);
       this.pending.delete(id);
+      clearTimeout(pending?.timeout);
       throw error;
     }
     return responsePromise;
@@ -274,19 +293,20 @@ class CodexRpcClient {
     const requests = [...this.pending.values()];
     this.pending.clear();
     for (const request of requests) {
+      clearTimeout(request.timeout);
       request.reject(error);
     }
   }
 
   async sendNotification(method, params) {
-    this.sendRaw(JSON.stringify({ method, params }));
+    this.sendRaw(serializeJsonRpcMessage({ method, params }));
   }
 
   async sendResponse(id, result) {
     if (id == null || id === "") {
       throw new Error("Codex RPC response requires a non-empty id");
     }
-    this.sendRaw(JSON.stringify({ id, result }));
+    this.sendRaw(serializeJsonRpcMessage({ id, result }));
   }
 
   sendRaw(payload) {
@@ -312,8 +332,9 @@ class CodexRpcClient {
     }
 
     if (parsed && parsed.id != null && this.pending.has(String(parsed.id))) {
-      const { resolve, reject } = this.pending.get(String(parsed.id));
+      const { resolve, reject, timeout } = this.pending.get(String(parsed.id));
       this.pending.delete(String(parsed.id));
+      clearTimeout(timeout);
       if (parsed.error) {
         reject(new Error(parsed.error.message || "Codex RPC request failed"));
         return;
@@ -326,6 +347,53 @@ class CodexRpcClient {
       listener(parsed);
     }
   }
+}
+
+function normalizeRequestTimeoutMs(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 45_000;
+  }
+  return Math.max(1, Math.min(120_000, Math.round(parsed)));
+}
+
+function buildRequestTimeoutError(method, timeoutMs) {
+  const error = new Error(`Codex RPC request timed out before response: ${method}`);
+  error.code = "CODEX_RPC_REQUEST_TIMEOUT";
+  error.method = method;
+  error.timeoutMs = timeoutMs;
+  return error;
+}
+
+function serializeJsonRpcMessage(message) {
+  return JSON.stringify(message, (_key, value) => (
+    typeof value === "string" ? toWellFormedUnicode(value) : value
+  ));
+}
+
+function toWellFormedUnicode(value) {
+  const input = String(value ?? "");
+  let output = "";
+  for (let index = 0; index < input.length; index += 1) {
+    const codeUnit = input.charCodeAt(index);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
+      const nextCodeUnit = input.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+        output += input[index];
+        output += input[index + 1];
+        index += 1;
+      } else {
+        output += "\uFFFD";
+      }
+      continue;
+    }
+    if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
+      output += "\uFFFD";
+      continue;
+    }
+    output += input[index];
+  }
+  return output;
 }
 
 function resolveDefaultCodexCommand(env = process.env) {

@@ -85,6 +85,50 @@ test("codex rpc client rejects all pending requests when its transport closes", 
   assert.equal(client.isReady, false);
 });
 
+test("codex rpc client times out a request that never receives a response", async () => {
+  const client = new CodexRpcClient({ endpoint: "", requestTimeoutMs: 5 });
+  client.child = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      write() {},
+    },
+  };
+
+  const pending = client.sendRequest("turn/start", {}, { timeoutMs: 5 });
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, "CODEX_RPC_REQUEST_TIMEOUT");
+    assert.equal(error.method, "turn/start");
+    assert.equal(error.timeoutMs, 5);
+    return true;
+  });
+  assert.equal(client.pending.size, 0);
+});
+
+test("codex rpc client repairs invalid UTF-16 at every outbound JSON-RPC boundary", async () => {
+  const client = new CodexRpcClient({ endpoint: "" });
+  const outbound = [];
+  client.sendRaw = (payload) => outbound.push(payload);
+  const validEmoji = "moss😀";
+  const invalidText = `${validEmoji}:${String.fromCharCode(0xD800)}:${String.fromCharCode(0xDC00)}`;
+
+  const pending = client.sendRequest("turn/start", {
+    input: [{ type: "text", text: invalidText }],
+  });
+  const request = JSON.parse(outbound[0]);
+  assert.equal(request.params.input[0].text, `${validEmoji}:�:�`);
+  client.handleIncoming(JSON.stringify({ id: request.id, result: { ok: true } }));
+  await pending;
+
+  await client.sendNotification("bridge/test", { nested: { text: invalidText } });
+  await client.sendResponse("response-1", { nested: { text: invalidText } });
+
+  assert.equal(JSON.parse(outbound[1]).params.nested.text, `${validEmoji}:�:�`);
+  assert.equal(JSON.parse(outbound[2]).result.nested.text, `${validEmoji}:�:�`);
+});
+
 test("codex rpc client sends image attachments as local images", async () => {
   const client = new CodexRpcClient({
     endpoint: "ws://127.0.0.1:8765",

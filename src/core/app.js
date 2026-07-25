@@ -88,6 +88,7 @@ const INBOUND_ATTACHMENT_BATCH_IDLE_MS = 8_000;
 const INBOUND_ATTACHMENT_TEXT_BATCH_IDLE_MS = 6_000;
 const INBOUND_ATTACHMENT_PRELUDE_IDLE_MS = 12_000;
 const DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT = 92;
+const DEFAULT_CODEX_SESSION_REFRESH_PRESSURE_PERCENT = 76;
 const DEFAULT_SESSION_REFRESH_MIN_INTERVAL_MS = 30 * 60_000;
 
 function resolveFirstRuntimeEventFailureTimeoutMs({ isClaudeCode = false, openingTurn = false } = {}) {
@@ -162,6 +163,7 @@ class MossbridgeApp {
     this.pendingRuntimeEventWatchdogs = new Map();
     this.runningTurnWatchdogs = new Map();
     this.watchdogCancelledRunKeys = new Set();
+    this.preStartRedispatchMessageIds = new Set();
     this.pendingAutoCompactByThreadId = new Map();
     this.lastAutoCompactAtByThreadId = new Map();
     this.lastAutoSessionRefreshAtByScope = new Map();
@@ -1000,6 +1002,9 @@ class MossbridgeApp {
       const sessionRefresh = typeof this.maybeApplySessionRefreshRequest === "function"
         ? await this.maybeApplySessionRefreshRequest({ bindingKey, workspaceRoot, prepared })
         : null;
+      if (sessionRefresh?.id) {
+        prepared.sessionRefreshRequestId = sessionRefresh.id;
+      }
       const dispatchedAtMs = Date.now();
       const runtimeParams = this.runtimeAdapter.getSessionStore().getRuntimeParamsForWorkspace(bindingKey, workspaceRoot);
       const turn = await this.runtimeAdapter.sendTextTurn({
@@ -1076,6 +1081,7 @@ class MossbridgeApp {
         workspaceRoot,
         normalized: prepared,
         threadId: turn.threadId,
+        turnId: turn.turnId,
         openingTurn: Boolean(turn?.openingTurn),
       });
       this.scheduleRunningTurnWatchdog?.({
@@ -1088,6 +1094,30 @@ class MossbridgeApp {
       return true;
     } catch (error) {
       this.turnGateStore.releaseScope(bindingKey, workspaceRoot);
+      if (isCodexPreStartDispatchFailure(error)) {
+        const sessionStore = this.runtimeAdapter.getSessionStore();
+        const threadId = normalizeCommandArgument(
+          sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "",
+        );
+        const recovered = await this.recoverCodexPreStartFailure({
+          bindingKey,
+          workspaceRoot,
+          prepared,
+          threadId,
+          reason: normalizeText(error?.code) || "codex_dispatch_failed_before_runtime_start",
+        });
+        if (recovered?.recoveryHandled) {
+          if (recovered.reason === "safe_redispatch_already_used") {
+            await this.sendCodexPreStartRetryExhaustedNotice({
+              prepared,
+              workspaceRoot,
+              threadId,
+            });
+            return true;
+          }
+          return false;
+        }
+      }
       const messageText = error instanceof Error ? error.message : String(error || "unknown error");
       this.recordControlEvent?.({
         type: "runtime.turn.dispatch_failed",
@@ -1516,6 +1546,8 @@ class MossbridgeApp {
       receivedAt: prepared.receivedAt,
       attachments: prepared.attachments || [],
       attachmentFailures: prepared.attachmentFailures || [],
+      sessionRefreshRequestId: prepared.sessionRefreshRequestId || "",
+      runtimeContinuityHandoff: prepared.runtimeContinuityHandoff || null,
     });
     this.pendingInboundByScope.set(scopeKey, current);
     this.recordControlEvent?.({
@@ -1566,6 +1598,7 @@ class MossbridgeApp {
         workspaceId: merged.workspaceId,
         accountId: merged.accountId,
         senderId: merged.senderId,
+        messageId: merged.messageId,
         contextToken: merged.contextToken,
         provider: merged.provider,
         originalText: merged.originalText,
@@ -1575,6 +1608,8 @@ class MossbridgeApp {
         attachments: merged.attachments || [],
         attachmentFailures: merged.attachmentFailures || [],
         memoryContextPacket: merged.memoryContextPacket || null,
+        sessionRefreshRequestId: merged.sessionRefreshRequestId || "",
+        runtimeContinuityHandoff: merged.runtimeContinuityHandoff || null,
       };
       if (typeof this.attachMemoryContextToPreparedText === "function") {
         const memoryContext = await this.attachMemoryContextToPreparedText(
@@ -1596,11 +1631,12 @@ class MossbridgeApp {
     }
   }
 
-  scheduleRuntimeEventWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "", openingTurn = false }) {
+  scheduleRuntimeEventWatchdog({ bindingKey, workspaceRoot, normalized, threadId = "", turnId = "", openingTurn = false }) {
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const candidateThreadId = normalizeCommandArgument(threadId)
       || sessionStore.getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const normalizedThreadId = normalizeCommandArgument(candidateThreadId);
+    const normalizedTurnId = normalizeCommandArgument(turnId);
     if (!normalizedThreadId) {
       return;
     }
@@ -1666,12 +1702,33 @@ class MossbridgeApp {
       }, noticeTimeoutMs)
       : null;
     const failureTimer = setTimeout(async () => {
+      const watchdog = this.pendingRuntimeEventWatchdogs.get(normalizedThreadId);
       this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
       await this.channelAdapter.sendTyping({
         userId: normalized.senderId,
         status: 0,
         contextToken: normalized.contextToken,
       }).catch(() => {});
+      if (isCodex) {
+        const recovered = await this.recoverCodexPreStartFailure({
+          bindingKey,
+          workspaceRoot,
+          prepared: normalized,
+          threadId: normalizedThreadId,
+          turnId: normalizeCommandArgument(watchdog?.turnId) || normalizedTurnId,
+          reason: "codex_first_runtime_event_timeout",
+        });
+        if (recovered?.recoveryHandled) {
+          if (recovered.reason === "safe_redispatch_already_used") {
+            await this.sendCodexPreStartRetryExhaustedNotice({
+              prepared: normalized,
+              workspaceRoot,
+              threadId: normalizedThreadId,
+            });
+          }
+          return;
+        }
+      }
       if (suppressVisibleStatus) {
         const triggerKind = describeSystemTriggerKind(normalized) || "system";
         console.warn(
@@ -1762,6 +1819,11 @@ class MossbridgeApp {
       noticeTimer,
       failureTimer,
       noticeSent: false,
+      bindingKey,
+      workspaceRoot,
+      normalized,
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
     });
   }
 
@@ -1777,6 +1839,139 @@ class MossbridgeApp {
     clearTimeout(watchdog.noticeTimer);
     clearTimeout(watchdog.failureTimer);
     this.pendingRuntimeEventWatchdogs.delete(normalizedThreadId);
+  }
+
+  async recoverCodexPreStartFailure({
+    bindingKey = "",
+    workspaceRoot = "",
+    prepared = null,
+    threadId = "",
+    turnId = "",
+    reason = "codex_runtime_prestart_failure",
+  } = {}) {
+    if (
+      normalizeText(this.runtimeAdapter?.describe?.().id) !== "codex"
+      || !prepared?.messageId
+      || normalizeText(prepared?.provider) === "system"
+      || prepared?.systemRuntimeBinding
+    ) {
+      return { recoveryHandled: false, redispatchQueued: false, reason: "not_replayable" };
+    }
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    const normalizedTurnId = normalizeCommandArgument(turnId);
+    const threadState = normalizedThreadId
+      ? this.threadStateStore?.getThreadState?.(normalizedThreadId)
+      : null;
+    if (["running", "waiting_approval"].includes(normalizeText(threadState?.status))) {
+      return { recoveryHandled: false, redispatchQueued: false, reason: "runtime_turn_started" };
+    }
+
+    const replayKey = buildPreStartRedispatchKey(prepared);
+    const safeRedispatchAlreadyUsed = !replayKey
+      || this.preStartRedispatchMessageIds?.has?.(replayKey);
+    this.threadStateStore?.markRuntimeThreadUnhealthy?.(normalizedThreadId, {
+      turnId: normalizedTurnId,
+      reason,
+    });
+
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const oldThreadId = normalizedThreadId || normalizeCommandArgument(
+      sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "",
+    );
+    const runtimeId = "codex";
+    const refreshRequestId = normalizeText(prepared.sessionRefreshRequestId)
+      || normalizeText(prepared.runtimeContinuityHandoff?.requestId);
+    let refreshRequest = refreshRequestId
+      ? this.sessionRefreshRequests?.requeueAfterPreStartFailure?.(refreshRequestId, {
+        lastPreStartFailureReason: reason,
+        lastPreStartFailureThreadId: oldThreadId,
+        lastPreStartFailureTurnId: normalizedTurnId,
+      })
+      : null;
+    if (!refreshRequest && refreshRequestId) {
+      refreshRequest = this.sessionRefreshRequests?.listRequests?.()
+        .find((entry) => (
+          normalizeText(entry?.id) === refreshRequestId
+          && normalizeText(entry?.status) === "pending"
+        )) || null;
+    }
+    if (!refreshRequest) {
+      refreshRequest = this.sessionRefreshRequests?.getPendingRequest?.({
+        bindingKey,
+        workspaceRoot,
+        runtimeId,
+      }) || null;
+    }
+    if (!refreshRequest) {
+      refreshRequest = this.sessionRefreshRequests?.requestRefresh?.({
+        bindingKey,
+        workspaceRoot,
+        runtimeId,
+        oldThreadId,
+        reason: "runtime_prestart_recovery",
+        requestedBy: "runtime_recovery",
+      }) || null;
+    }
+
+    sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+    sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
+    if (normalizedThreadId && normalizedTurnId && typeof this.runtimeAdapter.cancelTurn === "function") {
+      await this.runtimeAdapter.cancelTurn({
+        threadId: normalizedThreadId,
+        turnId: normalizedTurnId,
+        workspaceRoot,
+        bindingKey,
+      }).catch(() => {});
+    }
+    this.turnGateStore?.releaseThread?.(normalizedThreadId);
+    this.turnGateStore?.releaseScope?.(bindingKey, workspaceRoot);
+    this.recordWeixinInboundAudit?.({
+      stage: "runtime_prestart_recovery",
+      normalized: prepared,
+      error: reason,
+      includeTextPreview: false,
+    });
+
+    if (safeRedispatchAlreadyUsed) {
+      return {
+        recoveryHandled: true,
+        redispatchQueued: false,
+        reason: "safe_redispatch_already_used",
+        refreshRequestId: normalizeText(refreshRequest?.id),
+        refreshRequeued: Boolean(refreshRequest?.id),
+      };
+    }
+
+    this.preStartRedispatchMessageIds?.add?.(replayKey);
+    this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
+    await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true });
+    return {
+      recoveryHandled: true,
+      redispatchQueued: true,
+      reason,
+      refreshRequestId: normalizeText(refreshRequest?.id),
+      refreshRequeued: Boolean(refreshRequest?.id),
+    };
+  }
+
+  async sendCodexPreStartRetryExhaustedNotice({ prepared = null, workspaceRoot = "", threadId = "" } = {}) {
+    if (!prepared?.senderId || !prepared?.contextToken) {
+      return;
+    }
+    await this.channelAdapter.sendText({
+      userId: prepared.senderId,
+      contextToken: prepared.contextToken,
+      preserveBlock: true,
+      text: formatBridgeNotice("runtime_prestart_retry_exhausted", [
+        "source: bridge",
+        `runtime: ${formatRuntimeLabel("codex")}`,
+        "status: prestart_retry_exhausted",
+        "detail: runtime accepted the turn but did not emit a start event after one safe redispatch",
+        "action: resend_if_needed",
+        `workspace: ${workspaceRoot}`,
+        `thread: ${normalizeCommandArgument(threadId) || "(none)"}`,
+      ]),
+    }).catch(() => {});
   }
 
   recordRuntimeContextUsage(event, { allowAutomation = true } = {}) {
@@ -1838,14 +2033,18 @@ class MossbridgeApp {
     if (!usage || !Number.isFinite(Number(usage.currentTokens)) || Number(usage.currentTokens) <= 0) {
       return null;
     }
+    const usageThreadId = normalizeCommandArgument(usage.threadId) || threadId;
+    if (usageThreadId !== threadId) {
+      return null;
+    }
     this.recordRuntimeContextUsage({
       type: "runtime.context.updated",
       payload: {
         ...usage,
-        threadId: usage.threadId || threadId,
+        threadId: usageThreadId,
         runtimeId,
       },
-    }, { allowAutomation: false });
+    });
     return usage;
   }
 
@@ -1923,6 +2122,11 @@ class MossbridgeApp {
       return null;
     }
     const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id) || normalizeText(this.config?.runtime) || "codex";
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const binding = sessionStore?.getBinding?.(linked.bindingKey) || {};
+    if (binding?.systemRuntimeBinding) {
+      return null;
+    }
     const request = this.sessionRefreshRequests.getPendingRequest({
       bindingKey: linked.bindingKey,
       workspaceRoot: linked.workspaceRoot,
@@ -1936,8 +2140,6 @@ class MossbridgeApp {
     if (requestedOldThreadId && eventThreadId && requestedOldThreadId !== eventThreadId) {
       return null;
     }
-
-    const sessionStore = this.runtimeAdapter.getSessionStore();
     const currentThreadId = normalizeCommandArgument(
       sessionStore.getThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot) || "",
     );
@@ -4162,8 +4364,56 @@ class MossbridgeApp {
           bindingKey,
           model: sessionStore.getRuntimeParamsForWorkspace(bindingKey, normalizedWorkspaceRoot).model,
         }).catch(() => {});
+        try {
+          this.queuePersistedCodexSessionRefresh({
+            bindingKey,
+            workspaceRoot: normalizedWorkspaceRoot,
+            threadId: normalizedThreadId,
+          });
+        } catch (error) {
+          console.error(
+            `[mossbridge] persisted Codex session pressure check failed thread=${normalizedThreadId} ${formatErrorMessage(error)}`
+          );
+        }
       }
     }
+  }
+
+  queuePersistedCodexSessionRefresh({ bindingKey = "", workspaceRoot = "", threadId = "" } = {}) {
+    const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id);
+    const normalizedThreadId = normalizeCommandArgument(threadId);
+    const normalizedBindingKey = normalizeText(bindingKey);
+    const normalizedWorkspaceRoot = normalizeCommandArgument(workspaceRoot);
+    if (
+      runtimeId !== "codex"
+      || !normalizedThreadId
+      || !normalizedBindingKey
+      || !normalizedWorkspaceRoot
+      || typeof this.runtimeContextUsageStore?.getContext !== "function"
+    ) {
+      return null;
+    }
+    const persistedUsage = this.runtimeContextUsageStore.getContext({
+      threadId: normalizedThreadId,
+      runtimeId,
+    });
+    if (normalizeCommandArgument(persistedUsage?.threadId) !== normalizedThreadId) {
+      return null;
+    }
+    return this.maybeQueueAutoSessionRefreshForPressure({
+      usage: {
+        ...persistedUsage,
+        runtimeId,
+        threadId: normalizedThreadId,
+        bindingKey: normalizedBindingKey,
+        workspaceRoot: normalizedWorkspaceRoot,
+        source: normalizeText(persistedUsage?.source) || "persisted_runtime_context_usage",
+      },
+      linked: {
+        bindingKey: normalizedBindingKey,
+        workspaceRoot: normalizedWorkspaceRoot,
+      },
+    });
   }
 
   resolveReplyTargetForBinding(bindingKey) {
@@ -5198,9 +5448,13 @@ function evaluateSessionAutoRefresh(usage = {}, config = {}) {
   if (Number(config.sessionRefreshPressurePercent) === 0) {
     return { shouldRefresh: false, reason: "disabled" };
   }
+  const runtimeId = normalizeText(usage.runtimeId).toLowerCase();
+  const defaultPressurePercent = runtimeId === "codex"
+    ? DEFAULT_CODEX_SESSION_REFRESH_PRESSURE_PERCENT
+    : DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT;
   const refreshThresholdPercent = clampPercent(
     config.sessionRefreshPressurePercent,
-    DEFAULT_SESSION_REFRESH_PRESSURE_PERCENT,
+    defaultPressurePercent,
   );
   const contextWindow = readNonNegativeNumber(usage.contextWindow) ?? 0;
   const currentTokens = readNonNegativeNumber(usage.currentTokens) ?? 0;
@@ -5231,6 +5485,30 @@ function isAutoSessionRefreshRequest(request = {}) {
     || reason === "severe_context_pressure"
     || reason === "context_pressure_refresh"
     || reason === "context_pressure_session_refresh";
+}
+
+function isCodexPreStartDispatchFailure(error = null) {
+  const code = normalizeText(error?.code).toUpperCase();
+  if (code === "CODEX_RPC_REQUEST_TIMEOUT" || code === "CODEX_TRANSPORT_CLOSED") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /Codex .*transport closed/i.test(message)
+    || /Codex websocket is not connected/i.test(message)
+    || /Codex process stdin is not writable/i.test(message)
+    || /Codex RPC request timed out/i.test(message);
+}
+
+function buildPreStartRedispatchKey(prepared = {}) {
+  const parts = [
+    normalizeText(prepared?.accountId),
+    normalizeText(prepared?.senderId),
+    normalizeText(prepared?.messageId),
+  ];
+  if (parts.some((part) => !part)) {
+    return "";
+  }
+  return parts.join(":");
 }
 
 function readNonNegativeNumber(value) {

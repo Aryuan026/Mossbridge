@@ -21,6 +21,7 @@ const BRIDGE_ENV_KEYS = [
   "MOSSBRIDGE_ALLOW_OPEN_INBOUND",
   "MOSSBRIDGE_CODEX_ENDPOINT",
   "MOSSBRIDGE_CODEX_COMMAND",
+  "MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS",
   "MOSSBRIDGE_CODEX_MODEL",
   "MOSSBRIDGE_CODEX_MODEL_PROVIDER",
   "MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT",
@@ -212,6 +213,33 @@ test("readConfig preserves explicit Codex runtime endpoint and model config", ()
     assert.equal(config.codexModel, "gpt-test");
     assert.equal(config.codexModelProvider, "openai");
     assert.equal(config.codexNativeImageInput, true);
+  });
+});
+
+test("readConfig bounds the Codex RPC request timeout", () => {
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS: "90000",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.codexRpcRequestTimeoutMs, 90000);
+  });
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS: "1",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.codexRpcRequestTimeoutMs, 5000);
+  });
+  withBridgeEnv({
+    MOSSBRIDGE_STATE_DIR: "/tmp/bridge-state",
+    MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS: "999999",
+  }, () => {
+    const config = readConfig();
+
+    assert.equal(config.codexRpcRequestTimeoutMs, 120000);
   });
 });
 

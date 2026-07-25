@@ -186,9 +186,11 @@ Before public-facing changes land:
 - Do not leave private names, private paths, screenshots, account IDs, or unavailable tool hints in source, docs, prompts, fixtures, or test names.
 - Run the narrow tests for the changed area, then `npm run check` when touching source or scripts.
 
-## Deferred Session Maintenance Strategy
+## Session Maintenance Strategy
 
-Future session-health work should not reduce maintenance to "context pressure crossed a threshold, so cut the session." Treat this as a pending strategy intake from the private pressure-test line, not as current implemented behavior.
+Current bridge-owned session refresh is queued and runtime-aware. Codex can queue from live context telemetry or the read-only session JSONL fallback at about 76% of the actual context window; Claude Code and other runtimes use 92% unless `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` overrides it. The queued request waits for the next normal foreground user turn, and system/check-in/dreaming turns must not consume it.
+
+Future session-health work should still not reduce maintenance to "context pressure crossed a threshold, so cut the session." Treat the following as the strategy layer that sits above the current queueing mechanism:
 
 - Healthy natural chat or light companionship: prefer continuing the current runtime thread or observing the runtime/CLI's native compression behavior.
 - Case, code, or attachment-heavy pollution: checkpoint or prepare a session handoff first, then switch if needed.

@@ -39,11 +39,13 @@ Mossbridge is ready for technical users to inspect, run isolated checks, and att
 - `MOSSBRIDGE_ASHERIE_*` names remain in some memory-domain paths for compatibility. They are historical names, not a requirement to connect a private Home service.
 - LaunchAgent scripts are macOS-only.
 
-## Deferred Session Maintenance Review
+## Session Maintenance Status
 
-Session maintenance strategy still needs a dedicated review after private pressure-test results are ported back. The next pass should inspect session health entrypoints, context usage thresholds, handoff injection, recent-tail carryover, and whether Codex/Claude Code native compression is being used before forcing a new session.
+Mossbridge now has bridge-owned queued session refresh for runtime context pressure. Claude Code keeps the existing severe-pressure behavior; Codex can queue from live context telemetry or the read-only session JSONL fallback when the snapshot belongs to the currently bound thread. Public defaults are runtime-aware: Codex queues at about 76% of the actual context window, while Claude Code and other runtimes use 92% unless `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` overrides it.
 
-The intended direction is not "larger memory packets" or "always switch at a token line." Healthy natural chat can continue or observe compression; case/code/attachment pollution should checkpoint or handoff before switching; slow replies, tool errors, stiff posture, or wrong-context pollution can justify a recovery switch. Future implementation should add visible strategy/reason fields first, so logs can show whether a turn chose `continue`, `observe_compression`, `checkpoint_then_switch`, or `recovery_switch`.
+Queued refresh waits for the next normal foreground user message. Check-ins, dreaming, and other system turns do not consume the request. After refresh, the new thread keeps the short post-refresh recent-tail grace already covered by tests.
+
+The broader strategy review is still open: Mossbridge should not use "larger memory packets" or "always switch at a token line" as a cure-all. Healthy natural chat can continue or observe compression; case/code/attachment pollution should checkpoint or handoff before switching; slow replies, tool errors, stiff posture, or wrong-context pollution can justify a recovery switch. A future patch should add visible strategy/reason fields such as `continue`, `observe_compression`, `checkpoint_then_switch`, and `recovery_switch` before changing foreground voice, context assembly, or memory contents.
 
 For the Codex CLI pressure-test transition, see `docs/codex-cli-pressure-test-handoff.md`.
 

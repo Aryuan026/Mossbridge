@@ -77,7 +77,7 @@ The intentionally small public set is:
 
 `shared:refresh-session` queues a session refresh request for the currently bound workspace. The running bridge applies it on the next normal user message by clearing the old runtime thread/session binding and letting that foreground turn open a fresh thread with the regular opening instructions and memory packet. Background check-ins and other system turns do not consume the request.
 
-Mossbridge can also queue the same kind of request automatically when a runtime reports high context pressure. The public defaults are conservative: one pending refresh per runtime/workspace binding, with `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` and `MOSSBRIDGE_SESSION_REFRESH_MIN_INTERVAL_MS` controlling the threshold and repeat interval.
+Mossbridge can also queue the same kind of request automatically when a runtime reports high context pressure. The public defaults are conservative: one pending refresh per runtime/workspace binding, Codex at about 76% of the actual context window, and Claude Code/other runtimes at 92%. `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` and `MOSSBRIDGE_SESSION_REFRESH_MIN_INTERVAL_MS` control the threshold and repeat interval.
 
 Example:
 

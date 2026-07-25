@@ -120,6 +120,47 @@ class SessionRefreshRequestStore {
     return this.updateRequest(id, nextPatch);
   }
 
+  requeueAfterPreStartFailure(id, patch = {}) {
+    const normalizedId = normalizeText(id);
+    if (!normalizedId) {
+      return null;
+    }
+    this.load();
+    const now = new Date().toISOString();
+    let updated = null;
+    this.state.requests = (Array.isArray(this.state.requests) ? this.state.requests : []).map((entry) => {
+      if (
+        normalizeText(entry?.id) !== normalizedId
+        || !["applied", "completed"].includes(normalizeText(entry?.status))
+      ) {
+        return entry;
+      }
+      updated = {
+        ...entry,
+        ...normalizePatch(patch),
+        status: "pending",
+        appliedAt: "",
+        lastAppliedAt: normalizeText(entry?.appliedAt) || normalizeText(entry?.lastAppliedAt),
+        lastCompletedAt: normalizeText(entry?.completedAt) || normalizeText(entry?.lastCompletedAt),
+        requeuedAt: now,
+        lastPreStartFailureAt: now,
+        preStartRecoveryCount: Math.max(0, Number(entry?.preStartRecoveryCount) || 0) + 1,
+        completedAt: "",
+        newThreadId: "",
+        postRefreshGraceThreadId: "",
+        postRefreshGraceRemaining: 0,
+        postRefreshGraceStartedAt: "",
+        postRefreshGraceLastUsedAt: "",
+      };
+      return updated;
+    });
+    if (!updated) {
+      return null;
+    }
+    this.save();
+    return { ...updated };
+  }
+
   markSkipped(id, reason = "", patch = {}) {
     return this.updateRequest(id, {
       ...patch,

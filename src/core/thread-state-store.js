@@ -117,6 +117,26 @@ class ThreadStateStore {
     return next;
   }
 
+  markRuntimeThreadUnhealthy(threadId, { turnId = "", reason = "" } = {}) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const current = this.stateByThreadId.get(normalizedThreadId) || createEmptyThreadState(normalizedThreadId);
+    const normalizedTurnId = normalizeThreadId(turnId) || current.turnId || "";
+    const next = {
+      ...current,
+      status: "unhealthy",
+      turnId: normalizedTurnId,
+      lastError: reason || "runtime_prestart_failure",
+      pendingApproval: null,
+      pendingApprovals: [],
+      updatedAt: new Date().toISOString(),
+    };
+    this.stateByThreadId.set(normalizedThreadId, next);
+    return next;
+  }
+
   resolveApproval(threadId, status = "running", requestId = "") {
     const current = this.stateByThreadId.get(threadId);
     if (!current) {

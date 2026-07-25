@@ -101,6 +101,8 @@ MOSSBRIDGE_CODEX_MODEL=
 MOSSBRIDGE_CODEX_MODEL_PROVIDER=
 MOSSBRIDGE_CODEX_NATIVE_IMAGE_INPUT=
 MOSSBRIDGE_CODEX_COMMAND=
+# Optional: env values are clamped to 5000..120000 ms.
+MOSSBRIDGE_CODEX_RPC_REQUEST_TIMEOUT_MS=45000
 MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 # Optional alpha: ordinary Codex foreground chat companion base. Default off.
 MOSSBRIDGE_CODEX_COMPANION_PROFILE=false
@@ -110,6 +112,8 @@ MOSSBRIDGE_CODEX_COMPANION_PROFILE=false
 For local providers such as Ollama, copy [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) outside the repo, make it executable, and set `MOSSBRIDGE_CODEX_COMMAND` to that copy.
 
 `MOSSBRIDGE_CODEX_COMPANION_PROFILE=true` is an optional alpha foreground-chat aid for Codex. It sends the neutral [templates/codex-companion-base.md](./templates/codex-companion-base.md) content through `thread/start` and `thread/resume` with `personality=none`, only for the ordinary foreground Codex lane. It is off by default, does not affect Claude Code, and does not claim process-level Codex home isolation in this public preview.
+
+Runtime pressure refresh is queued, not immediate. Leave `MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` unset for runtime-aware defaults: Codex queues at about 76% of the actual context window, while Claude Code and other runtimes use 92%. The queued refresh waits for the next normal foreground user message, preserves a short post-refresh recent-tail grace, and is not consumed by check-ins, dreaming, or other system turns. Set it to `0` to disable, or set an explicit percent if a deployment has its own tested threshold.
 
 ## Access Control
 

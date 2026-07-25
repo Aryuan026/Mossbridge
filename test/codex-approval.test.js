@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { MossbridgeApp } = require("../src/core/app");
+const { SessionRefreshRequestStore } = require("../src/core/session-refresh-request-store");
 const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
 const { readLatestCodexSessionTokenUsage } = require("../src/adapters/runtime/codex/session-usage");
 const {
@@ -276,11 +277,19 @@ test("codex session usage fallback reads latest token_count from session jsonl",
   }
 });
 
-test("recordLatestRuntimeSessionContextUsage stores Codex jsonl fallback without session refresh", () => {
+test("recordLatestRuntimeSessionContextUsage queues Codex jsonl pressure for the bound thread", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-codex-jsonl-pressure-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
   const recorded = [];
-  let refreshChecked = false;
+  const controlEvents = [];
   const appLike = {
-    config: {},
+    config: {
+      sessionRefreshMinIntervalMs: 60_000,
+    },
+    sessionRefreshRequests: store,
+    lastAutoSessionRefreshAtByScope: new Map(),
     runtimeAdapter: {
       describe() {
         return { id: "codex" };
@@ -304,6 +313,10 @@ test("recordLatestRuntimeSessionContextUsage stores Codex jsonl fallback without
               workspaceRoot: "/workspace",
             };
           },
+          getBinding(bindingKey) {
+            assert.equal(bindingKey, "binding-jsonl");
+            return { systemRuntimeBinding: false };
+          },
         };
       },
     },
@@ -312,10 +325,10 @@ test("recordLatestRuntimeSessionContextUsage stores Codex jsonl fallback without
         recorded.push(snapshot);
       },
     },
-    maybeQueueAutoSessionRefreshForPressure() {
-      refreshChecked = true;
-      return { id: "should-not-run" };
+    recordControlEvent(event) {
+      controlEvents.push(event);
     },
+    maybeQueueAutoSessionRefreshForPressure: MossbridgeApp.prototype.maybeQueueAutoSessionRefreshForPressure,
     pendingAutoCompactByThreadId: new Map(),
     lastAutoCompactAtByThreadId: new Map(),
     recordRuntimeContextUsage: MossbridgeApp.prototype.recordRuntimeContextUsage,
@@ -336,7 +349,13 @@ test("recordLatestRuntimeSessionContextUsage stores Codex jsonl fallback without
   assert.equal(recorded[0].workspaceRoot, "/workspace");
   assert.equal(recorded[0].bindingKey, "binding-jsonl");
   assert.equal(recorded[0].source, "codex_session_jsonl");
-  assert.equal(refreshChecked, false);
+  assert.equal(controlEvents[0].type, "runtime.context.session_refresh_queued");
+  assert.equal(controlEvents[0].payload.refreshThresholdPercent, 76);
+  assert.equal(store.getPendingRequest({
+    bindingKey: "binding-jsonl",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+  }).oldThreadId, "thread-jsonl");
 });
 
 test("codex MCP elicitation approvals map to runtime approval events", () => {
