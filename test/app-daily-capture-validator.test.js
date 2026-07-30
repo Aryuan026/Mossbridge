@@ -159,7 +159,18 @@ test("imports source-neutral web AI capture into conversation cache and hot cont
   assert.equal(packet.hot_context_packet.upstream.package_count, 1);
   assert.match(packet.runtime_prelude, /hot-source/);
   assert.match(packet.runtime_prelude, /perplexity_web/);
-  assert.match(packet.runtime_prelude, /deployment checklist/);
+  assert.match(packet.runtime_prelude, /deployment thread/);
+  assert.match(packet.runtime_prelude, /recent_messages=2/);
+  assert.doesNotMatch(packet.runtime_prelude, /继续整理 Mossbridge deployment checklist/);
+  assert.doesNotMatch(packet.runtime_prelude, /先检查 isolated state\/data，再跑 capture import/);
+
+  const explicitPacket = await service.captureContextPacket({
+    query: "把 deployment checklist 那段原话 quote 给我",
+    include_runtime_prelude_guidance: false,
+  });
+
+  assert.match(explicitPacket.runtime_prelude, /继续整理 Mossbridge deployment checklist/);
+  assert.match(explicitPacket.runtime_prelude, /先检查 isolated state\/data，再跑 capture import/);
 
   const second = await importDailyCaptureTarget(filePath, { memoryService: service });
 

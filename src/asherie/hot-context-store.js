@@ -352,38 +352,87 @@ function buildHotContextPreludeLines(packet = {}, limit = 5) {
   const packages = Array.isArray(packet?.upstream?.packages) ? packet.upstream.packages : [];
   const recentTurns = Array.isArray(packet?.basin?.recent_turns) ? packet.basin.recent_turns : [];
   const projectionSummary = normalizeText(projection.summary);
+  const rawHistoricalTextRequested = isExplicitHistoricalWordingRequest(packet?.query);
   if (projectionSummary) {
-    lines.push(`- hot-projection: ${normalizePreludeText(projectionSummary)}`);
+    lines.push(
+      rawHistoricalTextRequested
+        ? `- hot-projection: ${normalizePreludeText(projectionSummary)}`
+        : `- hot-projection: ${normalizePreludeText(extractStructuredProjectionSummary(projectionSummary))}`,
+    );
   }
   const openLoops = mergeStringLists(projection.open_loops, basinHead.open_loops, 4);
-  openLoops.slice(0, 2).forEach((item) => {
-    lines.push(`- hot-open-loop: ${normalizePreludeText(item)}`);
-  });
+  if (openLoops.length) {
+    if (rawHistoricalTextRequested) {
+      openLoops.slice(0, 2).forEach((item) => {
+        lines.push(`- hot-open-loop: ${normalizePreludeText(item)}`);
+      });
+    } else {
+      lines.push(`- hot-open-loop: pending=${openLoops.length}`);
+    }
+  }
   packages.slice(0, maxLimit).forEach((item) => {
     const source = normalizePreludeText(item.source_client) || "web_ai";
     const title = normalizePreludeText(item.thread_title || item.summary) || normalizePreludeText(item.thread_id) || "captured thread";
+    const summary = normalizePreludeText(item.summary);
     const messages = Array.isArray(item.recent_messages) ? item.recent_messages : [];
-    const tail = messages.slice(-2)
-      .map((message) => {
-        const role = normalizePreludeText(message.role) || "unknown";
-        const content = normalizePreludeText(message.content);
-        return content ? `${role}: ${truncateText(content, 70)}` : "";
-      })
-      .filter(Boolean)
-      .join(" / ");
-    lines.push(`- hot-source: ${source} | ${title}${tail ? ` | ${tail}` : ""}`);
+    if (rawHistoricalTextRequested) {
+      const tail = messages.slice(-2)
+        .map((message) => {
+          const role = normalizePreludeText(message.role) || "unknown";
+          const content = normalizePreludeText(message.content);
+          return content ? `${role}: ${truncateText(content, 70)}` : "";
+        })
+        .filter(Boolean)
+        .join(" / ");
+      lines.push(`- hot-source: ${source} | ${title}${tail ? ` | ${tail}` : ""}`);
+      return;
+    }
+    const messageCount = messages.length;
+    const structuredDetail = summary ? extractStructuredProjectionSummary(summary) : "";
+    lines.push(
+      `- hot-source: ${source} | ${title}`
+      + `${structuredDetail && structuredDetail !== title ? ` | ${structuredDetail}` : ""}`
+      + `${messageCount ? ` | recent_messages=${messageCount}` : ""}`,
+    );
   });
   if (!packages.length) {
     recentTurns.slice(0, Math.min(maxLimit, 3)).forEach((item) => {
       const source = normalizePreludeText(item.source_client) || "hot";
       const role = normalizePreludeText(item.role) || "unknown";
-      const content = normalizePreludeText(item.content);
-      if (content) {
-        lines.push(`- hot-turn: ${source} | ${role}: ${truncateText(content, 90)}`);
+      if (rawHistoricalTextRequested) {
+        const content = normalizePreludeText(item.content);
+        if (content) {
+          lines.push(`- hot-turn: ${source} | ${role}: ${truncateText(content, 90)}`);
+        }
+        return;
       }
+      const threadId = normalizePreludeText(item.thread_id);
+      const attachmentCount = Number(item.attachment_count) || 0;
+      lines.push(
+        `- hot-turn: ${source} | role=${role}`
+        + `${threadId ? ` | thread=${threadId}` : ""}`
+        + `${attachmentCount ? ` | attachments=${attachmentCount}` : ""}`,
+      );
     });
   }
   return lines;
+}
+
+function isExplicitHistoricalWordingRequest(query = "") {
+  const text = normalizeText(query);
+  if (!text) {
+    return false;
+  }
+  return /(?:原话|原文|逐字|一字不差|准确措辞|具体措辞|怎么说的|说了什么|复述|引用|照原样|verbatim|exact wording|quote)/iu.test(text);
+}
+
+function extractStructuredProjectionSummary(text = "") {
+  const normalized = normalizeText(text);
+  if (!normalized) {
+    return "";
+  }
+  const [head] = normalized.split(/\s+\|\s+/u);
+  return head || normalized;
 }
 
 function defaultBasinHead(scope) {
