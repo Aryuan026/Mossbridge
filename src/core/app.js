@@ -4458,7 +4458,8 @@ class MossbridgeApp {
         this.stableTurnGuidanceKeys,
       );
       const contextPressure = this.resolveMemoryContextPressureProfile?.(normalized, workspaceRoot) || null;
-      const forceRecentContext = this.shouldForceRecentContextForPrepared?.(normalized, workspaceRoot) || false;
+      const continuityContextMode = this.resolveContinuityContextModeForPrepared?.(normalized, workspaceRoot) || "";
+      const forceRecentContext = false;
       const packet = await memoryDomain.captureContextPacket({
         userId: normalized.senderId,
         senderId: normalized.senderId,
@@ -4469,12 +4470,13 @@ class MossbridgeApp {
         channelId: "weixin",
         workspaceRoot,
         currentTurnSignals: buildCurrentTurnSignalsForMemory(normalized),
+        continuityContextMode,
         forceRecentContext,
         ...buildMemoryCapturePressureOptions(normalized, {
           residentAlreadyDelivered,
           includeRuntimePreludeGuidance: includeRuntimeMaintenanceGuidance,
           contextPressure,
-          forceRecentContext,
+          continuityContextMode,
         }),
       });
       if (
@@ -4502,6 +4504,7 @@ class MossbridgeApp {
         contextPressure,
         includeStableTurnGuidance: includeRuntimeMaintenanceGuidance,
         residentAlreadyDelivered,
+        continuityContextMode,
       });
       const packetWithDelivery = packet && typeof packet === "object"
         ? { ...packet, delivery }
@@ -4658,17 +4661,17 @@ class MossbridgeApp {
     }
   }
 
-  shouldForceRecentContextForPrepared(normalized = {}, workspaceRoot = "") {
+  resolveContinuityContextModeForPrepared(normalized = {}, workspaceRoot = "") {
     if (normalizeText(normalized?.provider) === "system") {
-      return false;
+      return "";
     }
     const senderId = normalizeCommandArgument(normalized.runtimeBindingSenderId || normalized.senderId || normalized.chatId);
     if (!senderId) {
-      return false;
+      return "";
     }
     const sessionStore = this.runtimeAdapter?.getSessionStore?.();
     if (!sessionStore || typeof sessionStore.buildBindingKey !== "function") {
-      return false;
+      return "";
     }
     let bindingKey = "";
     try {
@@ -4681,37 +4684,35 @@ class MossbridgeApp {
       bindingKey = "";
     }
     if (!bindingKey) {
-      return false;
+      return "";
     }
     const runtimeId = normalizeCommandArgument(this.runtimeAdapter?.describe?.().id)
       || normalizeCommandArgument(this.config?.runtime)
       || "codex";
     const root = normalizeCommandArgument(workspaceRoot) || normalizeCommandArgument(this.config?.workspaceRoot);
-    let threadId = "";
-    try {
-      threadId = sessionStore.getThreadIdForWorkspace?.(bindingKey, root) || "";
-    } catch {
-      threadId = "";
-    }
-    if (!threadId) {
-      return true;
-    }
     try {
       if (this.sessionRefreshRequests?.getPendingRequest?.({
         bindingKey,
         workspaceRoot: root,
         runtimeId,
       })) {
-        return true;
+        return "session_refresh";
       }
-      return Boolean(this.sessionRefreshRequests?.consumePostRefreshGrace?.({
+      const threadId = normalizeCommandArgument(
+        sessionStore.getThreadIdForWorkspace?.(bindingKey, root) || "",
+      );
+      if (!threadId) {
+        return "opening";
+      }
+      const grace = this.sessionRefreshRequests?.consumePostRefreshGrace?.({
         bindingKey,
         workspaceRoot: root,
         runtimeId,
         threadId,
-      })?.active);
+      });
+      return grace?.active ? "post_refresh_grace" : "";
     } catch {
-      return false;
+      return "";
     }
   }
 
@@ -5165,20 +5166,19 @@ function buildMemoryCapturePressureOptions(
     residentAlreadyDelivered = false,
     includeRuntimePreludeGuidance = false,
     contextPressure = null,
-    forceRecentContext = false,
+    continuityContextMode = "",
   } = {},
 ) {
   const pressureOptions = buildTokenPressureMemoryOptions(contextPressure, {
     background: isBackgroundCheckinOpportunity(normalized),
   });
-  const forceRecentOptions = forceRecentContext
+  const continuityOptions = normalizeText(continuityContextMode)
     ? {
-        cacheLimit: 64,
-        recallRecentRecordLimit: 24,
+        cacheLimit: 24,
+        recallRecentRecordLimit: 8,
         ambientLimit: 3,
         preludeAmbientWarmLimit: 3,
         preludeRecentSnippetLimit: 0,
-        preludeRecentThreadLimit: 12,
       }
     : {};
   if (!isBackgroundCheckinOpportunity(normalized)) {
@@ -5186,7 +5186,7 @@ function buildMemoryCapturePressureOptions(
       includeRuntimePreludeGuidance: Boolean(includeRuntimePreludeGuidance),
       residentLimit: residentAlreadyDelivered ? 0 : undefined,
       ...pressureOptions,
-      ...forceRecentOptions,
+      ...continuityOptions,
     };
   }
   return {
@@ -5212,7 +5212,7 @@ function buildMemoryCapturePressureOptions(
     coldVineLimit: 2,
     coldVinePerRootLimit: 1,
     ...pressureOptions,
-    ...forceRecentOptions,
+    ...continuityOptions,
   };
 }
 
@@ -5311,6 +5311,7 @@ function buildMemoryDeliveryReport({
   contextPressure = null,
   includeStableTurnGuidance = false,
   residentAlreadyDelivered = false,
+  continuityContextMode = "",
 } = {}) {
   const sectionRows = [
     ["frontstage_note", frontstageNote],
@@ -5331,6 +5332,13 @@ function buildMemoryDeliveryReport({
     provider: normalizeText(normalized?.provider) || "weixin",
     include_stable_guidance: Boolean(includeStableTurnGuidance),
     resident_anchor_repeated: Boolean(residentAlreadyDelivered),
+    continuity_context: {
+      mode: normalizeText(continuityContextMode),
+      active: Boolean(normalizeText(continuityContextMode)),
+      control_only: true,
+      model_visible_chars: 0,
+      raw_recent_turns_injected: false,
+    },
     pressure_level: normalizeText(contextPressure?.level) || "normal",
     pressure_ratio: Number(contextPressure?.ratio) || 0,
     section_count: Array.isArray(sections) ? sections.length : 0,

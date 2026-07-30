@@ -33,8 +33,11 @@ const MEMORY_TRIGGER_PATTERNS = [
   /我们.*?(?:说过|提过|聊过)/i,
   /我.*?(?:说过|提过|聊过)/i,
   /你.*?(?:记得|还记得)/i,
+  /刚才/i,
+  /刚刚/i,
   /当时/i,
   /那天/i,
+  /(?:原话|那句|上一句|前一句|引用|quote)/i,
 ];
 
 const PHATIC_PATTERNS = [
@@ -61,6 +64,7 @@ const HANGING_HINT_PATTERNS = [
   /还/i,
   /先/i,
   /继续/i,
+  /然后/i,
   /等/i,
   /待会/i,
   /晚点/i,

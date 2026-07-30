@@ -193,7 +193,7 @@ Current bridge-owned session refresh is queued and runtime-aware. Codex can queu
 Future session-health work should still not reduce maintenance to "context pressure crossed a threshold, so cut the session." Treat the following as the strategy layer that sits above the current queueing mechanism:
 
 - Healthy natural chat or light companionship: prefer continuing the current runtime thread or observing the runtime/CLI's native compression behavior.
-- Case, code, or attachment-heavy pollution: checkpoint or prepare a session handoff first, then switch if needed.
+- Case, code, or attachment-heavy pollution: checkpoint or prepare a control-plane session handoff first, then switch if needed.
 - Slow replies, tool errors, stiff posture, or wrong-context pollution: a session switch can be used as recovery ventilation.
 
 The guiding rule is: compression keeps a session alive; switching sessions is for ventilation. Switching should clear pollution or restore state quality, not be the default token-saving tool. A future patch should first add strategy/reason logging such as `continue`, `observe_compression`, `checkpoint_then_switch`, and `recovery_switch` before changing foreground voice, Bridge context assembly, or memory contents.

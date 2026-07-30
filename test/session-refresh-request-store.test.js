@@ -197,7 +197,7 @@ test("dispatchPreparedTurn applies a pending session refresh before the next nor
   assert.equal(completed.postRefreshGraceRemaining, 4);
 });
 
-test("post-refresh grace keeps fresh thread in forced recent context for a few foreground turns", () => {
+test("post-refresh grace exposes control-only continuity mode for a few foreground turns", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({
     filePath: path.join(tempRoot, "session-refresh-requests.json"),
@@ -240,15 +240,15 @@ test("post-refresh grace keeps fresh thread in forced recent context for a few f
     provider: "weixin",
   };
 
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), true);
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, prepared, "/workspace"), false);
-  assert.equal(MossbridgeApp.prototype.shouldForceRecentContextForPrepared.call(appLike, {
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, prepared, "/workspace"), "post_refresh_grace");
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, prepared, "/workspace"), "post_refresh_grace");
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, prepared, "/workspace"), "post_refresh_grace");
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, prepared, "/workspace"), "post_refresh_grace");
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, prepared, "/workspace"), "");
+  assert.equal(MossbridgeApp.prototype.resolveContinuityContextModeForPrepared.call(appLike, {
     ...prepared,
     provider: "system",
-  }, "/workspace"), false);
+  }, "/workspace"), "");
 
   const completed = store.listRequests().find((entry) => entry.id === request.id);
   assert.equal(completed.postRefreshGraceRemaining, 0);

@@ -1374,7 +1374,7 @@ test("asherie memory service surfaces sticky calendar and recent wakeup context 
   assert.match(packet.runtime_prelude, /recent-wakeup: hold \| checkin \| 刚确认过用户在忙/);
 });
 
-test("asherie memory service gives proactive turns resident anchors and a recent-thread snapshot", async () => {
+test("asherie memory service gives proactive turns resident anchors and text-free recent state", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-proactive-"));
   const service = new AsherieMemoryService({
     config: {
@@ -1460,9 +1460,11 @@ test("asherie memory service gives proactive turns resident anchors and a recent
 
   assert.ok(packet.warm_memory_packet.hit_count >= 0);
   assert.match(packet.recall_focus.current_query, /你到时候别失约|明天10点记得来问我起床没/);
-  assert.match(packet.runtime_prelude, /主动唤醒当前态/);
-  assert.match(packet.runtime_prelude, /相对时间校准/);
-  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 你到时候别失约 \| 你: 不跑，记着呢|latest-thread: .*用户: 明天10点记得来问我起床没 \| 你: 好，10点来戳你/);
+  assert.match(packet.runtime_prelude, /proactive-recent-state: visible_turn_count=3/);
+  assert.match(packet.runtime_prelude, /raw_turn_text_included=false/);
+  assert.match(packet.runtime_prelude, /proactive-continuity:/);
+  assert.doesNotMatch(packet.runtime_prelude, /latest-thread|recent-thread/);
+  assert.doesNotMatch(packet.runtime_prelude, /你到时候别失约|明天10点记得来问我起床没|不跑，记着呢|好，10点来戳你/);
 });
 
 test("asherie memory service keeps recent-thread only for discourse-continuation turns", async () => {
@@ -1506,7 +1508,7 @@ test("asherie memory service keeps recent-thread only for discourse-continuation
   assert.doesNotMatch(topicShiftPacket.runtime_prelude, /bridge 刚才又在调试/);
 });
 
-test("asherie memory service carries recent tail on forced fresh-session turns", async () => {
+test("asherie memory service keeps explicit forceRecentContext recent-tail recall available", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-session-tail-"));
   const service = new AsherieMemoryService({
     config: {
@@ -1539,10 +1541,11 @@ test("asherie memory service carries recent tail on forced fresh-session turns",
   });
   assert.match(freshPacket.recall_focus.current_query, /明天8点起床/);
   assert.match(freshPacket.runtime_prelude, /recent-thread: .*用户: 明天8点起床/);
+  assert.equal(freshPacket.continuity_context.active, false);
 });
 
-test("asherie memory service builds a session handoff snapshot for long continuity after refresh", async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-session-handoff-"));
+test("automatic continuity mode stays control-only unless the current turn asks for recent recall", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-memory-continuity-"));
   const service = new AsherieMemoryService({
     config: {
       stateDir: tempRoot,
@@ -1601,22 +1604,34 @@ test("asherie memory service builds a session handoff snapshot for long continui
     userId: "demo-user",
     query: "🙁有点沮丧",
     sourceClient: "mossbridge_wechat",
-    forceRecentContext: true,
+    continuityContextMode: "post_refresh_grace",
   });
-  const recentThreadCount = (freshPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
-  assert.equal(recentThreadCount, 8);
+  assert.equal(freshPacket.continuity_context.mode, "post_refresh_grace");
+  assert.equal(freshPacket.continuity_context.control_only, true);
+  assert.equal(freshPacket.continuity_context.model_visible_chars, 0);
+  assert.equal(freshPacket.continuity_context.raw_recent_turns_injected, false);
   assert.equal(freshPacket.delivery_profile.include_ambient_warm, true);
   assert.equal(freshPacket.delivery_profile.include_ongoing, false);
   assert.equal(freshPacket.ongoing_track_packet.hit_count, 0);
-  assert.match(freshPacket.runtime_prelude, /session-handoff/);
   assert.match(freshPacket.runtime_prelude, /ambient-warm: 关系连续热场空气/);
   assert.doesNotMatch(freshPacket.runtime_prelude, /ongoing: 论文架构收束/);
-  assert.match(freshPacket.runtime_prelude, /session-core: 旧 session 最近 8 轮/);
-  assert.match(freshPacket.runtime_prelude, /论文架构第8步/);
-  assert.equal((freshPacket.runtime_prelude.match(/session-tail-exchange:/g) || []).length, 3);
-  assert.match(freshPacket.runtime_prelude, /session-tail-exchange: .*用户: 论文架构第8步/);
-  assert.match(freshPacket.runtime_prelude, /你: 第8步已经接住/);
-  assert.match(freshPacket.recall_focus.current_query, /论文架构第8步/);
+  assert.doesNotMatch(freshPacket.runtime_prelude, /session-handoff|session-tail-exchange|recent-thread/);
+  assert.doesNotMatch(freshPacket.runtime_prelude, /论文架构第8步|第8步已经接住/);
+
+  const explicitOverlapPacket = await service.captureContextPacket({
+    userId: "demo-user",
+    query: "接着刚才那段，引用上一句",
+    sourceClient: "mossbridge_wechat",
+    continuityContextMode: "opening",
+  });
+  const recentThreadCount = (explicitOverlapPacket.runtime_prelude.match(/recent-thread:/g) || []).length;
+  assert.equal(explicitOverlapPacket.continuity_context.mode, "opening");
+  assert.equal(explicitOverlapPacket.continuity_context.control_only, true);
+  assert.equal(explicitOverlapPacket.recall_focus.explicit_recall_signal, true);
+  assert.ok(recentThreadCount > 0);
+  assert.ok(recentThreadCount <= 2);
+  assert.match(explicitOverlapPacket.runtime_prelude, /recent-thread: .*用户: 论文架构第8步/);
+  assert.doesNotMatch(explicitOverlapPacket.runtime_prelude, /session-handoff|session-tail-exchange|session-core/);
 });
 
 test("pinned anchor cards enter resident delivery by default", async () => {
@@ -2443,9 +2458,10 @@ test("proactive recall uses the latest natural tail instead of the internal trig
   });
 
   assert.match(packet.recall_focus.current_query, /苹果|蛋白粉/);
-  assert.match(packet.runtime_prelude, /主动唤醒当前态/);
-  assert.match(packet.runtime_prelude, /相对时间校准/);
-  assert.match(packet.runtime_prelude, /latest-thread: .*用户: 到家啦到家啦，晚上吃了一个苹果/);
+  assert.match(packet.runtime_prelude, /proactive-recent-state: visible_turn_count=1/);
+  assert.match(packet.runtime_prelude, /raw_turn_text_included=false/);
+  assert.doesNotMatch(packet.runtime_prelude, /latest-thread|recent-thread/);
+  assert.doesNotMatch(packet.runtime_prelude, /到家啦到家啦，晚上吃了一个苹果/);
   assert.doesNotMatch(packet.runtime_prelude, /ongoing: 装修决策与交房前准备/);
 
   const coldNoisePacket = await service.captureContextPacket({

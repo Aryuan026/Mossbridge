@@ -145,7 +145,7 @@ The recommended default is the repository-root `.env`; `MOSSBRIDGE_ENV_FILE` is 
 
 Do not fork shared behavior into two `.env` files unless the user is deliberately running two separate deployments with separate state/data/workspace roots.
 
-Session refresh is a queued boundary action, not an immediate runtime kill. Codex can queue from live context telemetry or the read-only session JSONL fallback when the snapshot belongs to the bound thread. The queued request waits for the next normal foreground user message; check-in, dreaming, and other system turns must not consume it.
+Session refresh is a queued boundary action, not an immediate runtime kill. Codex can queue from live context telemetry or the read-only session JSONL fallback when the snapshot belongs to the bound thread. The queued request waits for the next normal foreground user message; check-in, dreaming, and other system turns must not consume it. Automatic lifecycle continuity stays in the control plane and should not inject old thread ids, maintenance reasons, or raw recent tail into runtime prompts. When the current user explicitly asks to continue or quote recent context, bounded recent-thread recall remains available.
 
 Do not set migration-only memory overrides for a first deployment:
 

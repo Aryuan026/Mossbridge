@@ -121,7 +121,9 @@ class AsherieMemoryService {
     const runtimeProfile = normalizeText(args.runtime_profile || args.runtimeProfile);
     const proactiveLite = runtimeProfile === "proactive_lite";
     const forceRecentContext = Boolean(args.force_recent_context || args.forceRecentContext);
-    const sessionHandoffMode = forceRecentContext && normalizeText(recallMode) !== "proactive";
+    const continuityContextMode = normalizeText(
+      args.continuity_context_mode || args.continuityContextMode,
+    );
     const cacheLimit = resolveContextCacheLimit({
       requested: args.cache_limit || args.cacheLimit,
       recallMode,
@@ -153,13 +155,7 @@ class AsherieMemoryService {
       recentRecords: recent.records,
       recentRecordLimit,
     });
-    const deliveryRecallFocus = sessionHandoffMode
-      ? buildRecallFocus({
-          query,
-          recentRecords: recent.records,
-          recentRecordLimit,
-        })
-      : recallFocus;
+    const deliveryRecallFocus = recallFocus;
     const deliveryProfile = resolveMemoryDeliveryProfile({
       query,
       recallFocus: deliveryRecallFocus,
@@ -191,9 +187,7 @@ class AsherieMemoryService {
       records: temporalRows.records,
     });
     const recallQuery = normalizeText(recallFocus.recall_query || focusQuery || query);
-    const layerRecallQuery = sessionHandoffMode
-      ? normalizeText(deliveryRecallFocus.recall_query || query)
-      : recallQuery;
+    const layerRecallQuery = recallQuery;
     const hotContextPacket = this.buildHotContextRuntimePacket(scopes, {
       query: layerRecallQuery,
       upstreamLimit: resolvePositiveInt(
@@ -468,7 +462,7 @@ class AsherieMemoryService {
       agentCharSelfAxisMaterialPacket,
       recallMode,
       forceRecentContext,
-      sessionHandoffMode,
+      continuityContextMode,
       currentTurnSignals,
       recentRecords: recent.records,
       calendarPacket,
@@ -506,12 +500,12 @@ class AsherieMemoryService {
         args.prelude_solitude_limit || args.preludeSolitudeLimit,
         Number(this.config.asheriePreludeSolitudeLimit) || 3,
       ),
-      preludeRecentSnippetLimit: resolvePositiveInt(
-        args.prelude_recent_snippet_limit || args.preludeRecentSnippetLimit,
+      preludeRecentSnippetLimit: resolveNonNegativeInt(
+        args.prelude_recent_snippet_limit ?? args.preludeRecentSnippetLimit,
         Number(this.config.asheriePreludeRecentSnippetLimit) || 4,
       ),
-      preludeRecentThreadLimit: resolvePositiveInt(
-        args.prelude_recent_thread_limit || args.preludeRecentThreadLimit,
+      preludeRecentThreadLimit: resolveNonNegativeInt(
+        args.prelude_recent_thread_limit ?? args.preludeRecentThreadLimit,
         Number(this.config.asheriePreludeRecentThreadLimit) || 3,
       ),
       preludeLocalArchiveLimit: resolvePositiveInt(
@@ -523,6 +517,7 @@ class AsherieMemoryService {
     return {
       ok: true,
       runtime_profile: runtimeProfile || "default",
+      continuity_context: buildContinuityContextDiagnostic(continuityContextMode),
       user_id: scopes.resolvedUserId,
       scoped_user_id: scopes.scopedUserId,
       cold_scope: scopes.coldScope,
@@ -1564,7 +1559,7 @@ function buildRuntimePrelude({
   temporalRecallPacket,
   hotContextPacket,
   forceRecentContext = false,
-  sessionHandoffMode = false,
+  continuityContextMode = "",
   recentRecords,
   calendarPacket,
   wakeupPacket,
@@ -1590,9 +1585,7 @@ function buildRuntimePrelude({
   const localArchiveHits = Array.isArray(localArchivePacket?.hits) ? localArchivePacket.hits : [];
   const includeRecentContext = forceRecentContext || shouldIncludeRecentContextPrelude(recallFocus, recallMode);
   const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
-  const sessionHandoffLines = forceRecentContext && normalizeText(recallMode) !== "proactive"
-    ? applySessionHandoffPreludeBudget(buildSessionHandoffPrelude(recentRecords))
-    : [];
+  const continuityTurn = Boolean(normalizeText(continuityContextMode));
   if (includeGuidance !== false) {
     ensurePreludeHeader(lines);
     lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
@@ -1600,10 +1593,6 @@ function buildRuntimePrelude({
   if (proactiveRecentStateLines.length) {
     ensurePreludeHeader(lines);
     lines.push(...proactiveRecentStateLines);
-  }
-  if (sessionHandoffLines.length) {
-    ensurePreludeHeader(lines);
-    lines.push(...sessionHandoffLines);
   }
   const hotContextLines = buildHotContextPreludeLines(hotContextPacket, 4);
   if (hotContextLines.length) {
@@ -1750,7 +1739,7 @@ function buildRuntimePrelude({
     });
   }
 
-  if (recallFocus?.used_recent_context && !sessionHandoffMode) {
+  if (recallFocus?.used_recent_context) {
     const reasons = Array.isArray(recallFocus.reasons) ? recallFocus.reasons.slice(0, 2).join(", ") : "";
     ensurePreludeHeader(lines);
     lines.push(`- recall-focus: expanded from recent context${reasons ? ` | ${reasons}` : ""}`);
@@ -1762,12 +1751,18 @@ function buildRuntimePrelude({
     lines.push(...temporalRecallLines);
   }
 
-  const recentThreadLimit = resolveRecentThreadPreludeLimit({
-    requested: preludeRecentThreadLimit,
-    recallFocus,
-    recallMode,
-    forceRecentContext,
-  });
+  const explicitRecentContextIntent = Boolean(
+    recallFocus?.explicit_recall_signal
+    || recallFocus?.used_recent_context
+  );
+  const recentThreadLimit = continuityTurn && !explicitRecentContextIntent
+    ? 0
+    : resolveRecentThreadPreludeLimit({
+        requested: preludeRecentThreadLimit,
+        recallFocus,
+        recallMode,
+        forceRecentContext,
+      });
   const recentThreadLines = includeRecentContext && !proactiveRecentStateLines.length && recentThreadLimit > 0
     ? buildRecentThreadPrelude(recentRecords, recentThreadLimit, { includeTimestamp: forceRecentContext })
     : [];
@@ -1811,9 +1806,7 @@ function buildRuntimePrelude({
     lines.push(...snippets);
   }
 
-  return applyRuntimePreludeBudget(lines, {
-    hardLimit: sessionHandoffMode ? 12000 : 18000,
-  }).join("\n").trim();
+  return applyRuntimePreludeBudget(lines).join("\n").trim();
 }
 
 function ensurePreludeHeader(lines) {
@@ -1821,6 +1814,17 @@ function ensurePreludeHeader(lines) {
     lines.push("[记忆参考]");
     lines.push("这是后台轻量召回。下面的当前消息是这一轮对话的中心。");
   }
+}
+
+function buildContinuityContextDiagnostic(mode = "") {
+  const normalizedMode = normalizeText(mode);
+  return {
+    mode: normalizedMode,
+    active: Boolean(normalizedMode),
+    control_only: true,
+    model_visible_chars: 0,
+    raw_recent_turns_injected: false,
+  };
 }
 
 function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
@@ -1848,14 +1852,11 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
     "- recall-focus:",
     "- 主动唤醒当前态：",
     "- 相对时间校准：",
-    "- session-handoff:",
-    "- session-tail-exchange:",
     "- current-time-anchor:",
     "- session-time-guard:",
-    "- session-core:",
-    "- session-last-outcome:",
-    "- session-digest:",
     "- hot-context:",
+    "- proactive-recent-state:",
+    "- proactive-continuity:",
   ];
   const mediumPrefixes = [
     "- warm:",
@@ -1898,29 +1899,6 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
   return output.length ? output : normalizedLines.slice(0, 1);
 }
 
-function applySessionHandoffPreludeBudget(lines = [], { hardLimit = 3200 } = {}) {
-  const normalizedLines = Array.isArray(lines)
-    ? lines.map((line) => normalizePreludeText(line)).filter(Boolean)
-    : [];
-  const output = [];
-  let trimmed = 0;
-  for (const line of normalizedLines) {
-    const candidate = [...output, line].join("\n");
-    if (candidate.length <= hardLimit) {
-      output.push(line);
-    } else {
-      trimmed += 1;
-    }
-  }
-  if (trimmed > 0) {
-    const notice = `- session-handoff-budget: shortened ${trimmed} lines; use recent conversation tools or memory search if more tail detail is needed.`;
-    if ([...output, notice].join("\n").length <= hardLimit) {
-      output.push(notice);
-    }
-  }
-  return output;
-}
-
 function buildAgentCharSelfAxisMaterialPrelude(packet = {}, { limit = 3 } = {}) {
   const candidates = Array.isArray(packet?.candidate_sources) ? packet.candidate_sources : [];
   if (!candidates.length) {
@@ -1961,126 +1939,24 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
   if (normalizeText(recallMode) !== "proactive") {
     return [];
   }
-  const threadLines = buildRecentThreadPrelude(recentRecords, 4, { includeTimestamp: true });
-  if (!threadLines.length) {
+  const visibleRecords = (Array.isArray(recentRecords) ? recentRecords : [])
+    .filter((record) => (
+      !String(record?.source_client || "").includes("system_turn")
+      && (normalizeText(record?.query) || normalizeText(record?.assistant_text_final))
+    ))
+    .slice(0, 4);
+  if (!visibleRecords.length) {
     return [];
   }
-  return [
-    "- 主动唤醒当前态：下面几条最近自然对话优先级高于长期记忆；已被这些尾巴回答的信息可以直接接住。",
-    "- 相对时间校准：latest-thread 里的“今天/明天/昨天”只按该条时间戳理解；只有日历或提醒明确确认时，才把未来事项视为当前已经发生。",
-    ...threadLines.map((line) => line.replace(/^- recent-thread:/u, "- latest-thread:")),
-  ];
-}
-
-function buildSessionHandoffPrelude(recentRecords = [], { coreLimit = 12 } = {}) {
-  const records = selectSessionHandoffRecords(recentRecords, {
-    limit: Math.max(1, Number(coreLimit) || 12),
-  });
-  if (!records.length) {
-    return [];
-  }
-
-  const chronological = records.slice().reverse();
-  const range = buildSessionHandoffRange(chronological);
-  const recentUserBeads = chronological
-    .slice(-6)
-    .map((record) => truncateText(record.query, 96))
-    .filter(Boolean);
-  const latest = records[0];
-  const latestOutcome = truncateText(latest.assistant_text_final, 180);
-  const digest = buildSessionCompressedDigest(records);
-
-  const lines = [
-    "- session-handoff: 这是刷新/新 session 的交接包；优先接住旧 session 的连续事件、情绪和未完成事项。它是连续性线索，长期事实和回复方式仍按当前证据判断。",
-  ];
-  lines.push(
-    `- session-core: 旧 session 最近 ${chronological.length} 轮${range ? ` (${range})` : ""} 的尾流：${recentUserBeads.join(" / ")}`,
+  const latestAt = formatCompactLocalTimestamp(
+    visibleRecords[0]?.ts_utc
+    || visibleRecords[0]?.timestamp
+    || visibleRecords[0]?.received_at,
   );
-  if (latestOutcome) {
-    lines.push(`- session-last-outcome: ${latestOutcome}`);
-  }
-  lines.push(...buildSessionTailExchangePrelude(chronological));
-  if (digest) {
-    lines.push(`- session-digest: ${digest}`);
-  }
-  return lines;
-}
-
-function selectSessionHandoffRecords(recentRecords = [], { limit = 12 } = {}) {
-  const records = [];
-  const seen = new Set();
-  for (const record of Array.isArray(recentRecords) ? recentRecords : []) {
-    if (!isSessionHandoffRecord(record)) {
-      continue;
-    }
-    const query = normalizeText(record.query);
-    const reply = normalizeText(record.assistant_text_final);
-    const pairKey = `${query}__${reply}`;
-    if (seen.has(pairKey)) {
-      continue;
-    }
-    seen.add(pairKey);
-    records.push(record);
-    if (records.length >= Math.max(1, Number(limit) || 12)) {
-      break;
-    }
-  }
-  return records;
-}
-
-function buildSessionTailExchangePrelude(chronologicalRecords = [], { limit = 3 } = {}) {
-  const rows = [];
-  const records = Array.isArray(chronologicalRecords)
-    ? chronologicalRecords.slice(-Math.max(1, Number(limit) || 3))
-    : [];
-  for (const record of records) {
-    const timestamp = formatCompactLocalTimestamp(record.ts_utc || record.timestamp || record.received_at);
-    const query = truncateText(record.query, 72);
-    const reply = truncateText(record.assistant_text_final, 132);
-    if (!query && !reply) {
-      continue;
-    }
-    rows.push(
-      `- session-tail-exchange: ${timestamp ? `${timestamp} | ` : ""}用户: ${query || "(no user text)"}${reply ? ` | 你: ${reply}` : ""}`,
-    );
-  }
-  return rows;
-}
-
-function isSessionHandoffRecord(record = {}) {
-  if (!record || typeof record !== "object") {
-    return false;
-  }
-  if (String(record.source_client || "").includes("system_turn")) {
-    return false;
-  }
-  const query = normalizeText(record.query);
-  const reply = normalizeText(record.assistant_text_final);
-  if (!query) {
-    return false;
-  }
-  return !isThinRecentLine(query) || isUsefulReplyContext(reply);
-}
-
-function buildSessionHandoffRange(records = []) {
-  const timestamps = records
-    .map((record) => formatCompactLocalTimestamp(record.ts_utc || record.timestamp || record.received_at))
-    .filter(Boolean);
-  if (!timestamps.length) {
-    return "";
-  }
-  const first = timestamps[0];
-  const last = timestamps[timestamps.length - 1];
-  return first === last ? first : `${first} -> ${last}`;
-}
-
-function buildSessionCompressedDigest(records = []) {
-  const digest = records
-    .map((record) => normalizePreludeText(record.compressed_digest))
-    .filter(Boolean)
-    .slice(0, 3)
-    .join(" / ");
-  return digest ? truncateText(digest, 420) : "";
+  return [
+    `- proactive-recent-state: visible_turn_count=${visibleRecords.length}${latestAt ? ` | latest_at=${latestAt}` : ""} | raw_turn_text_included=false`,
+    "- proactive-continuity: 最近对话只提供新鲜度信号；具体事实、关系、未完事项和行动线索从当前消息、resident/ambient memory、ongoing、calendar、receipt 和可用工具中承接。",
+  ];
 }
 
 function buildStickyCalendarPrelude(calendarPacket = {}) {
@@ -2930,6 +2806,14 @@ function resolvePositiveInt(value, fallback) {
     return parsed;
   }
   return Math.max(1, Number(fallback) || 1);
+}
+
+function resolveNonNegativeInt(value, fallback = 0) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return Math.max(0, Number(fallback) || 0);
 }
 
 function resolveNonNegativeNumber(value, fallback = 0) {

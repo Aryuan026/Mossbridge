@@ -77,7 +77,7 @@ It is not a production claim. Use it to separate implemented repository behavior
 - Ordinary foreground turns now preserve resident/ambient continuity without expanding every turn into a large memory packet.
 - Warm, ongoing, episode, observation, and cold/archive material should be relevance-gated, budget-gated, and evidence-driven.
 - Self-axis and dreaming material should not enter ordinary foreground by default.
-- Session handoff has a separate budget and should not inflate the ordinary memory package.
+- Session lifecycle continuity is control-plane by default and should not inflate the ordinary memory package or inject raw recent tail. Explicit user requests to continue or quote recent context keep a small bounded recent-thread recall path.
 - Delivery reports include actual final runtime prompt length estimates, not only hit counts or cache-token guesses.
 - Current optimization principle: do not use "larger memory packet every turn" to compensate for poor recall precision.
 
@@ -148,7 +148,7 @@ Observe:
 - context usage snapshots from Codex CLI;
 - whether native CLI compression occurs before Mossbridge forces a refresh;
 - whether session refresh is triggered by real state quality or only token percentage;
-- whether handoff/recent tail preserves continuity without rebuilding too much prompt every turn;
+- whether control-plane continuity plus explicit bounded recent recall preserves continuity without rebuilding too much prompt every turn;
 - whether post-refresh voice and relationship continuity survive.
 
 If this area needs code work, add strategy/reason records first: `continue`, `observe_compression`, `checkpoint_then_switch`, or `recovery_switch`.

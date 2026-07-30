@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const { MossbridgeApp } = require("../src/core/app");
+const { SessionRefreshRequestStore } = require("../src/core/session-refresh-request-store");
 const { SystemMessageDispatcher } = require("../src/core/system-message-dispatcher");
 
 function callInboundAuthorization(config, senderId) {
@@ -218,6 +219,84 @@ test("system turns ask memory for proactive recall instead of user-triggered rec
   assert.equal(received.recallMode, "proactive");
   assert.equal(received.sourceClient, "mossbridge_system_turn");
   assert.match(result.text, /warm-card: Meteor necklace/);
+});
+
+test("automatic session continuity is passed to memory without forcing raw recent context", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-system-continuity-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    oldThreadId: "old-thread",
+    reason: "context_pressure_session_refresh",
+  });
+
+  let received = null;
+  const result = await MossbridgeApp.prototype.attachMemoryContextToPreparedText.call({
+    config: {
+      runtime: "codex",
+      workspaceId: "default",
+      accountId: "account-1",
+      workspaceRoot: "/workspace",
+    },
+    activeAccountId: "account-1",
+    sessionRefreshRequests: store,
+    runtimeAdapter: {
+      describe() {
+        return { id: "codex" };
+      },
+      getSessionStore() {
+        return {
+          buildBindingKey() {
+            return "binding-1";
+          },
+          getThreadIdForWorkspace() {
+            return "old-thread";
+          },
+        };
+      },
+    },
+    projectDomains: {
+      memory: {
+        async captureContextPacket(args) {
+          received = args;
+          return {
+            runtime_prelude: "Mossbridge memory context",
+            continuity_context: {
+              mode: args.continuityContextMode,
+              active: Boolean(args.continuityContextMode),
+              control_only: true,
+              model_visible_chars: 0,
+              raw_recent_turns_injected: false,
+            },
+          };
+        },
+      },
+    },
+    resolveResidentAnchorPreludeKey: MossbridgeApp.prototype.resolveResidentAnchorPreludeKey,
+    resolveStableTurnGuidanceKey: MossbridgeApp.prototype.resolveStableTurnGuidanceKey,
+    resolveMemoryContextPressureProfile: MossbridgeApp.prototype.resolveMemoryContextPressureProfile,
+    resolvePreparedRuntimeThreadId: MossbridgeApp.prototype.resolvePreparedRuntimeThreadId,
+    resolveContinuityContextModeForPrepared: MossbridgeApp.prototype.resolveContinuityContextModeForPrepared,
+    markStableTurnGuidanceDelivered: MossbridgeApp.prototype.markStableTurnGuidanceDelivered,
+    recordControlEvent() {},
+  }, {
+    provider: "weixin",
+    workspaceId: "default",
+    accountId: "account-1",
+    senderId: "user-1",
+    originalText: "接着刚才那段，引用上一句",
+    text: "接着刚才那段，引用上一句",
+  }, "接着刚才那段，引用上一句", "/workspace");
+
+  assert.equal(received.forceRecentContext, false);
+  assert.equal(received.continuityContextMode, "session_refresh");
+  assert.equal(received.preludeRecentSnippetLimit, 0);
+  assert.equal(Object.hasOwn(received, "preludeRecentThreadLimit"), false);
+  assert.match(result.text, /Mossbridge memory context/);
 });
 
 test("deferred proactive replies record prefix delivery audit when next inbound arrives", () => {

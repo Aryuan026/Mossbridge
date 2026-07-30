@@ -41,9 +41,9 @@ const DEFAULT_SYSTEM_BUDGET_DREAMING_DEFER_MINUTES = 20;
 const DEFAULT_SYSTEM_BUDGET_COMPACT_RUNTIME_TEXT_CHARS = 6_000;
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATES = [
-  "%USER% comes to mind again; use the injected latest-thread and active context to decide whether a small hello belongs here.",
+  "%USER% comes to mind again; use the injected recent-state signal and active context to decide whether a small hello belongs here.",
   "A small ordinary check-in window opens for %USER%; no tools are available in this random heartbeat, so use the injected context and either stay silent or send one natural touch.",
-  "You have not surfaced for a little while. Reconnect only if the injected latest-thread, calendar, or ongoing context gives a real foothold.",
+  "You have not surfaced for a little while. Reconnect only if the injected recent-state signal, calendar, or ongoing context gives a real foothold.",
   "%USER% may be between tasks or quietly pushing through something. If the injected context gives no grounded foothold, stay silent instead of inventing a reason to appear.",
   "This is a non-meal, non-reminder random check-in. AI-calendar and task wakeups handle real work; this heartbeat is only for light reconnection.",
 ];
