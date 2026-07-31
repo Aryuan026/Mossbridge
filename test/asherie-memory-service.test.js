@@ -1460,9 +1460,11 @@ test("asherie memory service gives proactive turns resident anchors and text-fre
 
   assert.ok(packet.warm_memory_packet.hit_count >= 0);
   assert.match(packet.recall_focus.current_query, /你到时候别失约|明天10点记得来问我起床没/);
-  assert.match(packet.runtime_prelude, /proactive-recent-state: visible_turn_count=3/);
-  assert.match(packet.runtime_prelude, /raw_turn_text_included=false/);
-  assert.match(packet.runtime_prelude, /proactive-continuity:/);
+  assert.equal(packet.proactive_recent_state.active, true);
+  assert.equal(packet.proactive_recent_state.visible_turn_count, 3);
+  assert.equal(packet.proactive_recent_state.raw_turn_text_included, false);
+  assert.equal(packet.proactive_recent_state.model_visible, false);
+  assert.doesNotMatch(packet.runtime_prelude, /proactive-recent-state:|proactive-continuity:/);
   assert.doesNotMatch(packet.runtime_prelude, /latest-thread|recent-thread/);
   assert.doesNotMatch(packet.runtime_prelude, /你到时候别失约|明天10点记得来问我起床没|不跑，记着呢|好，10点来戳你/);
 });
@@ -2458,8 +2460,11 @@ test("proactive recall uses the latest natural tail instead of the internal trig
   });
 
   assert.match(packet.recall_focus.current_query, /苹果|蛋白粉/);
-  assert.match(packet.runtime_prelude, /proactive-recent-state: visible_turn_count=1/);
-  assert.match(packet.runtime_prelude, /raw_turn_text_included=false/);
+  assert.equal(packet.proactive_recent_state.active, true);
+  assert.equal(packet.proactive_recent_state.visible_turn_count, 1);
+  assert.equal(packet.proactive_recent_state.raw_turn_text_included, false);
+  assert.equal(packet.proactive_recent_state.model_visible, false);
+  assert.doesNotMatch(packet.runtime_prelude, /proactive-recent-state:|proactive-continuity:/);
   assert.doesNotMatch(packet.runtime_prelude, /latest-thread|recent-thread/);
   assert.doesNotMatch(packet.runtime_prelude, /到家啦到家啦，晚上吃了一个苹果/);
   assert.doesNotMatch(packet.runtime_prelude, /ongoing: 装修决策与交房前准备/);

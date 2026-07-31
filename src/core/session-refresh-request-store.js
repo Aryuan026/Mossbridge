@@ -75,16 +75,25 @@ class SessionRefreshRequestStore {
     return { ...next };
   }
 
-  getPendingRequest({ bindingKey = "", workspaceRoot = "", runtimeId = "" } = {}) {
+  getPendingRequest({
+    bindingKey = "",
+    workspaceRoot = "",
+    runtimeId = "",
+    currentThreadId = "",
+  } = {}) {
     const normalized = normalizeScope({ bindingKey, workspaceRoot, runtimeId });
     if (!normalized.bindingKey || !normalized.workspaceRoot || !normalized.runtimeId) {
       return null;
     }
+    const normalizedCurrentThreadId = normalizeText(currentThreadId);
     this.load();
     const requests = Array.isArray(this.state.requests) ? this.state.requests : [];
     for (let index = requests.length - 1; index >= 0; index -= 1) {
       const candidate = requests[index];
-      if (isSamePendingScope(candidate, normalized)) {
+      if (
+        isSamePendingScope(candidate, normalized)
+        && pendingRequestMatchesCurrentThread(candidate, normalizedCurrentThreadId)
+      ) {
         return { ...candidate };
       }
     }
@@ -298,6 +307,14 @@ function isSameCompletedScope(entry = {}, scope = {}) {
     && normalizeText(entry?.bindingKey) === scope.bindingKey
     && normalizeText(entry?.workspaceRoot) === scope.workspaceRoot
     && normalizeText(entry?.runtimeId) === scope.runtimeId;
+}
+
+function pendingRequestMatchesCurrentThread(entry = {}, currentThreadId = "") {
+  const normalizedCurrentThreadId = normalizeText(currentThreadId);
+  const requestedOldThreadId = normalizeText(entry?.oldThreadId);
+  return !normalizedCurrentThreadId
+    || !requestedOldThreadId
+    || normalizedCurrentThreadId === requestedOldThreadId;
 }
 
 function normalizeText(value) {

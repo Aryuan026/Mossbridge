@@ -65,13 +65,15 @@ function buildSystemInboundText(text, createdAt = "") {
     ...(liteCheckin
       ? [
           "This random check-in runs with a lightweight tool profile: keep the turn to injected context plus the final JSON action.",
-          "Use only the injected memory/status context and decide whether to stay silent or send one natural WeChat message.",
+          "The small wake budget limits fan-out, not the range of legitimate life. Use the injected context to choose one grounded path: a natural WeChat message, intentional quiet, or a later full-tool reminder.",
         ]
       : [
           "Use tools as affordances; read/write when this trigger needs it.",
           "Safe scope: memory, reminders, diary/notebook, episode/case/observation, timeline/status reads, stickers/files, capability requests. Service restarts, account rebinding, credential changes, memory deletion, and account/device/OAuth work belong to explicit human requests.",
         ]),
-    "Visible send_message is natural WeChat/front-stage continuity. Bridge status stays in Mossbridge notices. Keep emotional continuity from memory/recent context; tone stays contextual.",
+    "Keep control-plane state backstage. Runtime, thread, workspace, recovery, trigger packaging, prompt/context assembly, tool payloads and transport state may guide the decision, but must not become or be paraphrased as the visible message unless the user explicitly asks about that system state.",
+    "Ground any visible contact in a real ongoing thread, calendar item, canonical receipt, current world signal, remembered relationship context, or your own present response. Do not invent a conversational premise from the mere existence of this wake.",
+    "Visible send_message is natural WeChat/front-stage continuity. Keep emotional continuity from memory and the present moment; tone stays contextual.",
     "Bridge status reports come from [Mossbridge]; if only status remains, return silent.",
     "Return one JSON object after tools:",
     "{\"action\":\"silent\"}",
@@ -140,18 +142,17 @@ function buildSystemTriggerGuidance({ kind = "", priority = "", toolProfile = ""
   if (normalizedKind === "checkin_opportunity") {
     if (normalizedToolProfile === "checkin_lite") {
       return [
-        "This is a lightweight reconnection window.",
-        "Use the already-injected recent context to choose among a small WeChat message, intentional quiet, or a later full-tool reminder.",
-        "If this is a quiet moment, return {\"action\":\"silent\"}; silence means intentional quiet with context preserved.",
+        "This is an autonomous check-in opportunity, not a mandatory interruption.",
+        "Do not reduce the choice to 'send a greeting' or 'do nothing'. Use the injected context to choose one grounded path: a natural contact, intentional quiet, or a later full-tool checkpoint.",
+        "If this is a quiet moment or there is no real conversational premise, return {\"action\":\"silent\"}.",
       ];
     }
     return [
-      "This is a lightweight maintenance and reconnection window.",
-      "Use context to choose among a small message, a backstage continuity update, or intentional quiet. You may do a small, low-risk maintenance pass first: bridge status, wakeup agenda, pending reminders, memory/ongoing/episode/observation state, today's timeline/notebook, whereabouts/context signals, or other bridge-provided status surfaces when relevant.",
-      "Prefer read-only checks first. Safe writes are small continuity handles: reminder, diary/timeline note, observation, ongoing-track update, solitude journal entry, or concrete capability request if the bridge lacks the status surface you need. Store shareable outcomes instead of raw hidden chain-of-thought.",
-      "Write a concise wakeup decision record if the tool exists. Keep it factual and shareable: decision, wake motive, actions taken, next actions, contact channel, and budget posture.",
-      "If the user appears awake and there is no protected quiet-state signal, you may gently interrupt with a small low-stakes message. Meal times, reminders, and obviously important events are examples of valid reasons to reconnect; ordinary continuity can matter too.",
-      "When staying quiet, leave a usable backstage handle when one exists. Silence is useful when it protects attention, or when the actual outcome is 'maintenance done or intentionally skipped'.",
+      "This is an autonomous check-in opportunity, not a mandatory interruption.",
+      "Do not reduce the choice to 'send a greeting' or 'do nothing'. Look at grounded current signals and choose one useful path: a natural contact, a bounded private action, a future checkpoint, or quiet.",
+      "Use available tools when they add real value. When evidence is missing, prefer a read before a write; keep any diary, timeline, memory, observation or decision record factual and private.",
+      "You may make a small, low-stakes contact without waiting for a meal, reminder or emergency when the present moment gives a real reason to appear.",
+      "If a tool already completed the useful action and there is nothing helpful to add, return {\"action\":\"silent\"}. Quiet is also valid when it is the considered response to the current context.",
     ];
   }
   if (normalizedKind === "dreaming_opportunity" || normalizedKind === "memory_metabolism") {

@@ -37,6 +37,33 @@ test("session refresh store keeps one pending request per runtime scope", () => 
   }).reason, "second");
 });
 
+test("pending refresh currentness stays bound to the thread that requested it", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    oldThreadId: "thread-old",
+  });
+
+  assert.equal(store.getPendingRequest({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    currentThreadId: "thread-old",
+  }).id, request.id);
+  assert.equal(store.getPendingRequest({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    currentThreadId: "thread-successor",
+  }), null);
+  assert.equal(store.listRequests().find((entry) => entry.id === request.id).status, "pending");
+});
+
 test("pre-start failure requeues the same applied or provisional-completed refresh request", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({

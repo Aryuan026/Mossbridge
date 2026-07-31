@@ -1155,19 +1155,19 @@ class MossbridgeApp {
       return null;
     }
     const runtimeId = normalizeText(this.runtimeAdapter?.describe?.().id) || normalizeText(this.config.runtime) || "codex";
-    const request = this.sessionRefreshRequests.getPendingRequest({
-      bindingKey,
-      workspaceRoot,
-      runtimeId,
-    });
-    if (!request) {
-      return null;
-    }
-
     const sessionStore = this.runtimeAdapter.getSessionStore();
     const currentThreadId = normalizeCommandArgument(
       sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "",
     );
+    const request = this.sessionRefreshRequests.getPendingRequest({
+      bindingKey,
+      workspaceRoot,
+      runtimeId,
+      currentThreadId,
+    });
+    if (!request) {
+      return null;
+    }
     const requestedOldThreadId = normalizeCommandArgument(request.oldThreadId);
     if (requestedOldThreadId && currentThreadId && requestedOldThreadId !== currentThreadId) {
       this.sessionRefreshRequests.markSkipped(request.id, "current_thread_changed", {
@@ -1900,6 +1900,7 @@ class MossbridgeApp {
         bindingKey,
         workspaceRoot,
         runtimeId,
+        currentThreadId: oldThreadId,
       }) || null;
     }
     if (!refreshRequest) {
@@ -2064,6 +2065,7 @@ class MossbridgeApp {
       bindingKey: linked.bindingKey,
       workspaceRoot: linked.workspaceRoot,
       runtimeId,
+      currentThreadId: threadId,
     });
     if (existing) {
       return existing;
@@ -2127,15 +2129,16 @@ class MossbridgeApp {
     if (binding?.systemRuntimeBinding) {
       return null;
     }
+    const eventThreadId = normalizeCommandArgument(event?.payload?.threadId);
     const request = this.sessionRefreshRequests.getPendingRequest({
       bindingKey: linked.bindingKey,
       workspaceRoot: linked.workspaceRoot,
       runtimeId,
+      currentThreadId: eventThreadId,
     });
     if (!request || !isAutoSessionRefreshRequest(request) || normalizeText(request.preAppliedAt)) {
       return null;
     }
-    const eventThreadId = normalizeCommandArgument(event?.payload?.threadId);
     const requestedOldThreadId = normalizeCommandArgument(request.oldThreadId);
     if (requestedOldThreadId && eventThreadId && requestedOldThreadId !== eventThreadId) {
       return null;
@@ -4691,16 +4694,17 @@ class MossbridgeApp {
       || "codex";
     const root = normalizeCommandArgument(workspaceRoot) || normalizeCommandArgument(this.config?.workspaceRoot);
     try {
+      const threadId = normalizeCommandArgument(
+        sessionStore.getThreadIdForWorkspace?.(bindingKey, root) || "",
+      );
       if (this.sessionRefreshRequests?.getPendingRequest?.({
         bindingKey,
         workspaceRoot: root,
         runtimeId,
+        currentThreadId: threadId,
       })) {
         return "session_refresh";
       }
-      const threadId = normalizeCommandArgument(
-        sessionStore.getThreadIdForWorkspace?.(bindingKey, root) || "",
-      );
       if (!threadId) {
         return "opening";
       }

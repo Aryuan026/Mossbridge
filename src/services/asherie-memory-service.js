@@ -518,6 +518,7 @@ class AsherieMemoryService {
       ok: true,
       runtime_profile: runtimeProfile || "default",
       continuity_context: buildContinuityContextDiagnostic(continuityContextMode),
+      proactive_recent_state: buildProactiveRecentStateDiagnostic(recent.records, recallMode),
       user_id: scopes.resolvedUserId,
       scoped_user_id: scopes.scopedUserId,
       cold_scope: scopes.coldScope,
@@ -1583,16 +1584,12 @@ function buildRuntimePrelude({
   const coldRootHits = Array.isArray(coldRootPacket?.hits) ? coldRootPacket.hits : [];
   const coldVineRoots = Array.isArray(coldVinePacket?.related_roots) ? coldVinePacket.related_roots : [];
   const localArchiveHits = Array.isArray(localArchivePacket?.hits) ? localArchivePacket.hits : [];
+  const normalizedRecallMode = normalizeText(recallMode);
   const includeRecentContext = forceRecentContext || shouldIncludeRecentContextPrelude(recallFocus, recallMode);
-  const proactiveRecentStateLines = buildProactiveRecentStatePrelude(recentRecords, recallMode);
   const continuityTurn = Boolean(normalizeText(continuityContextMode));
   if (includeGuidance !== false) {
     ensurePreludeHeader(lines);
     lines.push(...buildMemorySelfMaintenancePrelude(recallFocus));
-  }
-  if (proactiveRecentStateLines.length) {
-    ensurePreludeHeader(lines);
-    lines.push(...proactiveRecentStateLines);
   }
   const hotContextLines = buildHotContextPreludeLines(hotContextPacket, 4);
   if (hotContextLines.length) {
@@ -1763,7 +1760,9 @@ function buildRuntimePrelude({
         recallMode,
         forceRecentContext,
       });
-  const recentThreadLines = includeRecentContext && !proactiveRecentStateLines.length && recentThreadLimit > 0
+  const recentThreadLines = includeRecentContext
+    && normalizedRecallMode !== "proactive"
+    && recentThreadLimit > 0
     ? buildRecentThreadPrelude(recentRecords, recentThreadLimit, { includeTimestamp: forceRecentContext })
     : [];
   if (recentThreadLines.length) {
@@ -1789,7 +1788,9 @@ function buildRuntimePrelude({
         recentThreadLimit,
       )
     : 0);
-  const snippets = includeRecentContext && !proactiveRecentStateLines.length && recentSnippetLimit > 0 ? (Array.isArray(recentRecords) ? recentRecords : [])
+  const snippets = includeRecentContext
+    && normalizedRecallMode !== "proactive"
+    && recentSnippetLimit > 0 ? (Array.isArray(recentRecords) ? recentRecords : [])
     .filter((record) => !String(record?.source_client || "").includes("system_turn"))
     .slice(0, recentSnippetLimit)
     .map((record) => {
@@ -1855,8 +1856,6 @@ function applyRuntimePreludeBudget(lines = [], { hardLimit = 18000 } = {}) {
     "- current-time-anchor:",
     "- session-time-guard:",
     "- hot-context:",
-    "- proactive-recent-state:",
-    "- proactive-continuity:",
   ];
   const mediumPrefixes = [
     "- warm:",
@@ -1935,9 +1934,15 @@ function buildWakeupRuntimePacket(wakeupStore, scopedUserId) {
   };
 }
 
-function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
+function buildProactiveRecentStateDiagnostic(recentRecords = [], recallMode = "") {
   if (normalizeText(recallMode) !== "proactive") {
-    return [];
+    return {
+      active: false,
+      visible_turn_count: 0,
+      latest_at: "",
+      raw_turn_text_included: false,
+      model_visible: false,
+    };
   }
   const visibleRecords = (Array.isArray(recentRecords) ? recentRecords : [])
     .filter((record) => (
@@ -1945,18 +1950,18 @@ function buildProactiveRecentStatePrelude(recentRecords = [], recallMode = "") {
       && (normalizeText(record?.query) || normalizeText(record?.assistant_text_final))
     ))
     .slice(0, 4);
-  if (!visibleRecords.length) {
-    return [];
-  }
   const latestAt = formatCompactLocalTimestamp(
     visibleRecords[0]?.ts_utc
     || visibleRecords[0]?.timestamp
     || visibleRecords[0]?.received_at,
   );
-  return [
-    `- proactive-recent-state: visible_turn_count=${visibleRecords.length}${latestAt ? ` | latest_at=${latestAt}` : ""} | raw_turn_text_included=false`,
-    "- proactive-continuity: 最近对话只提供新鲜度信号；具体事实、关系、未完事项和行动线索从当前消息、resident/ambient memory、ongoing、calendar、receipt 和可用工具中承接。",
-  ];
+  return {
+    active: visibleRecords.length > 0,
+    visible_turn_count: visibleRecords.length,
+    latest_at: latestAt,
+    raw_turn_text_included: false,
+    model_visible: false,
+  };
 }
 
 function buildStickyCalendarPrelude(calendarPacket = {}) {

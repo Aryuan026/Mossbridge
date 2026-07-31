@@ -471,12 +471,16 @@ test("random checkin system prompt stays in lightweight no-tool mode", () => {
 
   assert.match(prepared.text, /SYSTEM ACTION MODE/);
   assert.match(prepared.text, /lightweight tool profile/);
-  assert.match(prepared.text, /keep the turn to injected context plus the final JSON action/);
-  assert.match(prepared.text, /natural WeChat/);
-  assert.match(prepared.text, /emotional continuity/);
+  assert.match(prepared.text, /keep the turn to injected context plus the final JSON action/i);
+  assert.match(prepared.text, /small wake budget limits fan-out/i);
+  assert.match(prepared.text, /not the range of legitimate life/i);
+  assert.match(prepared.text, /Keep control-plane state backstage/i);
+  assert.match(prepared.text, /Do not invent a conversational premise/i);
+  assert.match(prepared.text, /natural WeChat/i);
   assert.match(prepared.text, /Bridge status reports come from \[Mossbridge\]/);
   assert.doesNotMatch(prepared.text, /Use tools as affordances/);
   assert.doesNotMatch(prepared.text, /Safe scope:/);
+  assert.doesNotMatch(prepared.text, /maintenance and reconnection|background package|continuity handle/i);
   assert.doesNotMatch(prepared.text, /WECHAT SESSION INSTRUCTIONS/);
   assert.doesNotMatch(prepared.text, /front-stage style/);
   assert.ok(prepared.text.length < 2400);
@@ -2868,18 +2872,12 @@ test("system dispatcher keeps random checkin as an opportunity instead of a mand
   }, "ctx");
 
   assert.match(prepared.text, /Trigger kind: checkin_opportunity/i);
-  assert.match(prepared.text, /lightweight maintenance and reconnection window/i);
-  assert.match(prepared.text, /small, low-risk maintenance pass/i);
-  assert.match(prepared.text, /Prefer read-only checks first/i);
-  assert.match(prepared.text, /Safe writes are small continuity handles/i);
-  assert.match(prepared.text, /capability request/i);
+  assert.match(prepared.text, /autonomous check-in opportunity/i);
+  assert.match(prepared.text, /natural contact, a bounded private action, a future checkpoint, or quiet/i);
+  assert.match(prepared.text, /prefer a read before a write/i);
+  assert.match(prepared.text, /without waiting for a meal, reminder or emergency/i);
+  assert.match(prepared.text, /Keep control-plane state backstage/i);
+  assert.match(prepared.text, /Do not invent a conversational premise/i);
   assert.match(prepared.text, /Service restarts, account rebinding, credential changes, memory deletion/i);
-  assert.match(prepared.text, /solitude journal entry/i);
-  assert.match(prepared.text, /Store shareable outcomes instead of raw hidden chain-of-thought/i);
-  assert.match(prepared.text, /wakeup decision record/i);
-  assert.match(prepared.text, /continuity handle/i);
-  assert.match(prepared.text, /may gently interrupt/i);
-  assert.match(prepared.text, /Meal times, reminders, and obviously important events are examples/i);
-  assert.match(prepared.text, /maintenance done or intentionally skipped/i);
-  assert.match(prepared.text, /Silence is useful when it protects attention/i);
+  assert.doesNotMatch(prepared.text, /background package|maintenance and reconnection|continuity handle/i);
 });
