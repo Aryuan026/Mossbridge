@@ -14,7 +14,11 @@ const { findModelByQuery } = require("./model-catalog");
 const { SessionStore } = require("./session-store");
 const { normalizeToolProfile, resolveCodexProjectToolMcpServerConfig } = require("./mcp-config");
 const { readLatestCodexSessionTokenUsage } = require("./session-usage");
-const { buildCodexCompanionDiagnostics, prepareCodexCompanionProfile } = require("./companion-profile");
+const {
+  buildCodexCompanionDiagnostics,
+  prepareCodexCompanionProfile,
+  readCodexCompanionDelivery,
+} = require("./companion-profile");
 
 function createCodexRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "codex" });
@@ -27,7 +31,7 @@ function createCodexRuntimeAdapter(config) {
     enabled: config.codexCompanionProfile === true,
     instructionsFile: config.codexCompanionInstructionsFile,
   });
-  const companionDeliveryVerifiedByProfile = new Map();
+  const companionDeliveryStateByProfile = new Map();
 
   function resolveModel(model = "", storedParams = null) {
     if (configuredModel) {
@@ -70,22 +74,38 @@ function createCodexRuntimeAdapter(config) {
     return companionProfile.applied === true && normalizeToolProfile(toolProfile) === "foreground";
   }
 
-  function companionThreadOverrides(toolProfile) {
+  function companionThreadDelivery(toolProfile) {
     if (!shouldUseCompanionForToolProfile(toolProfile)) {
+      return null;
+    }
+    return readCodexCompanionDelivery(companionProfile);
+  }
+
+  function companionThreadOverrides(toolProfile, delivery = null) {
+    if (!delivery) {
       return {};
     }
     return {
-      baseInstructions: companionProfile.baseInstructions,
+      baseInstructions: delivery.baseInstructions,
       personality: companionProfile.personality,
     };
   }
 
-  function markCompanionDeliveryVerified(toolProfile) {
+  function markCompanionDeliveryVerified(toolProfile, delivery) {
     const normalizedToolProfile = normalizeToolProfile(toolProfile);
     if (!shouldUseCompanionForToolProfile(normalizedToolProfile)) {
       return;
     }
-    companionDeliveryVerifiedByProfile.set(normalizedToolProfile, true);
+    companionDeliveryStateByProfile.set(normalizedToolProfile, {
+      deliveryVerified: true,
+      delivered: delivery && typeof delivery === "object"
+        ? {
+          baseInstructionsVersion: delivery.baseInstructionsVersion || "",
+          baseInstructionsSha256: delivery.baseInstructionsSha256 || "",
+          baseInstructionsChars: delivery.baseInstructionsChars || 0,
+        }
+        : null,
+    });
     const readyState = readyStateByProfile.get(normalizedToolProfile);
     if (readyState) {
       readyState.companionProfile = companionDiagnosticsForProfile(normalizedToolProfile);
@@ -94,25 +114,29 @@ function createCodexRuntimeAdapter(config) {
 
   function companionDiagnosticsForProfile(toolProfile) {
     const normalizedToolProfile = normalizeToolProfile(toolProfile);
+    const state = companionDeliveryStateByProfile.get(normalizedToolProfile) || {};
     return buildCodexCompanionDiagnostics(companionProfile, {
-      deliveryVerified: companionDeliveryVerifiedByProfile.get(normalizedToolProfile) === true,
+      deliveryVerified: state.deliveryVerified === true,
+      delivered: state.delivered || null,
     });
   }
 
   async function startRuntimeThread(runtimeClient, params, toolProfile) {
-    const overrides = companionThreadOverrides(toolProfile);
+    const delivery = companionThreadDelivery(toolProfile);
+    const overrides = companionThreadOverrides(toolProfile, delivery);
     const response = await runtimeClient.startThread({ ...params, ...overrides });
-    if (overrides.baseInstructions) {
-      markCompanionDeliveryVerified(toolProfile);
+    if (delivery) {
+      markCompanionDeliveryVerified(toolProfile, delivery);
     }
     return response;
   }
 
   async function resumeRuntimeThread(runtimeClient, params, toolProfile) {
-    const overrides = companionThreadOverrides(toolProfile);
+    const delivery = companionThreadDelivery(toolProfile);
+    const overrides = companionThreadOverrides(toolProfile, delivery);
     const response = await runtimeClient.resumeThread({ ...params, ...overrides });
-    if (overrides.baseInstructions) {
-      markCompanionDeliveryVerified(toolProfile);
+    if (delivery) {
+      markCompanionDeliveryVerified(toolProfile, delivery);
     }
     return response;
   }

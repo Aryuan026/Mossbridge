@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -32,6 +33,7 @@ test("codex companion profile reads neutral base instructions without exposing p
   assert.equal(profile.diagnostics.thread_instruction_override, true);
   assert.equal(profile.diagnostics.runtime_isolation_applied, false);
   assert.equal(profile.diagnostics.local_runtime_isolation_status, "hold_lane_safety");
+  assert.match(profile.diagnostics.base_instructions_version, /^mossbridge_codex_companion_base\.v1:[0-9a-f]{24}$/);
   assert.equal(profile.diagnostics.base_instructions_sha256.length, 64);
   assert.equal(profile.diagnostics.base_instructions_chars, profile.baseInstructions.length);
   assert.doesNotMatch(diagnosticsText, /conversation companion runtime/i);
@@ -154,6 +156,54 @@ test("failed companion resume rpc is not marked delivery verified", async () => 
   }
 });
 
+test("codex companion profile re-reads same-thread exact bytes before resume and reports the latest verified delivery", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-companion-refresh-"));
+  const instructionsFile = path.join(tmp, "codex-companion-base.md");
+  const v1 = "You are the first foreground companion base.";
+  const v2 = "You are the updated foreground companion base.";
+  fs.writeFileSync(instructionsFile, v1, "utf8");
+
+  const calls = [];
+  const restore = stubCodexClient(calls);
+  try {
+    const adapter = createCodexRuntimeAdapter(buildConfig(tmp, {
+      codexCompanionProfile: true,
+      codexCompanionInstructionsFile: instructionsFile,
+    }));
+
+    await adapter.sendTurn({
+      bindingKey: "fg",
+      workspaceRoot: path.join(tmp, "foreground"),
+      text: "hello",
+    });
+
+    fs.writeFileSync(instructionsFile, v2, "utf8");
+
+    await adapter.sendTurn({
+      bindingKey: "fg",
+      workspaceRoot: path.join(tmp, "foreground"),
+      text: "again",
+    });
+
+    const foregroundStart = calls.find((call) => call.profile === "foreground" && call.method === "thread/start");
+    const foregroundResume = calls.find((call) => call.profile === "foreground" && call.method === "thread/resume");
+    const latestSha = sha256(v2);
+    const diagnostics = adapter.describe().companionProfile;
+
+    assert.ok(foregroundStart);
+    assert.ok(foregroundResume);
+    assert.equal(foregroundStart.params.baseInstructions, v1);
+    assert.equal(foregroundResume.params.baseInstructions, v2);
+    assert.equal(diagnostics.delivery_verified, true);
+    assert.equal(diagnostics.base_instructions_sha256, latestSha);
+    assert.equal(diagnostics.base_instructions_chars, v2.length);
+    assert.equal(diagnostics.base_instructions_version, `mossbridge_codex_companion_base.v1:${latestSha.slice(0, 24)}`);
+    await adapter.close();
+  } finally {
+    restore();
+  }
+});
+
 function buildConfig(tmp, overrides = {}) {
   return {
     stateDir: path.join(tmp, "state"),
@@ -213,4 +263,8 @@ function stubCodexClient(calls, overrides = {}) {
       CodexRpcClient.prototype[name] = value;
     }
   };
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
 }
