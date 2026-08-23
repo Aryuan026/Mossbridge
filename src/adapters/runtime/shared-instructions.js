@@ -19,7 +19,7 @@ const WAKE_SOUL_SECTION_HEADINGS = [
 ];
 
 function buildOpeningTurnText(config, userText) {
-  const instructions = loadWechatInstructions(config);
+  const instructions = loadWechatPersonaInstructions(config);
   const normalizedText = String(userText || "").trim();
   if (!instructions) {
     return normalizedText;
@@ -51,7 +51,7 @@ function buildSystemWakeTurnText(config, systemText) {
 }
 
 function buildInstructionRefreshText(config) {
-  const instructions = loadWechatInstructions(config);
+  const instructions = loadWechatPersonaInstructions(config);
   if (!instructions) {
     return "Refresh your WeChat behavior for this existing thread. Reply in one natural Chinese sentence confirming that you have updated your behavior for this thread.";
   }

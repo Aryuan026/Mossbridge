@@ -4,7 +4,46 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { buildSystemWakeTurnText } = require("../src/adapters/runtime/shared-instructions");
+const {
+  buildInstructionRefreshText,
+  buildOpeningTurnText,
+  buildSystemWakeTurnText,
+} = require("../src/adapters/runtime/shared-instructions");
+
+test("opening instructions carry persona context without operational prompt ballast", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-instructions-opening-"));
+  const personaPath = path.join(tempRoot, "weixin-instructions.md");
+  const operationsPath = path.join(tempRoot, "weixin-operations.md");
+  fs.writeFileSync(personaPath, "关系入口：{{USER_NAME}}", "utf8");
+  fs.writeFileSync(operationsPath, "后台操作提示不应该进入 opening", "utf8");
+
+  const text = buildOpeningTurnText({
+    userName: "Moss",
+    weixinInstructionsFile: personaPath,
+    weixinOperationsFile: operationsPath,
+  }, "现在接着说");
+
+  assert.match(text, /关系入口：Moss/);
+  assert.match(text, /现在接着说/);
+  assert.doesNotMatch(text, /后台操作提示不应该进入 opening/);
+});
+
+test("instruction refresh keeps persona context without replaying operational prompt ballast", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-instructions-refresh-"));
+  const personaPath = path.join(tempRoot, "weixin-instructions.md");
+  const operationsPath = path.join(tempRoot, "weixin-operations.md");
+  fs.writeFileSync(personaPath, "关系入口：{{USER_NAME}}", "utf8");
+  fs.writeFileSync(operationsPath, "后台操作提示不应该进入 refresh", "utf8");
+
+  const text = buildInstructionRefreshText({
+    userName: "Moss",
+    weixinInstructionsFile: personaPath,
+    weixinOperationsFile: operationsPath,
+  });
+
+  assert.match(text, /关系入口：Moss/);
+  assert.doesNotMatch(text, /后台操作提示不应该进入 refresh/);
+});
 
 test("system wake soul anchor preserves agency sections when the soul file is long", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-shared-instructions-"));
