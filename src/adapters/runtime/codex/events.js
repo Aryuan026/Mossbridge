@@ -41,11 +41,15 @@ function mapCodexMessageToRuntimeEvent(message) {
   }
 
   if (method === "turn/completed") {
+    const status = normalizeString(params?.turn?.status || params?.status).toLowerCase();
+    const failed = ["failed", "interrupted", "cancelled", "canceled"].includes(status)
+      || Boolean(params?.turn?.error || params?.error);
     return {
-      type: "runtime.turn.completed",
+      type: failed ? "runtime.turn.failed" : "runtime.turn.completed",
       payload: {
         threadId,
         turnId,
+        ...(failed ? { text: extractFailureText(params) } : {}),
       },
     };
   }

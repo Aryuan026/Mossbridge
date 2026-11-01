@@ -84,6 +84,7 @@ It is not a production claim. Use it to separate implemented repository behavior
 ### Session And Runtime Maintenance
 
 - Existing public code can queue session refresh under pressure and apply it on the next normal foreground user turn rather than abruptly cutting a background turn.
+- Refresh lifecycle evidence now distinguishes dispatch acceptance, exact runtime start, terminal outcome, and settled local writeback. A pre-start recovery can redispatch the same inbound once; late events from the superseded run are rejected before visible delivery or writeback, and recovery deferred replies are causal-message-only.
 - Several private-test stability fixes were absorbed around slow replies, runtime notices, Claude Code thread cleanup, pending approval ordering, and post-refresh continuity.
 - The next strategy review should not reduce session maintenance to one threshold rule.
 - Pending principle for future work:

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 class DeferredSystemReplyStore {
   constructor({ filePath }) {
@@ -30,7 +31,17 @@ class DeferredSystemReplyStore {
   }
 
   save() {
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
+    const tempPath = `${this.filePath}.tmp-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(this.state, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.renameSync(tempPath, this.filePath);
+    } catch (error) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw error;
+    }
   }
 
   enqueue(reply) {
@@ -53,6 +64,15 @@ class DeferredSystemReplyStore {
         prefixDelivered: Boolean(existing.prefixDelivered || normalized.prefixDelivered),
         prefixDeliveredAt: normalized.prefixDeliveredAt || existing.prefixDeliveredAt,
         contextTokenAgeMs: normalized.contextTokenAgeMs ?? existing.contextTokenAgeMs ?? null,
+        causalMessageId: normalized.causalMessageId || existing.causalMessageId,
+        redispatchGeneration: Math.max(
+          normalized.redispatchGeneration || 0,
+          existing.redispatchGeneration || 0,
+        ),
+        replayPolicy: (
+          normalized.replayPolicy === "causal_message_only"
+          || existing.replayPolicy === "causal_message_only"
+        ) ? "causal_message_only" : "next_inbound",
       };
       this.state.replies[existingIndex] = merged;
       this.state.replies.sort(compareDeferredReplies);
@@ -69,10 +89,15 @@ class DeferredSystemReplyStore {
     return this.drainForSenderWithExpiry(accountId, senderId).drained;
   }
 
-  drainForSenderWithExpiry(accountId, senderId, { nowMs = Date.now(), systemReplyMaxAgeMs = null } = {}) {
+  drainForSenderWithExpiry(
+    accountId,
+    senderId,
+    { nowMs = Date.now(), systemReplyMaxAgeMs = null, causalMessageId = "" } = {},
+  ) {
     this.load();
     const normalizedAccountId = normalizeText(accountId);
     const normalizedSenderId = normalizeText(senderId);
+    const normalizedCausalMessageId = normalizeText(causalMessageId);
     const drained = [];
     const expired = [];
     const pending = [];
@@ -81,6 +106,13 @@ class DeferredSystemReplyStore {
       if (reply.accountId === normalizedAccountId && reply.senderId === normalizedSenderId) {
         if (isExpiredDeferredSystemReply(reply, { nowMs, systemReplyMaxAgeMs })) {
           expired.push(reply);
+          continue;
+        }
+        if (
+          reply.replayPolicy === "causal_message_only"
+          && (!normalizedCausalMessageId || reply.causalMessageId !== normalizedCausalMessageId)
+        ) {
+          pending.push(reply);
           continue;
         }
         drained.push(reply);
@@ -95,6 +127,30 @@ class DeferredSystemReplyStore {
     }
 
     return { drained, expired };
+  }
+
+  discardForSupersededRun({ threadId = "", dedupeKey = "" } = {}) {
+    this.load();
+    const normalizedThreadId = normalizeText(threadId);
+    const normalizedDedupeKey = normalizeText(dedupeKey);
+    const discarded = [];
+    const pending = [];
+    for (const reply of this.state.replies) {
+      if (
+        normalizedDedupeKey
+          ? reply.dedupeKey === normalizedDedupeKey
+          : (normalizedThreadId && reply.threadId === normalizedThreadId)
+      ) {
+        discarded.push(reply);
+      } else {
+        pending.push(reply);
+      }
+    }
+    if (discarded.length) {
+      this.state.replies = pending;
+      this.save();
+    }
+    return discarded;
   }
 
   countForSender(accountId, senderId) {
@@ -146,6 +202,9 @@ function normalizeDeferredSystemReply(reply) {
     prefixDelivered: Boolean(reply.prefixDelivered),
     prefixDeliveredAt,
     contextTokenAgeMs: normalizeNullableNonNegativeNumber(reply.contextTokenAgeMs),
+    causalMessageId: normalizeText(reply.causalMessageId),
+    redispatchGeneration: normalizeNullableNonNegativeNumber(reply.redispatchGeneration) || 0,
+    replayPolicy: reply.replayPolicy === "causal_message_only" ? "causal_message_only" : "next_inbound",
   };
 }
 
@@ -187,7 +246,7 @@ function compareDeferredReplies(left, right) {
 }
 
 function isExpiredDeferredSystemReply(reply, { nowMs = Date.now(), systemReplyMaxAgeMs = null } = {}) {
-  if (reply?.kind !== "system_reply") {
+  if (reply?.kind !== "system_reply" && reply?.replayPolicy !== "causal_message_only") {
     return false;
   }
   const maxAgeMs = normalizeNullableNonNegativeNumber(systemReplyMaxAgeMs);

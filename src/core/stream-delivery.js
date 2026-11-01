@@ -39,6 +39,8 @@ class StreamDelivery {
     this.replyTargetQueueByThreadId = new Map();
     this.deferredReplyPrefixByBindingKey = new Map();
     this.suppressedRunCountByThreadId = new Map();
+    this.supersededRunByRunKey = new Map();
+    this.supersededRunByThreadId = new Map();
     this.stateByRunKey = new Map();
     this.runSequence = 0;
   }
@@ -106,6 +108,65 @@ class StreamDelivery {
     this.suppressedRunCountByThreadId.set(normalizedThreadId, count - 1);
   }
 
+  markRunSuperseded({
+    threadId = "",
+    turnId = "",
+    causalMessageId = "",
+    redispatchGeneration = 0,
+    replyTarget = null,
+  } = {}) {
+    const normalizedThreadId = normalizeText(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const normalizedTurnId = normalizeText(turnId);
+    const record = {
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      runKey: buildRunKey(normalizedThreadId, normalizedTurnId),
+      causalMessageId: normalizeText(causalMessageId),
+      redispatchGeneration: normalizeNullableNonNegativeNumber(redispatchGeneration) || 0,
+      replyTarget: normalizeReplyTarget(replyTarget),
+      auditRecorded: false,
+    };
+    if (normalizedTurnId) {
+      this.supersededRunByRunKey.set(record.runKey, record);
+      trimMapToMaxEntries(this.supersededRunByRunKey, 1_024);
+    }
+    this.supersededRunByThreadId.set(normalizedThreadId, record);
+    trimMapToMaxEntries(this.supersededRunByThreadId, 1_024);
+    for (const state of this.stateByRunKey.values()) {
+      if (state.threadId === normalizedThreadId && (!normalizedTurnId || state.turnId === normalizedTurnId)) {
+        state.suppressDelivery = true;
+        state.superseded = true;
+      }
+    }
+    if (normalizedTurnId) {
+      this.replyTargetByTurnKey.delete(record.runKey);
+    }
+    this.replyTargetQueueByThreadId.delete(normalizedThreadId);
+    return { ...record };
+  }
+
+  resolveSupersededRun(threadId = "", turnId = "") {
+    const normalizedThreadId = normalizeText(threadId);
+    const normalizedTurnId = normalizeText(turnId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    if (normalizedTurnId) {
+      const exact = this.supersededRunByRunKey.get(buildRunKey(normalizedThreadId, normalizedTurnId));
+      if (exact) {
+        return exact;
+      }
+    }
+    return this.supersededRunByThreadId.get(normalizedThreadId) || null;
+  }
+
+  isRuntimeEventSuppressed(event) {
+    return Boolean(this.resolveSupersededRun(event?.payload?.threadId, event?.payload?.turnId));
+  }
+
   setDeferredReplyPrefix(bindingKey, text) {
     const normalizedBindingKey = normalizeText(bindingKey);
     const normalizedText = trimOuterBlankLines(normalizeLineEndings(text));
@@ -151,6 +212,12 @@ class StreamDelivery {
     if (!threadId) {
       return;
     }
+    const superseded = this.resolveSupersededRun(threadId, turnId);
+    if (superseded) {
+      this.recordLateOldTurnSuppressed(superseded, event);
+      this.disposeRunState(buildRunKey(threadId, turnId));
+      return { lateOldTurnSuppressed: true };
+    }
 
     switch (event.type) {
       case "runtime.turn.started": {
@@ -191,7 +258,13 @@ class StreamDelivery {
                 toolOutcomeReached: false,
               },
             }
-          : null;
+          : {};
+        const assistantTextFinal = state.mcpTransportFailureObserved
+          ? ""
+          : buildReplyText(state, { completedOnly: false });
+        if (assistantTextFinal) {
+          result.assistantTextFinal = assistantTextFinal;
+        }
         this.disposeRunState(state.runKey);
         return result;
       }
@@ -601,6 +674,9 @@ class StreamDelivery {
         error,
         kind,
         dedupeKey: state.runKey,
+        causalMessageId: normalizeText(target.causalMessageId),
+        redispatchGeneration: normalizeNullableNonNegativeNumber(target.redispatchGeneration) || 0,
+        replayPolicy: Number(target.redispatchGeneration) > 0 ? "causal_message_only" : "next_inbound",
         deferReason: resolveDeliveryDeferReason(error),
         immediateSent: false,
         deferred: true,
@@ -706,8 +782,37 @@ class StreamDelivery {
       userId: target.userId,
       contextToken: target.contextToken,
       provider: target.provider,
+      contextTokenAgeMs: normalizeNullableNonNegativeNumber(target.contextTokenAgeMs),
+      causalMessageId: normalizeText(target.causalMessageId),
+      redispatchGeneration: normalizeNullableNonNegativeNumber(target.redispatchGeneration) || 0,
     };
     state.threadReplyTargetAttached = true;
+  }
+
+  recordLateOldTurnSuppressed(record, event = {}) {
+    if (!record || record.auditRecorded) {
+      return;
+    }
+    record.auditRecorded = true;
+    const threadId = normalizeText(event?.payload?.threadId) || record.threadId;
+    const turnId = normalizeText(event?.payload?.turnId) || record.turnId;
+    this.recordOutboundDelivery({
+      threadId,
+      turnId,
+      runKey: buildRunKey(threadId, turnId),
+      bindingKey: "",
+      replyTarget: record.replyTarget || {
+        userId: "",
+        contextToken: "",
+        provider: "",
+        causalMessageId: record.causalMessageId,
+        redispatchGeneration: record.redispatchGeneration,
+      },
+    }, {}, {
+      kind: "runtime_causality",
+      status: "late_old_turn_suppressed",
+      attempt: normalizeText(event?.type) || "late_runtime_event",
+    });
   }
 
   markAllItemsSent(state) {
@@ -907,7 +1012,15 @@ function normalizeReplyTarget(target) {
     contextToken: String(target.contextToken).trim(),
     provider: normalizeText(target.provider),
     contextTokenAgeMs: normalizeNullableNonNegativeNumber(target.contextTokenAgeMs),
+    causalMessageId: normalizeText(target.causalMessageId),
+    redispatchGeneration: normalizeNullableNonNegativeNumber(target.redispatchGeneration) || 0,
   };
+}
+
+function trimMapToMaxEntries(map, maxEntries) {
+  while (map.size > maxEntries) {
+    map.delete(map.keys().next().value);
+  }
 }
 
 function normalizeLineEndings(value) {

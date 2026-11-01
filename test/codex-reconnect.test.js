@@ -3,6 +3,25 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { mapCodexMessageToRuntimeEvent } = require("../src/adapters/runtime/codex/events");
+
+test("codex interrupted turn/completed maps to runtime failure", () => {
+  const event = mapCodexMessageToRuntimeEvent({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-interrupted",
+      turn: {
+        id: "turn-interrupted",
+        status: "interrupted",
+        error: { message: "request interrupted" },
+      },
+    },
+  });
+
+  assert.equal(event.type, "runtime.turn.failed");
+  assert.equal(event.payload.threadId, "thread-interrupted");
+  assert.equal(event.payload.turnId, "turn-interrupted");
+});
 
 test("codex adapter reinitializes when the websocket transport has dropped", async () => {
   const indexPath = path.resolve(__dirname, "../src/adapters/runtime/codex/index.js");

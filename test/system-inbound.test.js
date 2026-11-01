@@ -100,6 +100,54 @@ test("wechat allowlist rejects unauthorized senders before commands attachments 
   assert.equal(audits[0].textPreview, "");
 });
 
+test("wechat ignores a persisted duplicate before context or runtime side effects", async () => {
+  const audits = [];
+  let rememberedTokens = 0;
+  let handledPreparedMessages = 0;
+  const normalized = {
+    provider: "weixin",
+    accountId: "account-1",
+    senderId: "allowed-user",
+    messageId: "msg-already-dispatched",
+    text: "duplicate",
+    contextToken: "ctx-duplicate",
+  };
+  const appLike = {
+    config: { allowedUserIds: ["allowed-user"], allowOpenInbound: false },
+    channelAdapter: {
+      normalizeIncomingMessage() { return normalized; },
+      rememberContextToken() { rememberedTokens += 1; },
+    },
+    weixinIngressAuditStore: {
+      hasClaimedInbound({ accountId, messageId, senderId }) {
+        assert.deepEqual({ accountId, messageId, senderId }, {
+          accountId: "account-1",
+          messageId: "msg-already-dispatched",
+          senderId: "allowed-user",
+        });
+        return true;
+      },
+      recordInbound(payload) {
+        audits.push(payload);
+        return payload;
+      },
+    },
+    recordWeixinInboundAudit: MossbridgeApp.prototype.recordWeixinInboundAudit,
+    isAuthorizedInboundSender: MossbridgeApp.prototype.isAuthorizedInboundSender,
+    resolveInboundAuthorization: MossbridgeApp.prototype.resolveInboundAuthorization,
+    async handlePreparedMessage() { handledPreparedMessages += 1; },
+  };
+
+  await MossbridgeApp.prototype.handleIncomingMessage.call(appLike, {
+    message_id: "msg-already-dispatched",
+  });
+
+  assert.equal(rememberedTokens, 0);
+  assert.equal(handledPreparedMessages, 0);
+  assert.equal(audits[0].stage, "duplicate_ignored");
+  assert.equal(audits[0].textPreview, "");
+});
+
 test("wechat allowlist stays closed when empty unless enrollment is explicit", () => {
   const config = { allowedUserIds: [], allowOpenInbound: false };
   assert.equal(callIsAuthorizedInboundSender(config, "first-login-user"), false);
@@ -168,6 +216,7 @@ test("wechat allowlist permits explicit open enrollment with empty allowlist", a
   assert.equal(primedDeferredReplies, 1);
   assert.equal(handledPreparedMessages, 1);
   assert.deepEqual(audits.map((item) => item.stage), ["accepted", "dispatched"]);
+  assert.deepEqual(audits.map((item) => item.textPreview), ["", ""]);
 });
 
 test("wechat allowlist permits authorized senders only after enrollment", async () => {

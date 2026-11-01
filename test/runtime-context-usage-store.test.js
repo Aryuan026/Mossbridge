@@ -51,3 +51,32 @@ test("RuntimeContextUsageStore keeps recent auto compact events", () => {
     fs.rmSync(filePath, { force: true });
   }
 });
+
+test("RuntimeContextUsageStore does not let zero usage overwrite an exact positive snapshot", () => {
+  const filePath = path.join(
+    os.tmpdir(),
+    `mossbridge-context-usage-zero-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+  );
+  try {
+    const store = new RuntimeContextUsageStore({ filePath });
+    store.recordContext({
+      runtimeId: "codex",
+      threadId: "thread-positive",
+      currentTokens: 76_000,
+      contextWindow: 100_000,
+      source: "codex_session_jsonl",
+    });
+    store.recordContext({
+      runtimeId: "codex",
+      threadId: "thread-positive",
+      currentTokens: 0,
+      contextWindow: 0,
+      source: "empty_runtime_event",
+    });
+
+    assert.equal(store.getExactContext("thread-positive").currentTokens, 76_000);
+    assert.equal(store.getExactContext("thread-positive").source, "codex_session_jsonl");
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+});

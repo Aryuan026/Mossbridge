@@ -29,11 +29,75 @@ test("WeixinIngressAuditStore persists poll and inbound audit snapshots", () => 
     const snapshot = reloaded.snapshot();
     assert.equal(snapshot.lastPoll.messageCount, 1);
     assert.equal(snapshot.lastInbound.stage, "accepted");
-    assert.equal(snapshot.lastInbound.textPreview.endsWith("..."), true);
+    assert.equal(snapshot.lastInbound.textPreview, "");
     assert.equal(snapshot.recentEvents.length, 2);
   } finally {
     fs.rmSync(filePath, { force: true });
   }
+});
+
+test("WeixinIngressAuditStore recognizes claimed messages after restart", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-ingress-dedup-"));
+  const filePath = path.join(tempRoot, "audit.json");
+  const store = new WeixinIngressAuditStore({ filePath });
+  store.recordInbound({
+    stage: "accepted",
+    accountId: "account-1",
+    messageId: "msg-1",
+    senderId: "user-1",
+  });
+  for (let index = 0; index < 120; index += 1) {
+    store.recordPoll({ messageCount: index });
+  }
+
+  const reloaded = new WeixinIngressAuditStore({ filePath });
+  assert.equal(reloaded.hasClaimedInbound({
+    accountId: "account-1",
+    messageId: "msg-1",
+    senderId: "user-1",
+  }), true);
+  assert.equal(reloaded.hasClaimedInbound({
+    accountId: "account-2",
+    messageId: "msg-1",
+    senderId: "user-1",
+  }), false);
+  assert.equal(JSON.stringify(reloaded.state).includes("account-1\u0000user-1\u0000msg-1"), false);
+});
+
+test("WeixinIngressAuditStore fails closed without replacing malformed state", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-ingress-invalid-"));
+  const filePath = path.join(tempRoot, "audit.json");
+  fs.writeFileSync(filePath, "{not-json", "utf8");
+
+  assert.throws(
+    () => new WeixinIngressAuditStore({ filePath }),
+    (error) => error?.code === "MOSSBRIDGE_WEIXIN_AUDIT_STATE_INVALID",
+  );
+  assert.equal(fs.readFileSync(filePath, "utf8"), "{not-json");
+});
+
+test("WeixinIngressAuditStore rolls back an inbound claim when persistence fails", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-ingress-save-failure-"));
+  const filePath = path.join(tempRoot, "audit.json");
+  const store = new WeixinIngressAuditStore({ filePath });
+  store.save = () => {
+    throw new Error("disk unavailable");
+  };
+
+  assert.throws(() => store.recordInbound({
+    stage: "accepted",
+    accountId: "account-1",
+    messageId: "msg-failed-save",
+    senderId: "user-1",
+    textPreview: "must not survive",
+  }), /disk unavailable/);
+  assert.equal(store.hasClaimedInbound({
+    accountId: "account-1",
+    messageId: "msg-failed-save",
+    senderId: "user-1",
+  }), false);
+  assert.equal(store.snapshot().lastInbound, null);
+  assert.equal(store.snapshot().recentEvents.length, 0);
 });
 
 test("WeixinIngressAuditStore persists poll failure snapshots", () => {

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 class RuntimeContextUsageStore {
   constructor({ filePath } = {}) {
@@ -41,7 +42,17 @@ class RuntimeContextUsageStore {
     if (!this.filePath) {
       return;
     }
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    const tempPath = `${this.filePath}.tmp-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(this.state, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.renameSync(tempPath, this.filePath);
+    } catch (error) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw error;
+    }
   }
 
   recordContext(snapshot = {}) {
@@ -49,6 +60,10 @@ class RuntimeContextUsageStore {
     const runtimeId = normalizeText(snapshot.runtimeId);
     if (!threadId && !runtimeId) {
       return null;
+    }
+    const existing = threadId ? this.state.contextsByThreadId[threadId] : null;
+    if (existing && hasPositiveContextUsage(existing) && !hasPositiveContextUsage(snapshot)) {
+      return { ...existing };
     }
     const next = {
       ...snapshot,
@@ -80,6 +95,12 @@ class RuntimeContextUsageStore {
     return null;
   }
 
+  getExactContext(threadId = "") {
+    const normalizedThreadId = normalizeText(threadId);
+    const snapshot = normalizedThreadId ? this.state.contextsByThreadId[normalizedThreadId] : null;
+    return snapshot ? { ...snapshot } : null;
+  }
+
   recordAutoCompact(event = {}) {
     const next = {
       ...event,
@@ -109,6 +130,10 @@ class RuntimeContextUsageStore {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function hasPositiveContextUsage(snapshot = {}) {
+  return Number(snapshot.currentTokens) > 0 && Number(snapshot.contextWindow) > 0;
 }
 
 module.exports = { RuntimeContextUsageStore };

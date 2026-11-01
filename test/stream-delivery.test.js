@@ -217,6 +217,63 @@ test("suppressNextRunForThread suppresses one ordinary reply run", async () => {
   assert.deepEqual(sent.map((payload) => payload.text), ["visible reply"]);
 });
 
+test("superseded old run is suppressed while a fresh turn on the same thread still delivers", async () => {
+  const outbound = [];
+  const { sent, streamDelivery } = createHarness({
+    onOutboundDelivery(payload) {
+      outbound.push(payload);
+    },
+  });
+  streamDelivery.bindReplyTargetForTurn({
+    threadId: "thread-shared",
+    turnId: "turn-old",
+    target: {
+      userId: "user-1",
+      contextToken: "ctx-old",
+      provider: "weixin",
+      causalMessageId: "message-old",
+      redispatchGeneration: 0,
+    },
+  });
+  streamDelivery.markRunSuperseded({
+    threadId: "thread-shared",
+    turnId: "turn-old",
+    causalMessageId: "message-old",
+    redispatchGeneration: 0,
+  });
+
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-shared",
+    turnId: "turn-old",
+    itemId: "item-old",
+    text: "late old reply",
+  });
+  assert.equal(streamDelivery.isRuntimeEventSuppressed({
+    type: "runtime.context.updated",
+    payload: { threadId: "thread-shared" },
+  }), true);
+  streamDelivery.bindReplyTargetForTurn({
+    threadId: "thread-fresh",
+    turnId: "turn-new",
+    target: {
+      userId: "user-1",
+      contextToken: "ctx-new",
+      provider: "weixin",
+      causalMessageId: "message-new",
+      redispatchGeneration: 1,
+    },
+  });
+  await runCompletedTurn(streamDelivery, {
+    threadId: "thread-fresh",
+    turnId: "turn-new",
+    itemId: "item-new",
+    text: "fresh reply",
+  });
+
+  assert.deepEqual(sent.map((payload) => payload.text), ["fresh reply"]);
+  assert.equal(outbound.filter((entry) => entry.status === "late_old_turn_suppressed").length, 1);
+});
+
 test("plain reply records outbound delivery success", async () => {
   const outbound = [];
   const { sent, streamDelivery, bindingByThreadId } = createHarness({
@@ -481,6 +538,78 @@ test("deferred queue expires stale system replies without dropping plain replies
     assert.deepEqual(result.drained.map((reply) => reply.id), ["old-plain"]);
     store.load();
     assert.equal(store.state.replies.length, 0);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("recovery deferred reply only drains for its causal message", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-deferred-causal-"));
+  const store = new DeferredSystemReplyStore({
+    filePath: path.join(tempDir, "deferred-system-replies.json"),
+  });
+  try {
+    store.enqueue({
+      id: "recovery-reply",
+      accountId: "account-1",
+      senderId: "user-1",
+      threadId: "thread-recovery",
+      text: "reply for the recovered message",
+      kind: "plain_reply",
+      dedupeKey: "thread-recovery:turn-1",
+      causalMessageId: "message-1",
+      redispatchGeneration: 1,
+      replayPolicy: "causal_message_only",
+    });
+    store.enqueue({
+      id: "ordinary-reply",
+      accountId: "account-1",
+      senderId: "user-1",
+      threadId: "thread-ordinary",
+      text: "ordinary deferred reply",
+      kind: "plain_reply",
+      dedupeKey: "thread-ordinary:turn-1",
+    });
+
+    const unrelated = store.drainForSenderWithExpiry("account-1", "user-1", {
+      causalMessageId: "message-2",
+    });
+    assert.deepEqual(unrelated.drained.map((reply) => reply.id), ["ordinary-reply"]);
+
+    const causal = store.drainForSenderWithExpiry("account-1", "user-1", {
+      causalMessageId: "message-1",
+    });
+    assert.deepEqual(causal.drained.map((reply) => reply.id), ["recovery-reply"]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("discarding a superseded run keeps other deferred turns on the same thread", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-deferred-discard-"));
+  const store = new DeferredSystemReplyStore({
+    filePath: path.join(tempDir, "deferred-system-replies.json"),
+  });
+  try {
+    for (const turnId of ["turn-old", "turn-other"]) {
+      store.enqueue({
+        id: turnId,
+        accountId: "account-1",
+        senderId: "user-1",
+        threadId: "thread-shared",
+        text: turnId,
+        kind: "plain_reply",
+        dedupeKey: `thread-shared:${turnId}`,
+      });
+    }
+
+    const discarded = store.discardForSupersededRun({
+      threadId: "thread-shared",
+      dedupeKey: "thread-shared:turn-old",
+    });
+
+    assert.deepEqual(discarded.map((reply) => reply.id), ["turn-old"]);
+    assert.deepEqual(store.state.replies.map((reply) => reply.id), ["turn-other"]);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

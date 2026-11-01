@@ -108,7 +108,7 @@ MOSSBRIDGE_CODEX_MODEL_CHOICES=cloud=gpt-5.4,local=gemma4:26b-32k@ollama
 
 如果接 Ollama 等本地 provider，把 [templates/codex-local-provider.sh](./templates/codex-local-provider.sh) 复制到仓库外、设为可执行，再让 `MOSSBRIDGE_CODEX_COMMAND` 指向复制后的脚本。
 
-session pressure refresh 是排队刷新，不是立刻硬切。`MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` 留空时使用 runtime-aware 默认值：Codex 按实际 context window 约 76% 排队，Claude Code 和其他 runtime 用 92%。排队后只在下一条普通前台用户消息边界应用，保留短 recent-tail grace；check-in、dreaming 等 system turn 不会消费这张刷新单。设为 `0` 可关闭，或在部署实测后填写明确百分比。
+session pressure refresh 是排队刷新，不是立刻硬切。`MOSSBRIDGE_SESSION_REFRESH_PRESSURE_PERCENT` 留空时使用 runtime-aware 默认值：Codex 按实际 context window 约 76% 排队，Claude Code 和其他 runtime 用 92%。刷新单只在下一条普通前台用户消息边界应用，check-in、dreaming 等 system turn 不会消费；RPC 接受也不再等同于刷新完成，必须等精确的新 turn 真正开始、产生非空 assistant outcome、到达 runtime 终局并完成本地 writeback 后才关闭。若 Codex 在开始前失败，同一条入站最多安全重派一次；旧 run 的晚到事件不会再递送或写回，recovery 产生的 deferred reply 也只绑定原消息。若进程恰好在清除旧 binding 后、恢复 retry 正文前重启，该 transition 会 fail-closed，不会猜测正文或重放动作。完成后保留短 control-plane continuity grace，不向模型注入旧 thread id、维护原因或逐字 recent tail。设为 `0` 可关闭，或在部署实测后填写明确百分比。
 
 ## 访问控制
 

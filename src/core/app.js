@@ -160,6 +160,9 @@ class MossbridgeApp {
       onRuntimeNotice: (payload) => this.recordRuntimeNotice(payload),
       onOutboundDelivery: (payload) => this.recordWeixinOutboundAudit(payload),
     });
+    for (const run of this.sessionRefreshRequests.listSupersededRuns?.() || []) {
+      this.streamDelivery.markRunSuperseded?.(run);
+    }
     this.pendingRuntimeEventWatchdogs = new Map();
     this.runningTurnWatchdogs = new Map();
     this.watchdogCancelledRunKeys = new Set();
@@ -172,8 +175,23 @@ class MossbridgeApp {
     this.runtimeEventChain = Promise.resolve();
     this.nextDreamingPollAtMs = 0;
     this.runtimeAdapter.onEvent((event) => {
+      if (this.streamDelivery.isRuntimeEventSuppressed?.(event)) {
+        this.runtimeEventChain = this.runtimeEventChain
+          .catch(() => {})
+          .then(() => this.streamDelivery.handleRuntimeEvent(event))
+          .catch((error) => {
+            console.error(`[mossbridge] suppressed runtime event audit failed: ${error.message}`);
+          });
+        return;
+      }
       if (shouldClearFirstRuntimeEventWatchdog(event)) {
         this.clearRuntimeEventWatchdog(event?.payload?.threadId);
+      }
+      if (event?.type === "runtime.turn.started") {
+        this.sessionRefreshRequests.markFirstTurnStarted?.({
+          threadId: event?.payload?.threadId,
+          turnId: event?.payload?.turnId,
+        });
       }
       this.threadStateStore.applyRuntimeEvent(event);
       this.recordRuntimeContextUsage(event);
@@ -498,15 +516,30 @@ class MossbridgeApp {
       return;
     }
 
-    if (typeof this.channelAdapter.rememberContextToken === "function") {
-      this.channelAdapter.rememberContextToken(normalized.senderId, normalized.contextToken);
+    if (this.weixinIngressAuditStore?.hasClaimedInbound?.({
+      accountId: normalized.accountId,
+      messageId: normalized.messageId,
+      senderId: normalized.senderId,
+    })) {
+      this.recordWeixinInboundAudit({
+        stage: "duplicate_ignored",
+        rawMessage: message,
+        normalized,
+        includeTextPreview: false,
+      });
+      return;
     }
 
     this.recordWeixinInboundAudit({
       stage: "accepted",
       rawMessage: message,
       normalized,
+      includeTextPreview: false,
     });
+
+    if (typeof this.channelAdapter.rememberContextToken === "function") {
+      this.channelAdapter.rememberContextToken(normalized.senderId, normalized.contextToken);
+    }
     recordUserMessage();
     this.primeDeferredRepliesForSender(normalized);
     try {
@@ -515,6 +548,7 @@ class MossbridgeApp {
         stage: "dispatched",
         rawMessage: message,
         normalized,
+        includeTextPreview: false,
       });
     } catch (error) {
       this.recordWeixinInboundAudit({
@@ -522,6 +556,7 @@ class MossbridgeApp {
         rawMessage: message,
         normalized,
         error,
+        includeTextPreview: false,
       });
       throw error;
     }
@@ -622,6 +657,7 @@ class MossbridgeApp {
       : "";
     const event = this.weixinIngressAuditStore?.recordInbound?.({
       stage: normalizeText(stage) || "unknown",
+      accountId: normalizeText(normalized?.accountId) || normalizeText(this.activeAccountId),
       messageId: normalizeCommandArgument(String(rawMessage?.message_id ?? normalized?.messageId ?? "")),
       messageType: Number.isFinite(Number(rawMessage?.message_type)) ? Number(rawMessage.message_type) : null,
       senderId: normalizeText(normalized?.senderId) || normalizeText(rawMessage?.from_user_id),
@@ -677,6 +713,9 @@ class MossbridgeApp {
     deferred = true,
     prefixDelivered = false,
     contextTokenAgeMs = null,
+    causalMessageId = "",
+    redispatchGeneration = 0,
+    replayPolicy = "next_inbound",
   }) {
     const queued = this.deferredSystemReplyQueue.enqueue({
       id: `${normalizeCommandArgument(threadId) || "system"}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
@@ -694,6 +733,9 @@ class MossbridgeApp {
       deferred,
       prefixDelivered,
       contextTokenAgeMs,
+      causalMessageId,
+      redispatchGeneration,
+      replayPolicy,
     });
     this.recordControlEvent?.({
       type: "channel.reply.deferred",
@@ -759,6 +801,7 @@ class MossbridgeApp {
     const drainResult = typeof this.deferredSystemReplyQueue.drainForSenderWithExpiry === "function"
       ? this.deferredSystemReplyQueue.drainForSenderWithExpiry(normalized.accountId, normalized.senderId, {
         systemReplyMaxAgeMs: resolveDeferredSystemReplyMaxAgeMs(this.config),
+        causalMessageId: normalized.messageId,
       })
       : { drained: this.deferredSystemReplyQueue.drainForSender(normalized.accountId, normalized.senderId), expired: [] };
     const pendingReplies = Array.isArray(drainResult?.drained) ? drainResult.drained : [];
@@ -1036,6 +1079,12 @@ class MossbridgeApp {
         userId: prepared.senderId,
         contextToken: prepared.contextToken,
         provider: prepared.provider,
+        ...(prepared.messageId
+          ? {
+              causalMessageId: prepared.messageId,
+              redispatchGeneration: Math.max(0, Number(prepared.redispatchGeneration) || 0),
+            }
+          : {}),
       };
       if (turn.turnId) {
         this.streamDelivery.bindReplyTargetForTurn({
@@ -1071,9 +1120,12 @@ class MossbridgeApp {
         },
       });
       if (sessionRefresh?.id) {
-        this.sessionRefreshRequests?.markCompleted?.(sessionRefresh.id, {
+        this.sessionRefreshRequests?.markSuccessorStarted?.(sessionRefresh.id, {
           newThreadId: turn.threadId,
+          newTurnId: turn.turnId,
           openingTurn: Boolean(turn?.openingTurn),
+          causalMessageId: prepared.messageId,
+          redispatchGeneration: Math.max(0, Number(prepared.redispatchGeneration) || 0),
         });
       }
       this.scheduleRuntimeEventWatchdog({
@@ -1196,7 +1248,15 @@ class MossbridgeApp {
       || requestedOldThreadId;
     const applied = this.sessionRefreshRequests.markApplied(request.id, {
       oldThreadId: appliedOldThreadId,
+      causalMessageId: prepared?.messageId,
+      redispatchGeneration: Math.max(
+        0,
+        Number(prepared?.redispatchGeneration ?? request.redispatchGeneration) || 0,
+      ),
     }) || request;
+    if (prepared) {
+      prepared.redispatchGeneration = Math.max(0, Number(applied.redispatchGeneration) || 0);
+    }
     console.log(
       `[mossbridge] session refresh applied id=${request.id} runtime=${runtimeId} workspace=${workspaceRoot} oldThread=${appliedOldThreadId || "(none)"} reason=${request.reason || "manual_maintenance"}`
     );
@@ -1547,6 +1607,7 @@ class MossbridgeApp {
       attachments: prepared.attachments || [],
       attachmentFailures: prepared.attachmentFailures || [],
       sessionRefreshRequestId: prepared.sessionRefreshRequestId || "",
+      redispatchGeneration: Math.max(0, Number(prepared.redispatchGeneration) || 0),
       runtimeContinuityHandoff: prepared.runtimeContinuityHandoff || null,
     });
     this.pendingInboundByScope.set(scopeKey, current);
@@ -1609,6 +1670,7 @@ class MossbridgeApp {
         attachmentFailures: merged.attachmentFailures || [],
         memoryContextPacket: merged.memoryContextPacket || null,
         sessionRefreshRequestId: merged.sessionRefreshRequestId || "",
+        redispatchGeneration: Math.max(0, Number(merged.redispatchGeneration) || 0),
         runtimeContinuityHandoff: merged.runtimeContinuityHandoff || null,
       };
       if (typeof this.attachMemoryContextToPreparedText === "function") {
@@ -1866,32 +1928,66 @@ class MossbridgeApp {
       return { recoveryHandled: false, redispatchQueued: false, reason: "runtime_turn_started" };
     }
 
+    const refreshRequestId = normalizeText(prepared.sessionRefreshRequestId)
+      || normalizeText(prepared.runtimeContinuityHandoff?.requestId);
+    const knownRequests = this.sessionRefreshRequests?.listRequests?.() || [];
+    const existingRequest = knownRequests.find((entry) => (
+      (refreshRequestId && normalizeText(entry?.id) === refreshRequestId)
+      || (
+        normalizeText(entry?.causalMessageId) === normalizeText(prepared.messageId)
+        && normalizeText(entry?.bindingKey) === normalizeText(bindingKey)
+        && normalizeText(entry?.workspaceRoot) === normalizeText(workspaceRoot)
+      )
+    )) || null;
+    if (normalizeText(existingRequest?.status) === "first_turn_started") {
+      return { recoveryHandled: false, redispatchQueued: false, reason: "runtime_turn_started" };
+    }
     const replayKey = buildPreStartRedispatchKey(prepared);
     const safeRedispatchAlreadyUsed = !replayKey
-      || this.preStartRedispatchMessageIds?.has?.(replayKey);
+      || this.preStartRedispatchMessageIds?.has?.(replayKey)
+      || Number(existingRequest?.redispatchGeneration) >= 1;
+    if (safeRedispatchAlreadyUsed) {
+      return {
+        recoveryHandled: true,
+        redispatchQueued: false,
+        reason: "safe_redispatch_already_used",
+        refreshRequestId: normalizeText(prepared.sessionRefreshRequestId),
+        refreshRequeued: false,
+      };
+    }
     this.threadStateStore?.markRuntimeThreadUnhealthy?.(normalizedThreadId, {
       turnId: normalizedTurnId,
       reason,
     });
 
     const sessionStore = this.runtimeAdapter.getSessionStore();
-    const oldThreadId = normalizedThreadId || normalizeCommandArgument(
-      sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "",
-    );
+    const oldThreadId = normalizedThreadId
+      || normalizeCommandArgument(sessionStore.getThreadIdForWorkspace?.(bindingKey, workspaceRoot) || "")
+      || normalizeCommandArgument(existingRequest?.oldThreadId);
     const runtimeId = "codex";
-    const refreshRequestId = normalizeText(prepared.sessionRefreshRequestId)
-      || normalizeText(prepared.runtimeContinuityHandoff?.requestId);
-    let refreshRequest = refreshRequestId
-      ? this.sessionRefreshRequests?.requeueAfterPreStartFailure?.(refreshRequestId, {
+    const currentGeneration = Math.max(
+      0,
+      Number(existingRequest?.redispatchGeneration ?? prepared.redispatchGeneration) || 0,
+    );
+    const supersededRun = {
+      threadId: oldThreadId,
+      turnId: normalizedTurnId,
+      causalMessageId: prepared.messageId,
+      redispatchGeneration: currentGeneration,
+    };
+
+    let refreshRequest = existingRequest?.id
+      ? this.sessionRefreshRequests?.requeueAfterPreStartFailure?.(existingRequest.id, {
         lastPreStartFailureReason: reason,
         lastPreStartFailureThreadId: oldThreadId,
         lastPreStartFailureTurnId: normalizedTurnId,
+        supersededRun,
       })
       : null;
-    if (!refreshRequest && refreshRequestId) {
+    if (!refreshRequest && existingRequest?.id) {
       refreshRequest = this.sessionRefreshRequests?.listRequests?.()
         .find((entry) => (
-          normalizeText(entry?.id) === refreshRequestId
+          normalizeText(entry?.id) === existingRequest.id
           && normalizeText(entry?.status) === "pending"
         )) || null;
     }
@@ -1911,8 +2007,52 @@ class MossbridgeApp {
         oldThreadId,
         reason: "runtime_prestart_recovery",
         requestedBy: "runtime_recovery",
+        causalMessageId: prepared.messageId,
+        redispatchGeneration: currentGeneration + 1,
+        supersededRun,
       }) || null;
     }
+    const supersededRunPersisted = Array.isArray(refreshRequest?.supersededRuns)
+      && refreshRequest.supersededRuns.some((entry) => (
+        normalizeText(entry?.threadId) === oldThreadId
+        && normalizeText(entry?.turnId) === normalizedTurnId
+      ));
+    if (refreshRequest?.id && !supersededRunPersisted) {
+      refreshRequest = this.sessionRefreshRequests.recordSupersededRun?.(refreshRequest.id, supersededRun) || null;
+    }
+    if (!refreshRequest?.id) {
+      throw new Error("failed to persist Codex pre-start recovery state");
+    }
+
+    this.streamDelivery?.markRunSuperseded?.({
+      ...supersededRun,
+      replyTarget: {
+        userId: prepared.senderId,
+        contextToken: prepared.contextToken,
+        provider: prepared.provider,
+        causalMessageId: prepared.messageId,
+        redispatchGeneration: currentGeneration,
+      },
+    });
+    this.deferredSystemReplyQueue?.discardForSupersededRun?.({
+      threadId: oldThreadId,
+      dedupeKey: buildRunKey(oldThreadId, normalizedTurnId),
+    });
+    this.recordControlEvent?.({
+      type: "runtime.prestart_recovery_started",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.recoverCodexPreStartFailure",
+      subject: oldThreadId,
+      reason,
+      outcome: "old_run_superseded",
+      correlationId: prepared.messageId,
+      payload: {
+        threadId: oldThreadId,
+        turnId: normalizedTurnId,
+        redispatchGeneration: currentGeneration,
+      },
+    });
 
     sessionStore.clearPendingThreadIdForWorkspace?.(bindingKey, workspaceRoot);
     sessionStore.clearThreadIdForWorkspace?.(bindingKey, workspaceRoot);
@@ -1933,17 +2073,23 @@ class MossbridgeApp {
       includeTextPreview: false,
     });
 
-    if (safeRedispatchAlreadyUsed) {
-      return {
-        recoveryHandled: true,
-        redispatchQueued: false,
-        reason: "safe_redispatch_already_used",
-        refreshRequestId: normalizeText(refreshRequest?.id),
-        refreshRequeued: Boolean(refreshRequest?.id),
-      };
-    }
-
     this.preStartRedispatchMessageIds?.add?.(replayKey);
+    prepared.sessionRefreshRequestId = normalizeText(refreshRequest?.id);
+    prepared.redispatchGeneration = Math.max(1, Number(refreshRequest?.redispatchGeneration) || 1);
+    this.recordControlEvent?.({
+      type: "runtime.safe_redispatch_armed",
+      layer: CONTROL_LAYER.EXECUTIVE,
+      scope: CONTROL_SCOPE.RUNTIME,
+      source: "app.recoverCodexPreStartFailure",
+      subject: prepared.messageId,
+      reason,
+      outcome: "queued_once",
+      correlationId: prepared.messageId,
+      payload: {
+        redispatchGeneration: prepared.redispatchGeneration,
+        refreshRequestId: prepared.sessionRefreshRequestId,
+      },
+    });
     this.bufferPendingInboundMessage({ bindingKey, workspaceRoot, prepared });
     await this.flushPendingInboundMessages({ bindingKey, workspaceRoot, ignoreBoundary: true });
     return {
@@ -4018,6 +4164,9 @@ class MossbridgeApp {
   }
 
   async handleRuntimeEvent(event) {
+    if (this.streamDelivery.isRuntimeEventSuppressed?.(event)) {
+      return this.streamDelivery.handleRuntimeEvent(event);
+    }
     const failureReplyTarget = event?.type === "runtime.turn.failed"
       ? this.streamDelivery.resolveReplyTargetForRun({
           threadId: event?.payload?.threadId,
@@ -4052,7 +4201,18 @@ class MossbridgeApp {
         sessionStore.clearPendingThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
         sessionStore.clearThreadIdForWorkspace?.(linked.bindingKey, linked.workspaceRoot);
       }
-      await this.writebackRuntimeTurn({ event, linked });
+      const writeback = await this.writebackRuntimeTurn({
+        event,
+        linked,
+        assistantTextFinal: deliveryResult?.assistantTextFinal,
+      });
+      this.sessionRefreshRequests?.completeFromRuntimeOutcome?.({
+        threadId: event?.payload?.threadId,
+        turnId: event?.payload?.turnId,
+        runtimeStatus: event.type === "runtime.turn.completed" ? "completed" : "failed",
+        writebackSettled: Boolean(writeback?.settled),
+        assistantOutcome: deliveryResult?.assistantTextFinal ? "present" : "empty",
+      });
       this.recordLatestRuntimeSessionContextUsage?.(event);
       const scopeKey = linked?.bindingKey && linked?.workspaceRoot
         ? buildScopeKey(linked.bindingKey, linked.workspaceRoot)
@@ -4761,6 +4921,9 @@ class MossbridgeApp {
       this.turnWritebackContextByRunKey.delete(runKey);
       return exact;
     }
+    if (normalizedTurnId) {
+      return null;
+    }
     if (!normalizedThreadId) {
       return null;
     }
@@ -4771,17 +4934,16 @@ class MossbridgeApp {
     return pending;
   }
 
-  async writebackRuntimeTurn({ event, linked }) {
+  async writebackRuntimeTurn({ event, linked, assistantTextFinal: deliveredAssistantText = "" }) {
     const memoryDomain = this.projectDomains?.memory;
     if (!memoryDomain || typeof memoryDomain.writebackTurn !== "function") {
-      return;
+      return { settled: true, outcome: "no_writeback_domain" };
     }
     const snapshot = this.consumeTurnWritebackContext(event?.payload?.threadId, event?.payload?.turnId);
     if (!snapshot?.prepared?.senderId) {
-      return;
+      return { settled: false, outcome: "missing_exact_turn_context" };
     }
-    const threadState = this.threadStateStore.getThreadState(event.payload.threadId);
-    const rawAssistantTextFinal = normalizeText(event?.payload?.text) || normalizeText(threadState?.lastReplyText);
+    const rawAssistantTextFinal = normalizeText(event?.payload?.text) || normalizeText(deliveredAssistantText);
     const runtimeCapacityNotice = isRuntimeCapacitySignal(rawAssistantTextFinal);
     const runtimeFailureNotice = event.type === "runtime.turn.failed";
     const assistantTextFinal = runtimeCapacityNotice || runtimeFailureNotice ? "" : rawAssistantTextFinal;
@@ -4894,6 +5056,10 @@ class MossbridgeApp {
         writebackError,
       });
     }
+    return {
+      settled: !writebackError,
+      outcome: writebackError ? "writeback_failed" : "writeback_settled",
+    };
   }
 
   completeMemoryMetabolismAttempt({
@@ -6714,6 +6880,7 @@ function mergePendingInboundDraft(draft) {
   }
 
   const latest = queued[queued.length - 1];
+  const recoveryMessage = queued.find((message) => Number(message.redispatchGeneration) > 0) || null;
   const runtimeBlocks = queued
     .map((message) => normalizeText(message.runtimeText) || normalizeText(message.text))
     .filter(Boolean);
@@ -6733,6 +6900,9 @@ function mergePendingInboundDraft(draft) {
     bindingKey: draft.bindingKey,
     workspaceRoot: draft.workspaceRoot,
     ...latest,
+    messageId: recoveryMessage?.messageId || latest.messageId,
+    sessionRefreshRequestId: recoveryMessage?.sessionRefreshRequestId || latest.sessionRefreshRequestId || "",
+    redispatchGeneration: Math.max(...queued.map((message) => Math.max(0, Number(message.redispatchGeneration) || 0))),
     originalText: originalBlocks.join("\n\n"),
     runtimeText,
     text: runtimeText,

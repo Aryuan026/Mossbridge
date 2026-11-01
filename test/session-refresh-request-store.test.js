@@ -37,6 +37,18 @@ test("session refresh store keeps one pending request per runtime scope", () => 
   }).reason, "second");
 });
 
+test("session refresh store fails closed without replacing malformed state", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-invalid-"));
+  const filePath = path.join(tempRoot, "session-refresh-requests.json");
+  fs.writeFileSync(filePath, "{broken", "utf8");
+
+  assert.throws(
+    () => new SessionRefreshRequestStore({ filePath }),
+    (error) => error?.code === "MOSSBRIDGE_SESSION_REFRESH_STATE_INVALID",
+  );
+  assert.equal(fs.readFileSync(filePath, "utf8"), "{broken");
+});
+
 test("pending refresh currentness stays bound to the thread that requested it", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({
@@ -114,7 +126,7 @@ test("pre-start failure requeues the same applied or provisional-completed refre
   assert.equal(provisionalRequeue.preStartRecoveryCount, 2);
 });
 
-test("dispatchPreparedTurn applies a pending session refresh before the next normal user turn", async () => {
+test("dispatchPreparedTurn records successor acceptance without completing the refresh", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({
     filePath: path.join(tempRoot, "session-refresh-requests.json"),
@@ -217,11 +229,13 @@ test("dispatchPreparedTurn applies a pending session refresh before the next nor
     runtimeId: "claudecode",
   }), null);
   const completed = store.listRequests().find((entry) => entry.id === request.id);
-  assert.equal(completed.status, "completed");
+  assert.equal(completed.status, "successor_started");
+  assert.equal(completed.newTurnId, "turn-1");
+  assert.equal(completed.completedAt, "");
   assert.equal(completed.oldThreadId, "old-thread");
   assert.equal(completed.newThreadId, "new-thread");
-  assert.equal(completed.postRefreshGraceThreadId, "new-thread");
-  assert.equal(completed.postRefreshGraceRemaining, 4);
+  assert.equal(completed.postRefreshGraceThreadId, undefined);
+  assert.equal(completed.postRefreshGraceRemaining, undefined);
 });
 
 test("post-refresh grace exposes control-only continuity mode for a few foreground turns", () => {
@@ -443,7 +457,7 @@ test("auto session refresh preapply skips system runtime bindings", async () => 
   }).id, request.id);
 });
 
-test("dispatchPreparedTurn completes a preapplied session refresh without reopening the old draft", async () => {
+test("dispatchPreparedTurn records a preapplied successor without reopening the old draft", async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
   const store = new SessionRefreshRequestStore({
     filePath: path.join(tempRoot, "session-refresh-requests.json"),
@@ -545,10 +559,265 @@ test("dispatchPreparedTurn completes a preapplied session refresh without reopen
     ["send", "hello after refresh"],
   ]);
   const completed = store.listRequests().find((entry) => entry.id === request.id);
-  assert.equal(completed.status, "completed");
+  assert.equal(completed.status, "successor_started");
   assert.equal(completed.oldThreadId, "old-thread");
   assert.equal(completed.newThreadId, "new-thread");
   assert.equal(completed.openingTurn, true);
+  assert.equal(completed.completedAt, "");
+});
+
+test("session refresh completes only after exact runtime start and settled writeback", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    oldThreadId: "thread-old",
+  });
+  store.markApplied(request.id, { causalMessageId: "message-1" });
+  store.markSuccessorStarted(request.id, {
+    newThreadId: "thread-new",
+    newTurnId: "turn-new",
+  });
+
+  assert.equal(store.listRequests()[0].status, "successor_started");
+  assert.equal(store.consumePostRefreshGrace({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    threadId: "thread-new",
+  }), null);
+
+  store.markFirstTurnStarted({ threadId: "thread-new", turnId: "turn-new" });
+  const completed = store.completeFromRuntimeOutcome({
+    threadId: "thread-new",
+    turnId: "turn-new",
+    runtimeStatus: "completed",
+    writebackSettled: true,
+    assistantOutcome: "present",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.postRefreshGraceRemaining, 4);
+  assert.match(completed.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("session refresh fails closed without start evidence or an assistant outcome", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-terminal-"));
+  const filePath = path.join(tempRoot, "session-refresh-requests.json");
+  const store = new SessionRefreshRequestStore({ filePath });
+  const withoutStart = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace-a",
+    runtimeId: "codex",
+  });
+  store.markApplied(withoutStart.id);
+  store.markSuccessorStarted(withoutStart.id, { newThreadId: "thread-a", newTurnId: "turn-a" });
+  const missingStart = store.completeFromRuntimeOutcome({
+    threadId: "thread-a",
+    turnId: "turn-a",
+    runtimeStatus: "completed",
+    writebackSettled: true,
+    assistantOutcome: "present",
+  });
+  assert.equal(missingStart.status, "terminal_failed");
+  assert.equal(missingStart.failureCode, "runtime_start_evidence_missing");
+
+  const withoutOutcome = store.requestRefresh({
+    bindingKey: "binding-2",
+    workspaceRoot: "/workspace-b",
+    runtimeId: "codex",
+  });
+  store.markApplied(withoutOutcome.id);
+  store.markSuccessorStarted(withoutOutcome.id, { newThreadId: "thread-b", newTurnId: "turn-b" });
+  store.markFirstTurnStarted({ threadId: "thread-b", turnId: "turn-b" });
+  const missingOutcome = store.completeFromRuntimeOutcome({
+    threadId: "thread-b",
+    turnId: "turn-b",
+    runtimeStatus: "completed",
+    writebackSettled: true,
+    assistantOutcome: "empty",
+  });
+  assert.equal(missingOutcome.status, "terminal_failed");
+  assert.equal(missingOutcome.failureCode, "assistant_outcome_missing");
+  assert.equal(missingOutcome.postRefreshGraceRemaining, undefined);
+});
+
+test("session refresh reconciles an early runtime start that arrives before the RPC response", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-early-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    oldThreadId: "thread-old",
+  });
+  store.markApplied(request.id, { causalMessageId: "message-1" });
+  store.markFirstTurnStarted({ threadId: "thread-new", turnId: "turn-new" });
+
+  const reconciled = store.markSuccessorStarted(request.id, {
+    newThreadId: "thread-new",
+    newTurnId: "turn-new",
+  });
+
+  assert.equal(reconciled.status, "first_turn_started");
+  assert.match(reconciled.firstTurnStartedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("session refresh records an early terminal outcome and fails closed after RPC reconciliation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-early-terminal-"));
+  const store = new SessionRefreshRequestStore({
+    filePath: path.join(tempRoot, "session-refresh-requests.json"),
+  });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+  });
+  store.markApplied(request.id);
+  store.markFirstTurnStarted({ threadId: "thread-new", turnId: "turn-new" });
+  store.completeFromRuntimeOutcome({
+    threadId: "thread-new",
+    turnId: "turn-new",
+    runtimeStatus: "completed",
+    writebackSettled: false,
+    assistantOutcome: "present",
+  });
+
+  const reconciled = store.markSuccessorStarted(request.id, {
+    newThreadId: "thread-new",
+    newTurnId: "turn-new",
+  });
+
+  assert.equal(reconciled.status, "terminal_failed");
+  assert.equal(reconciled.failureCode, "writeback_failed");
+});
+
+test("restart fails closed when an in-flight transition has no durable redispatch body", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-restart-"));
+  const filePath = path.join(tempRoot, "session-refresh-requests.json");
+  const store = new SessionRefreshRequestStore({ filePath });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+  });
+  store.markApplied(request.id);
+
+  const restarted = new SessionRefreshRequestStore({ filePath });
+  const record = restarted.listRequests().find((entry) => entry.id === request.id);
+  assert.equal(record.status, "terminal_failed");
+  assert.equal(record.failureCode, "restart_pre_start_retry_body_unavailable");
+});
+
+test("first recovery request persists its superseded run in the same state write", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-refresh-superseded-"));
+  const filePath = path.join(tempRoot, "session-refresh-requests.json");
+  const store = new SessionRefreshRequestStore({ filePath });
+  const request = store.requestRefresh({
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    runtimeId: "codex",
+    causalMessageId: "message-1",
+    redispatchGeneration: 1,
+    supersededRun: {
+      threadId: "thread-old",
+      turnId: "turn-old",
+      causalMessageId: "message-1",
+      redispatchGeneration: 0,
+      replyTarget: { contextToken: "must-not-persist" },
+    },
+  });
+
+  const persisted = new SessionRefreshRequestStore({ filePath })
+    .listRequests()
+    .find((entry) => entry.id === request.id);
+  assert.deepEqual(persisted.supersededRuns[0], {
+    threadId: "thread-old",
+    turnId: "turn-old",
+    causalMessageId: "message-1",
+    redispatchGeneration: 0,
+    supersededAt: persisted.supersededRuns[0].supersededAt,
+  });
+  assert.equal(JSON.stringify(persisted).includes("must-not-persist"), false);
+});
+
+test("pending inbound flush preserves recovery generation and causal message identity", async () => {
+  const dispatched = [];
+  const appLike = {
+    pendingInboundByScope: new Map(),
+    channelAdapter: { async sendTyping() {} },
+    recordControlEvent() {},
+    isTurnDispatchBlocked() { return false; },
+    async dispatchPreparedTurn(payload) {
+      dispatched.push(payload.prepared);
+      return true;
+    },
+  };
+  MossbridgeApp.prototype.bufferPendingInboundMessage.call(appLike, {
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    prepared: {
+      workspaceId: "default",
+      accountId: "account-1",
+      senderId: "user-1",
+      messageId: "message-recovery",
+      contextToken: "ctx-old",
+      receivedAt: "2026-11-01T10:00:00.000Z",
+      provider: "weixin",
+      text: "recover me",
+      sessionRefreshRequestId: "refresh-1",
+      redispatchGeneration: 1,
+    },
+  });
+  MossbridgeApp.prototype.bufferPendingInboundMessage.call(appLike, {
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    prepared: {
+      workspaceId: "default",
+      accountId: "account-1",
+      senderId: "user-1",
+      messageId: "message-newer",
+      contextToken: "ctx-new",
+      receivedAt: "2026-11-01T10:00:01.000Z",
+      provider: "weixin",
+      text: "newer text",
+    },
+  });
+
+  await MossbridgeApp.prototype.flushPendingInboundMessages.call(appLike, {
+    bindingKey: "binding-1",
+    workspaceRoot: "/workspace",
+    ignoreBoundary: true,
+  });
+
+  assert.equal(dispatched[0].redispatchGeneration, 1);
+  assert.equal(dispatched[0].messageId, "message-recovery");
+  assert.equal(dispatched[0].sessionRefreshRequestId, "refresh-1");
+  assert.equal(dispatched[0].contextToken, "ctx-new");
+});
+
+test("turn writeback context never borrows a different turn from the same thread", () => {
+  const appLike = {
+    turnWritebackContextByRunKey: new Map(),
+    pendingTurnWritebackByThreadId: new Map([
+      ["thread-1", { prepared: { messageId: "message-other" } }],
+    ]),
+  };
+
+  const result = MossbridgeApp.prototype.consumeTurnWritebackContext.call(
+    appLike,
+    "thread-1",
+    "turn-missing",
+  );
+
+  assert.equal(result, null);
+  assert.equal(appLike.pendingTurnWritebackByThreadId.has("thread-1"), true);
 });
 
 test("codex pre-start failure requeues completed refresh and redispatches once", async () => {
@@ -636,6 +905,7 @@ test("codex pre-start failure requeues completed refresh and redispatches once",
     turnId: "turn-new",
     reason: "codex_first_runtime_event_timeout",
   });
+  appLike.preStartRedispatchMessageIds = new Set();
   const second = await MossbridgeApp.prototype.recoverCodexPreStartFailure.call(appLike, {
     bindingKey: "binding-1",
     workspaceRoot: "/workspace",

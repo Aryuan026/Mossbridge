@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 class WeixinIngressAuditStore {
   constructor({ filePath } = {}) {
@@ -12,6 +13,7 @@ class WeixinIngressAuditStore {
       lastAttachmentIntake: null,
       lastOutbound: null,
       recentEvents: [],
+      inboundClaimKeys: [],
     };
     if (this.filePath) {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
@@ -40,9 +42,15 @@ class WeixinIngressAuditStore {
             : null,
           lastOutbound: parsed.lastOutbound && typeof parsed.lastOutbound === "object" ? parsed.lastOutbound : null,
           recentEvents: Array.isArray(parsed.recentEvents) ? parsed.recentEvents.slice(-100) : [],
+          inboundClaimKeys: Array.isArray(parsed.inboundClaimKeys) ? parsed.inboundClaimKeys : [],
         };
       }
-    } catch {
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        const wrapped = new Error(`invalid WeChat ingress audit state: ${error.message}`);
+        wrapped.code = "MOSSBRIDGE_WEIXIN_AUDIT_STATE_INVALID";
+        throw wrapped;
+      }
       this.state = {
         lastPoll: null,
         lastPollFailure: null,
@@ -51,6 +59,7 @@ class WeixinIngressAuditStore {
         lastAttachmentIntake: null,
         lastOutbound: null,
         recentEvents: [],
+        inboundClaimKeys: [],
       };
     }
   }
@@ -59,7 +68,17 @@ class WeixinIngressAuditStore {
     if (!this.filePath) {
       return;
     }
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+    const tempPath = `${this.filePath}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(this.state, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.renameSync(tempPath, this.filePath);
+    } catch (error) {
+      try { fs.unlinkSync(tempPath); } catch {}
+      throw error;
+    }
   }
 
   recordPoll(payload = {}) {
@@ -87,13 +106,33 @@ class WeixinIngressAuditStore {
   }
 
   recordInbound(payload = {}) {
+    const previousClaimKeys = this.state.inboundClaimKeys;
+    const previousLastInbound = this.state.lastInbound;
+    const previousRecentEvents = this.state.recentEvents;
+    const claimKey = payload?.stage === "accepted" ? buildInboundClaimKey(payload) : "";
+    if (claimKey && !this.state.inboundClaimKeys.includes(claimKey)) {
+      this.state.inboundClaimKeys = [...this.state.inboundClaimKeys, claimKey];
+    }
     const event = this.recordEvent("inbound", {
       ...payload,
-      textPreview: truncateText(payload.textPreview, 160),
+      textPreview: "",
+      error: truncateText(payload.error, 240),
     });
     this.state.lastInbound = event;
-    this.save();
+    try {
+      this.save();
+    } catch (error) {
+      this.state.inboundClaimKeys = previousClaimKeys;
+      this.state.lastInbound = previousLastInbound;
+      this.state.recentEvents = previousRecentEvents;
+      throw error;
+    }
     return event;
+  }
+
+  hasClaimedInbound({ accountId = "", messageId = "", senderId = "" } = {}) {
+    const claimKey = buildInboundClaimKey({ accountId, messageId, senderId });
+    return Boolean(claimKey && this.state.inboundClaimKeys.includes(claimKey));
   }
 
   recordOutbound(payload = {}) {
@@ -160,6 +199,14 @@ function truncateText(value, maxLength) {
   const text = normalizeText(value);
   const limit = Math.max(1, Number(maxLength) || 160);
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function buildInboundClaimKey({ accountId = "", messageId = "", senderId = "" } = {}) {
+  const parts = [accountId, senderId, messageId].map(normalizeText);
+  if (parts.some((value) => !value)) {
+    return "";
+  }
+  return crypto.createHash("sha256").update(parts.join("\0"), "utf8").digest("hex");
 }
 
 function normalizeText(value) {
