@@ -107,6 +107,15 @@ test("memory metabolism queues quiet dreaming and completes only after a receipt
   assert.match(messages[0].text, /mossbridge_memory_metabolism_receipt_write/);
   assert.match(messages[0].text, /Duplicate warm-card consolidation/);
   assert.match(messages[0].text, /Warm diary review\/backfill candidates/);
+  assert.match(messages[0].text, /separate who spoke, who lived the event, and who is remembering it/);
+  assert.match(messages[0].text, /Source user\/query text belongs to the source-side human/);
+  assert.match(messages[0].text, /assistant text belongs to the source-side assistant/);
+  assert.match(messages[0].text, /only counts as the current persona's own speech when source identity confirms the same lineage/);
+  assert.match(messages[0].text, /Never rewrite the human's or a third party's .* life event as the persona's firsthand experience/);
+  assert.match(messages[0].text, /Warm prose remains the persona's first-person inner diary/);
+  assert.match(messages[0].text, /route objective facts to source-bound cold, episode, observation, or case material/);
+  assert.match(messages[0].text, /Apply this check silently/);
+  assert.doesNotMatch(messages[0].text, /Asherie|Aji|A-Yuan|\u963f\u9701|\u963f\u9e22/u);
   assert.match(messages[0].text, /source_backfill_required/);
   assert.match(messages[0].text, /blue-ribbon-pending-diary/);
   assert.match(messages[0].text, /memo-memory-identity-a/);

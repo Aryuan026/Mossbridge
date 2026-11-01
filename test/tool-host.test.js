@@ -972,6 +972,15 @@ test("tool host exposes structured warm-memory lookup and exact-card mutation to
   assert.match(writeTool.description, /diary\/persona continuity/);
   assert.match(writeTool.description, /future self should use it/);
   assert.match(writeTool.description, /The user prefers/);
+  assert.match(writeTool.description, /separate who spoke, who lived the event, and who is remembering it/);
+  assert.match(writeTool.description, /assistant text belongs to the source-side assistant/);
+  assert.match(writeTool.description, /only counts as the current persona's own speech when source identity confirms the same lineage/);
+  assert.match(writeTool.description, /pronouns inside quotes or retellings keep their original speaker/);
+  assert.match(writeTool.description, /Never rewrite the human's or a third party's .* life event as the persona's firsthand experience/);
+  assert.match(writeTool.description, /do not guess identity or gender/);
+  assert.match(writeTool.description, /Warm prose remains the persona's first-person inner diary/);
+  assert.match(updateTool.description, /separate who spoke, who lived the event, and who is remembering it/);
+  assert.doesNotMatch(writeTool.description, /Asherie|Aji|A-Yuan|\u963f\u9701|\u963f\u9e22/u);
   assert.match(writeTool.inputSchema.properties.body_markdown.description, /future-use cue/);
   assert.equal(writeTool.inputSchema.properties.body_markdown.description.length < 220, true);
   assert.equal(updateTool.inputSchema.properties.body_markdown.description.length < 180, true);

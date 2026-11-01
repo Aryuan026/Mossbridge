@@ -7,6 +7,7 @@ const {
 } = require("../services/sticker-service");
 const { ControlLedgerStore } = require("../control/control-plane");
 const { resolveCheckinDailyBudget } = require("../app/system-checkin-poller");
+const { MEMORY_SPEAKER_ATTRIBUTION_GUIDANCE } = require("../asherie/memory-writing-guidance");
 
 const TOOL_PROFILE_FULL = "full";
 const TOOL_PROFILE_FOREGROUND = "foreground";
@@ -19,7 +20,11 @@ const METABOLISM_META_PROPERTIES = {
   source_ids: { type: "array", items: { type: "string" }, description: "Alias for source_record_ids." },
 };
 const METABOLISM_META_KEYS = new Set(Object.keys(METABOLISM_META_PROPERTIES));
-const WARM_MEMORY_WRITE_GUIDANCE = "Warm cards are first-person diary/persona continuity for the current assistant/persona: what happened or was corrected, why it matters, what evidence/source grounds it, and how future self should use it. Do not write generic user profiles, tag lists, task/debug reports, tool policy, or cards phrased as 'The user prefers...' / 'the assistant should...'.";
+const WARM_MEMORY_WRITE_GUIDANCE = [
+  "Warm cards are first-person diary/persona continuity for the current assistant/persona: what happened or was corrected, why it matters, what evidence/source grounds it, and how future self should use it.",
+  "Do not write generic user profiles, tag lists, task/debug reports, tool policy, or cards phrased as 'The user prefers...' / 'the assistant should...'.",
+  MEMORY_SPEAKER_ATTRIBUTION_GUIDANCE,
+].join(" ");
 const MEMORY_MUTATION_TOOL_NAMES = new Set([
   "mossbridge_diary_append",
   "mossbridge_memory_warm_write",

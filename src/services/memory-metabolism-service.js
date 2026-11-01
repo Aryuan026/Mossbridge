@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { MEMORY_SPEAKER_ATTRIBUTION_GUIDANCE } = require("../asherie/memory-writing-guidance");
 
 const STORE_VERSION = 1;
 const DEFAULT_POLL_INTERVAL_MS = 15 * 60_000;
@@ -1023,6 +1024,7 @@ function buildDreamingTriggerText(attempt = {}) {
     "Memory layer contract: hot memory is active/captured context; warm memory is first-person soul diary that may be fuzzy-recalled; cold memory includes notebook, ongoing, observation, episode, case, memory_tree, source archives, and cold-root projections.",
     "Allowed routes: warm diary memory, ongoing tracks, observation journal, episode journal, case index, memory_tree/cold-root patch or version, solitude journal, or no-op when there is no durable candidate.",
     "Warm diary cards must read as inner-view 'I' memory for the soul/persona, not a user profile, external analysis, or response policy sheet. They may contain self-warning or future-use promises when the scene supports it.",
+    MEMORY_SPEAKER_ATTRIBUTION_GUIDANCE,
     "When warm cards decay, duplicate, or carry source_backfill_required/source:pending/dreaming:must_review, re-read the warm card plus available source, then either bind source refs, keep it warm, or sediment exact facts/structure into cold memory with source ids. Do not promote untraceable guesses.",
     "Duplicate warm-card consolidation is a first-class dreaming job: if warm cards clearly describe the same stable subject, consolidate the relationship/structure into cold memory while preserving source_material_ids, source_archive_refs, source_trace_ids, source_span_ids, episode_refs, and case_refs. Leave source warm cards in place unless an explicit cleanup path handles them.",
     "Memory writes should contain grounded, reusable user continuity. Operational failures, quota notices, debug chatter, raw hidden chain-of-thought, credentials, and ungrounded guesses stay outside memory.",
