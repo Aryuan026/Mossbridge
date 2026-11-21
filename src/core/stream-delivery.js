@@ -483,6 +483,8 @@ class StreamDelivery {
           this.recordOutboundDelivery(state, { ...target, text: buildPendingDeliveryBatchText([delivery], state.deferredReplyPrefix) }, {
             kind: "plain_reply", status: "failed", attempt: "batch", error,
           });
+          // The prefix may already have reached WeChat before a later block failed.
+          state.deferredReplyPrefix = "";
           console.error(`[mossbridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
           if (!force) {
             return;

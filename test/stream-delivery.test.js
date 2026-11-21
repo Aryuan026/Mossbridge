@@ -94,16 +94,23 @@ async function runCompletedTurnWithResultOnly(streamDelivery, { threadId, turnId
 test("terminal delivery records a rejected item once and sends its unsent siblings", async () => {
   const attempted = [];
   const outbound = [];
-  const { sent, streamDelivery } = createHarness({
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({
     sendText(payload, delivered) {
-      attempted.push(payload.text);
-      if (payload.text.startsWith("Rejected")) {
+      const [prefix, body] = payload.text.split(`\n\n${CURRENT_REPLY_HEADER}\n`);
+      if (body) {
+        delivered.push({ text: prefix }); // The first WeChat block was already accepted.
+      }
+      const text = body || prefix;
+      attempted.push(text);
+      if (text.startsWith("Rejected")) {
         throw new Error("message rejected");
       }
       delivered.push(payload);
     },
     onOutboundDelivery: (entry) => outbound.push(entry),
   });
+  bindingByThreadId.set("thread-1", { bindingKey: "binding-1" });
+  streamDelivery.setDeferredReplyPrefix("binding-1", "Earlier deferred reply");
   streamDelivery.queueReplyTargetForThread("thread-1", {
     userId: "user-1",
     contextToken: "ctx-1",
@@ -123,7 +130,7 @@ test("terminal delivery records a rejected item once and sends its unsent siblin
   await streamDelivery.handleRuntimeEvent({ type: "runtime.turn.completed", payload: run });
 
   assert.deepEqual(attempted, ["Rejected early", "Rejected at terminal", "Remaining segment"]);
-  assert.deepEqual(sent.map(({ text }) => text), ["Remaining segment"]);
+  assert.deepEqual(sent.map(({ text }) => text), ["Earlier deferred reply", "Remaining segment"]);
   assert.deepEqual(outbound.map(({ status }) => status), ["failed", "failed", "sent"]);
 });
 
