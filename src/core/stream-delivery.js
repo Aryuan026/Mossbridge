@@ -42,6 +42,7 @@ class StreamDelivery {
     this.supersededRunByRunKey = new Map();
     this.supersededRunByThreadId = new Map();
     this.stateByRunKey = new Map();
+    this.terminalRunKeys = new Set();
     this.runSequence = 0;
   }
 
@@ -167,6 +168,24 @@ class StreamDelivery {
     return Boolean(this.resolveSupersededRun(event?.payload?.threadId, event?.payload?.turnId));
   }
 
+  admitRuntimeEvent(event) {
+    const threadId = normalizeText(event?.payload?.threadId);
+    const turnId = normalizeText(event?.payload?.turnId);
+    if (!threadId || !turnId) {
+      return true;
+    }
+    const runKey = buildRunKey(threadId, turnId);
+    if (this.terminalRunKeys.has(runKey)) {
+      return false;
+    }
+    // Close at ingress, before later events can change watchdog or thread state.
+    if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {
+      this.terminalRunKeys.add(runKey);
+      trimMapToMaxEntries(this.terminalRunKeys, 1_024);
+    }
+    return true;
+  }
+
   setDeferredReplyPrefix(bindingKey, text) {
     const normalizedBindingKey = normalizeText(bindingKey);
     const normalizedText = trimOuterBlankLines(normalizeLineEndings(text));
@@ -206,7 +225,7 @@ class StreamDelivery {
     return normalizeReplyTarget(this.replyTargetByBindingKey.get(linked.bindingKey));
   }
 
-  async handleRuntimeEvent(event) {
+  async handleRuntimeEvent(event, { admitted = false } = {}) {
     const threadId = normalizeText(event?.payload?.threadId);
     const turnId = normalizeText(event?.payload?.turnId);
     if (!threadId) {
@@ -217,6 +236,9 @@ class StreamDelivery {
       this.recordLateOldTurnSuppressed(superseded, event);
       this.disposeRunState(buildRunKey(threadId, turnId));
       return { lateOldTurnSuppressed: true };
+    }
+    if (!admitted && !this.admitRuntimeEvent(event)) {
+      return { terminalRunSuppressed: true };
     }
 
     switch (event.type) {
@@ -295,6 +317,7 @@ class StreamDelivery {
       itemOrder: [],
       items: new Map(),
       sentItemIds: new Set(),
+      failedItemIds: new Set(),
       sendChain: Promise.resolve(),
       flushPromise: null,
       sequence: this.runSequence += 1,
@@ -428,38 +451,44 @@ class StreamDelivery {
       return;
     }
 
-    let failedDeliveryIndex = 0;
     state.sendChain = state.sendChain.then(async () => {
       for (let index = 0; index < pendingDeliveries.length; index += 1) {
         const delivery = pendingDeliveries[index];
-        failedDeliveryIndex = index;
-        await this.sendReplyDelivery(state, delivery, {
-          prependDeferredPrefix: index === 0 && Boolean(state.deferredReplyPrefix),
-        });
-        state.sentItemIds.add(delivery.itemId);
-        if (index === 0 && state.deferredReplyPrefix) {
+        try {
+          await this.sendReplyDelivery(state, delivery, {
+            prependDeferredPrefix: Boolean(state.deferredReplyPrefix),
+          });
+          state.sentItemIds.add(delivery.itemId);
           state.deferredReplyPrefix = "";
-        }
-      }
-    }).catch(async (error) => {
-      const failedDeliveries = pendingDeliveries.slice(failedDeliveryIndex);
-      const failedText = buildPendingDeliveryBatchText(failedDeliveries, state.deferredReplyPrefix);
-      const deferred = await this.deferSystemReply(state, failedText, error, "plain_reply");
-      if (deferred) {
-        this.recordOutboundDelivery(state, {
-          userId: state.replyTarget?.userId || "",
-          text: failedText,
-          contextToken: state.replyTarget?.contextToken || "",
-        }, { kind: "plain_reply", status: "deferred", attempt: "batch", error });
-        for (const delivery of failedDeliveries) {
-          if (delivery?.itemId) {
-            state.sentItemIds.add(delivery.itemId);
+        } catch (error) {
+          const remaining = pendingDeliveries.slice(index);
+          const failedText = buildPendingDeliveryBatchText(remaining, state.deferredReplyPrefix);
+          const deferred = await this.deferSystemReply(state, failedText, error, "plain_reply");
+          const target = {
+            userId: state.replyTarget?.userId || "",
+            contextToken: state.replyTarget?.contextToken || "",
+          };
+          if (deferred) {
+            this.recordOutboundDelivery(state, { ...target, text: failedText }, {
+              kind: "plain_reply", status: "deferred", attempt: "batch", error,
+            });
+            for (const item of remaining) {
+              state.sentItemIds.add(item.itemId);
+            }
+            state.deferredReplyPrefix = "";
+            return;
+          }
+          // A rejected segment is settled; only its unattempted siblings remain.
+          state.failedItemIds.add(delivery.itemId);
+          this.recordOutboundDelivery(state, { ...target, text: buildPendingDeliveryBatchText([delivery], state.deferredReplyPrefix) }, {
+            kind: "plain_reply", status: "failed", attempt: "batch", error,
+          });
+          console.error(`[mossbridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
+          if (!force) {
+            return;
           }
         }
-        state.deferredReplyPrefix = "";
-        return;
       }
-      console.error(`[mossbridge] failed to deliver reply thread=${state.threadId}: ${error.message}`);
     });
 
     await state.sendChain;
@@ -876,7 +905,7 @@ function buildReplyText(state, { completedOnly }) {
 function collectPendingReplyDeliveries(state, { force }) {
   const pending = [];
   for (const itemId of state.itemOrder) {
-    if (state.sentItemIds.has(itemId)) {
+    if (state.sentItemIds.has(itemId) || state.failedItemIds.has(itemId)) {
       continue;
     }
     const item = state.items.get(itemId);

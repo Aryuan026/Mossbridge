@@ -184,6 +184,9 @@ class MossbridgeApp {
           });
         return;
       }
+      if (!this.streamDelivery.admitRuntimeEvent(event)) {
+        return;
+      }
       if (shouldClearFirstRuntimeEventWatchdog(event)) {
         this.clearRuntimeEventWatchdog(event?.payload?.threadId);
       }
@@ -198,7 +201,7 @@ class MossbridgeApp {
       this.observeRunningTurnEvent(event);
       this.runtimeEventChain = this.runtimeEventChain
         .catch(() => {})
-        .then(() => this.handleRuntimeEvent(event))
+        .then(() => this.handleRuntimeEvent(event, { admitted: true }))
         .catch((error) => {
           const message = error instanceof Error ? error.stack || error.message : String(error);
           console.error(`[mossbridge] runtime event handling failed type=${event?.type || "(unknown)"} ${message}`);
@@ -4163,7 +4166,7 @@ class MossbridgeApp {
     return sessionStore.getActiveWorkspaceRoot(bindingKey) || this.config.workspaceRoot;
   }
 
-  async handleRuntimeEvent(event) {
+  async handleRuntimeEvent(event, { admitted = false } = {}) {
     if (this.streamDelivery.isRuntimeEventSuppressed?.(event)) {
       return this.streamDelivery.handleRuntimeEvent(event);
     }
@@ -4173,8 +4176,8 @@ class MossbridgeApp {
           turnId: event?.payload?.turnId,
         })
       : null;
-    const deliveryResult = await this.streamDelivery.handleRuntimeEvent(event);
-    if (!event) {
+    const deliveryResult = await this.streamDelivery.handleRuntimeEvent(event, { admitted });
+    if (!event || deliveryResult?.terminalRunSuppressed) {
       return;
     }
     if (event.type === "runtime.turn.completed" || event.type === "runtime.turn.failed") {

@@ -91,6 +91,95 @@ async function runCompletedTurnWithResultOnly(streamDelivery, { threadId, turnId
   });
 }
 
+test("terminal delivery records a rejected item once and sends its unsent siblings", async () => {
+  const attempted = [];
+  const outbound = [];
+  const { sent, streamDelivery } = createHarness({
+    sendText(payload, delivered) {
+      attempted.push(payload.text);
+      if (payload.text.startsWith("Rejected")) {
+        throw new Error("message rejected");
+      }
+      delivered.push(payload);
+    },
+    onOutboundDelivery: (entry) => outbound.push(entry),
+  });
+  streamDelivery.queueReplyTargetForThread("thread-1", {
+    userId: "user-1",
+    contextToken: "ctx-1",
+    provider: "weixin",
+  });
+  const run = { threadId: "thread-1", turnId: "turn-1" };
+  for (const [itemId, text] of [["1", "Rejected early"], ["2", "Rejected at terminal"], ["3", "Remaining segment"]]) {
+    await streamDelivery.handleRuntimeEvent({
+      type: "runtime.reply.delta",
+      payload: { ...run, itemId, text },
+    });
+  }
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.reply.completed",
+    payload: { ...run, itemId: "1", text: "Rejected early" },
+  });
+  await streamDelivery.handleRuntimeEvent({ type: "runtime.turn.completed", payload: run });
+
+  assert.deepEqual(attempted, ["Rejected early", "Rejected at terminal", "Remaining segment"]);
+  assert.deepEqual(sent.map(({ text }) => text), ["Remaining segment"]);
+  assert.deepEqual(outbound.map(({ status }) => status), ["failed", "failed", "sent"]);
+});
+
+test("late exact-turn events cannot change thread state or send a second reply", async (t) => {
+  const { readConfig } = require("../src/core/config");
+  const { MossbridgeApp } = require("../src/core/app");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mossbridge-terminal-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const originalEnv = process.env;
+  let app;
+  try {
+    process.env = {
+      MOSSBRIDGE_STATE_DIR: path.join(root, "state"),
+      MOSSBRIDGE_DATA_ROOT: path.join(root, "data"),
+      MOSSBRIDGE_WORKSPACE_ROOT: path.join(root, "workspace"),
+      MOSSBRIDGE_CODEX_HOME: path.join(root, "codex"),
+    };
+    app = new MossbridgeApp(readConfig());
+  } finally {
+    process.env = originalEnv;
+  }
+  const sent = [];
+  const settled = [];
+  app.channelAdapter.sendText = async ({ text }) => { sent.push(text); };
+  app.writebackRuntimeTurn = async ({ event }) => { settled.push(event.payload.turnId); };
+  const client = app.runtimeAdapter.createClient();
+  const threadId = "thread-1";
+  const emit = (method, turnId, params = {}) => {
+    client.handleIncoming(JSON.stringify({ method, params: { threadId, turnId, ...params } }));
+  };
+  const reply = (turnId, text) => emit("item/completed", turnId, {
+    item: { id: "item-1", type: "agentMessage", text },
+  });
+  for (const turnId of ["first", "next"]) {
+    app.streamDelivery.bindReplyTargetForTurn({ threadId, turnId, target: {
+      userId: "user-1", contextToken: "ctx-1", provider: "weixin",
+    } });
+  }
+  emit("turn/started", "first");
+  reply("first", "First reply");
+  emit("turn/completed", "first");
+  emit("turn/started", "next");
+  reply("first", "Late reply");
+  emit("turn/failed", "first");
+  const stateAfterLateEvents = app.threadStateStore.getThreadState(threadId);
+  reply("next", "Next reply");
+  emit("turn/completed", "next");
+  await app.runtimeEventChain;
+
+  assert.equal(stateAfterLateEvents.turnId, "next");
+  assert.equal(stateAfterLateEvents.status, "running");
+  assert.deepEqual(sent, ["First reply", "Next reply"]);
+  assert.deepEqual(settled, ["first", "next"]);
+  assert.equal(app.streamDelivery.stateByRunKey.size, 0);
+});
+
 test("system silent JSON is suppressed", async () => {
   const { sent, streamDelivery } = createHarness();
   streamDelivery.queueReplyTargetForThread("thread-1", {
